@@ -118,17 +118,25 @@ if (is.null(txdb_name) || is.null(orgdb_name)) {
 cat("Using TxDb:", txdb_name, "\n")
 cat("Using OrgDb:", orgdb_name, "\n")
 
-# 动态加载并安装数据库
-if (!require(txdb_name, character.only = TRUE)) {
-  BiocManager::install(txdb_name, ask = FALSE)
-  library(txdb_name, character.only = TRUE)
+# 判断 txdb 是文件路径还是 Bioconductor 包名
+if (file.exists(txdb_name)) {
+  # 使用 GFF3/GTF 文件构建 TxDb
+  cat("Loading TxDb from GFF/GTF file:", txdb_name, "\n")
+  txdb <- makeTxDbFromGFF(txdb_name)
+} else {
+  # 使用 Bioconductor 包
+  if (!require(txdb_name, character.only = TRUE)) {
+    BiocManager::install(txdb_name, ask = FALSE)
+    library(txdb_name, character.only = TRUE)
+  }
+  txdb <- get(txdb_name)
 }
+
 if (!require(orgdb_name, character.only = TRUE)) {
   BiocManager::install(orgdb_name, ask = FALSE)
   library(orgdb_name, character.only = TRUE)
 }
 
-txdb <- get(txdb_name)
 annoDb_name <- orgdb_name
 
 # 忽略第一个外显子和内含子的分类
