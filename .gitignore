@@ -1,22 +1,33 @@
+# 参考文件（不上传）
+参考_README.md
+
 # 测序原始数据（文件体积过大，不上传）
-workflow/resources/TAIR10/
-workflow/resources/homo/
+workflow/resources/TAIR10/*
+!workflow/resources/TAIR10/.gitkeep
+workflow/resources/homo/*
+!workflow/resources/homo/.gitkeep
 workflow/anno/TAIR10_chr_all.fas
-workflow/anno/Bowtie2anno_TAIR10/
-workflow/anno/Bowtie2anno_TAIR10_arabidopsis/
-workflow/anno/Bowtie2anno_GRCh38/
+workflow/anno/Bowtie2anno_TAIR10/*
+!workflow/anno/Bowtie2anno_TAIR10/.gitkeep
+workflow/anno/Bowtie2anno_TAIR10_arabidopsis/*
+!workflow/anno/Bowtie2anno_TAIR10_arabidopsis/.gitkeep
+workflow/anno/Bowtie2anno_GRCh38/*
+!workflow/anno/Bowtie2anno_GRCh38/.gitkeep
 
 # 分析结果（可重新生成）
-result/
+result/*
+!result/.gitkeep
 
 # 日志文件
-logs/
+logs/*
+!logs/.gitkeep
 
 # Snakemake 缓存
 .snakemake/
 
 # Benchmarks
-benchmarks/
+benchmarks/*
+!benchmarks/.gitkeep
 
 # IDE 配置
 .trae/
