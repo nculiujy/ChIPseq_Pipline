@@ -35,11 +35,44 @@ rm Arabidopsis_thaliana.TAIR10.dna.toplevel.fa
 ```
 构建完成后，该目录下会生成以 `TAIR10` 为前缀的 `.bt2` 索引文件。
 
-- **`config.yaml` 配置**：
-  ```yaml
-  species: "TAIR"
-  index_dir: "workflow/anno/Bowtie2anno_TAIR10/TAIR10"
-  ```
+### 拟南芥基因组注释文件（GFF3）配置
+
+除了 Bowtie2 索引，ChIPseeker 注释步骤还需要基因组注释文件。拟南芥提供两种注释来源：
+
+#### 方式 1：使用 Bioconductor 注释包（推荐）
+在 R 环境中安装：
+```r
+BiocManager::install("TxDb.Athaliana.BioMart.plantsmart28")
+BiocManager::install("org.At.tair.db")
+```
+
+在 `config.yaml` 中配置：
+```yaml
+species: "TAIR"
+index_dir: "workflow/anno/Bowtie2anno_TAIR10/TAIR10"
+txdb: "TxDb.Athaliana.BioMart.plantsmart28"
+orgdb: "org.At.tair.db"
+```
+
+#### 方式 2：使用 TAIR 官方 GFF3 文件
+如果需要使用最新的 TAIR10 官方注释，可以下载 GFF3 文件：
+
+```bash
+cd workflow/anno
+
+# 下载 TAIR10 GFF3 注释文件
+wget https://www.arabidopsis.org/api/download-files/download?filePath=Genes/TAIR10_genome_release/TAIR10_gff3/TAIR10_GFF3_genes.gff -O TAIR10_GFF3_genes.gff
+
+# 或使用备用链接
+wget https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-56/gff3/arabidopsis_thaliana/Arabidopsis_thaliana.TAIR10.56.gff3.gz
+gunzip Arabidopsis_thaliana.TAIR10.56.gff3.gz
+```
+
+然后在 R 脚本中使用 `makeTxDbFromGFF()` 导入：
+```r
+library(GenomicFeatures)
+txdb <- makeTxDbFromGFF("workflow/anno/TAIR10_GFF3_genes.gff", format="gff3")
+```
 
 ---
 
