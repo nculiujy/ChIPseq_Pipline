@@ -1,0 +1,62 @@
+# 全局配置参数
+picard_dir: "/home/public_software_annotation/software/picard-2.18.2"
+threads: 8
+
+# Peak calling 参数
+macs2_peak_type: "broad" # narrow 或 broad
+macs2_cutoff_type: "pvalue"
+macs2_cutoff_value: 0.05
+macs2_broad_cutoff: 0.1
+normalization_method: "BPM"
+
+# 支持并行下载和处理的多物种/项目配置
+# 这里定义了所有需要处理的项目，包含物种名称(species)和实验名称(experiment)
+# 每个 project 可以独立控制需要运行的模块
+projects:
+  - species: "TAIR"
+    experiment: "C-ChIRP"
+    rawdata_dir: "workflow/resources/TAIR10/C-ChIRP/fastqfile"
+    index_dir: "workflow/anno/Bowtie2anno_TAIR10/TAIR10"
+    txdb: "TxDb.Athaliana.BioMart.plantsmart28"
+    orgdb: "org.At.tair.db"
+    modules:
+      1_download: false
+      2_QC: false
+      3_ChIPseq: false
+      4_analyse: false
+  
+  - species: "homo"
+    experiment: "GSE103274"
+    rawdata_dir: "workflow/resources/homo/GSE103274/fastqfile"
+    index_dir: "workflow/anno/Bowtie2anno_GRCh38/GRCh38_noalt_as"
+    txdb: "TxDb.Hsapiens.UCSC.hg38.knownGene"
+    orgdb: "org.Hs.eg.db"
+    modules:
+      1_download: false
+      2_QC: false
+      3_ChIPseq: false
+      4_analyse: false
+
+  - species: "TAIR"
+    experiment: "314Com5"
+    rawdata_dir: "workflow/resources/TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427"
+    index_dir: "workflow/anno/Bowtie2anno_TAIR10_arabidopsis/TAIR10"
+    txdb: "TxDb.Athaliana.BioMart.plantsmart28"
+    orgdb: "org.At.tair.db"
+    modules:
+      1_download: false
+      2_QC: false
+      3_ChIPseq: false
+      4_analyse: false
+
+  - species: "TAIR"
+    experiment: "314OE"
+    rawdata_dir: "workflow/resources/TAIR10/314OE CUT tag-seq 20260427/cleandata"
+    index_dir: "workflow/anno/Bowtie2anno_TAIR10_arabidopsis/TAIR10"
+    txdb: "TxDb.Athaliana.BioMart.plantsmart28"
+    orgdb: "org.At.tair.db"
+    modules:
+      1_download: false
+      2_QC: false
+      3_ChIPseq: true
+      4_analyse: true
