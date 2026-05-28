@@ -1,11 +1,5 @@
 #!/usr/bin/perl
-BEGIN {
-    # 优先使用当前激活的 conda 环境，回退到常见安装路径
-    my $conda_prefix = $ENV{CONDA_PREFIX} || "";
-    if ($conda_prefix && -d "$conda_prefix/bin") {
-        $ENV{PATH} = "$conda_prefix/bin:$ENV{PATH}";
-    }
-}
+BEGIN { $ENV{PATH} = "/home/jyliu/miniconda3/envs/ChIPseq_Pipline/bin:$ENV{PATH}"; }
 use Getopt::Long;
 use File::Path qw(make_path);
 use File::Basename;
@@ -127,7 +121,7 @@ while (my $line = <$IN>) {
     
     my $macs2_genome = $genome;
     if (lc($genome) eq "tair") {
-        $macs2_genome = "1.19e8";
+        $macs2_genome = "1.2e8";
     } elsif (lc($genome) eq "homo") {
         $macs2_genome = "hs";
     } elsif (lc($genome) eq "mm") {

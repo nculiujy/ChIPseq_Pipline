@@ -65,7 +65,7 @@ rule analyse_annoChIPPeaks_single:
     log:
         "logs/{species}/{experiment}/4_2_annoChIPPeaks_{pair}.log"
     params:
-        peak_ext = lambda wildcards: "broadPeak" if config.get("macs2_peak_type", "narrow") == "broad" else "narrowPeak"
+        peak_ext = lambda wildcards: "broadPeak" if config["macs2_peak_type"] == "broad" else "narrowPeak"
     shell:
         """
         Rscript {input.script} \
