@@ -109,13 +109,45 @@ ChIPseq_Pipline/
 | MACS2 | Peak calling |
 | deepTools | BigWig 生成与热图 |
 | fastp / Trim Galore | 质控（可选） |
-| **R 4.0+** | ChIPseeker、clusterProfiler |
+| **R 4.4 + Bioc 3.20** | ChIPseeker、TxDb.*、org.*.db |
 | **Python 3** | pandas、subprocess |
 | **Perl** | 各步骤调度脚本 |
 
-### 环境配置（一键安装）
+### 新服务器一键部署
 
-项目根目录提供了完整的 [`environment.yml`](environment.yml)，可一键还原所有依赖：
+```bash
+git clone https://github.com/YOUR_USERNAME/ChIPseq_Pipline.git
+cd ChIPseq_Pipline
+bash workflow/env/setup_new_server.sh
+```
+
+该脚本依次执行：
+
+1. `conda env create -f environment.yml` — 还原 Python/Perl/bioinformatics 工具
+2. `Rscript workflow/env/install_R_packages.R` — 安装锁定版本的 R/Bioconductor 包
+3. 验证 bowtie2、samtools、macs2、snakemake、deeptools 是否可用
+
+### R 包版本说明
+
+R 包不在 `environment.yml` 中管理（Bioconductor 包与 conda 适配性差），
+改由 [`workflow/env/install_R_packages.R`](workflow/env/install_R_packages.R) 集中锁定版本：
+
+| 包 | 版本 | 来源 |
+|----|------|------|
+| ggplot2 | 3.5.1 | CRAN |
+| dplyr | 1.1.4 | CRAN |
+| pheatmap | 1.0.12 | CRAN |
+| ggrepel | 0.9.5 | CRAN |
+| ChIPseeker | 1.42.x (Bioc 3.20) | Bioconductor |
+| rtracklayer | 1.66.x | Bioconductor |
+| GenomicFeatures | 1.58.x | Bioconductor |
+| TxDb.Athaliana.BioMart.plantsmart28 | — | Bioconductor |
+| TxDb.Hsapiens.UCSC.hg38.knownGene | — | Bioconductor |
+| org.At.tair.db / org.Hs.eg.db | — | Bioconductor |
+
+> 物种注释数据库体积较大（各 ~200–500 MB），首次安装需要时间，之后 conda 环境内缓存复用。
+
+### 仅重建 conda 环境（不重装 R 包）
 
 ```bash
 conda env create -f environment.yml

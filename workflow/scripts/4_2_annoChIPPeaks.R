@@ -1,14 +1,7 @@
 #!/usr/bin/env Rscript
 
-# 载入所需的包
-if (!require("optparse")) install.packages("optparse", repos="https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
-if (!requireNamespace("BiocManager", quietly = TRUE)) 
-  install.packages("BiocManager", repos="https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
-if (!require("yaml")) install.packages("yaml", repos="https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
-if (!require("RColorBrewer")) install.packages("RColorBrewer", repos="https://mirrors.tuna.tsinghua.edu.cn/CRAN/")
-if (!require("ChIPseeker")) BiocManager::install("ChIPseeker")
-if (!require("rtracklayer")) BiocManager::install("rtracklayer")
-
+# 所有包由 conda 环境或 workflow/env/install_R_packages.R 预先安装
+# 不在运行时动态安装，确保跨服务器版本一致
 library(optparse)
 library(yaml)
 library(ChIPseeker)
@@ -120,22 +113,14 @@ cat("Using OrgDb:", orgdb_name, "\n")
 
 # 判断 txdb 是文件路径还是 Bioconductor 包名
 if (file.exists(txdb_name)) {
-  # 使用 GFF3/GTF 文件构建 TxDb
   cat("Loading TxDb from GFF/GTF file:", txdb_name, "\n")
   txdb <- makeTxDbFromGFF(txdb_name)
 } else {
-  # 使用 Bioconductor 包
-  if (!require(txdb_name, character.only = TRUE)) {
-    BiocManager::install(txdb_name, ask = FALSE)
-    library(txdb_name, character.only = TRUE)
-  }
+  library(txdb_name, character.only = TRUE)
   txdb <- get(txdb_name)
 }
 
-if (!require(orgdb_name, character.only = TRUE)) {
-  BiocManager::install(orgdb_name, ask = FALSE)
-  library(orgdb_name, character.only = TRUE)
-}
+library(orgdb_name, character.only = TRUE)
 
 annoDb_name <- orgdb_name
 
