@@ -50,12 +50,110 @@ if selected_proj:
         st.warning(f"结果目录不存在: `result/{species}/{experiment}/`")
         st.stop()
 
-    tab1, tab2, tab3 = st.tabs(["🔬 Peak Annotation", "📈 DeepTools Heatmap", "📁 所有输出文件"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 比对率统计", "🔬 Peak Annotation", "📈 DeepTools Heatmap", "📁 所有输出文件"])
 
     # ============================================================
-    # Tab 1: Peak Annotation 结果
+    # Tab 1: 比对率统计
     # ============================================================
     with tab1:
+        st.markdown("### Bowtie2 比对率统计")
+        
+        # 读取 3_1_ChIPseq.log 文件提取比对率
+        chipseq_log = os.path.join(BASE_DIR, "logs", species, experiment, "3_1_ChIPseq.log")
+        
+        if os.path.exists(chipseq_log):
+            import re
+            
+            alignment_data = []
+            
+            try:
+                with open(chipseq_log, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                
+                # 正则匹配模式：
+                # 第一行: reads 数量
+                # 第二行: paired 百分比
+                # 第三行: aligned concordantly 0 times
+                # 第四行: aligned concordantly exactly 1 time
+                # 第五行: aligned concordantly >1 times
+                # 第六行: overall alignment rate
+                
+                pattern = r'(\d+) reads; of these:\s+\d+ \([\d.]+%\) were paired; of these:\s+(\d+) \([\d.]+%\) aligned concordantly 0 times\s+(\d+) \([\d.]+%\) aligned concordantly exactly 1 time\s+(\d+) \([\d.]+%\) aligned concordantly >1 times\s+([\d.]+)% overall alignment rate'
+                
+                matches = re.findall(pattern, content)
+                
+                # 同时提取样本名
+                sample_pattern = r'\[[\d\-:\s]+\] 执行 Bowtie2 比对: (\S+)'
+                samples = re.findall(sample_pattern, content)
+                
+                if matches and samples:
+                    for i, (total_reads, unaligned, aligned_once, aligned_multi, rate) in enumerate(matches):
+                        if i < len(samples):
+                            alignment_data.append({
+                                "样本": samples[i],
+                                "总 Reads 数": int(total_reads),
+                                "比对率 (%)": float(rate),
+                                "未比对": int(unaligned),
+                                "唯一比对": int(aligned_once),
+                                "多位点比对": int(aligned_multi)
+                            })
+                
+                if alignment_data:
+                    df_align = pd.DataFrame(alignment_data)
+                    
+                    # 显示表格
+                    st.dataframe(df_align, use_container_width=True)
+                    
+                    # 绘制柱状图
+                    st.markdown("---")
+                    st.markdown("**比对率柱状图**")
+                    
+                    import plotly.express as px
+                    
+                    fig = px.bar(
+                        df_align,
+                        x="样本",
+                        y="比对率 (%)",
+                        text="比对率 (%)",
+                        title=f"{species}/{experiment} — Bowtie2 比对率",
+                        color="比对率 (%)",
+                        color_continuous_scale="RdYlGn",
+                        range_color=[0, 100]
+                    )
+                    
+                    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                    fig.update_layout(
+                        xaxis_title="样本名称",
+                        yaxis_title="比对率 (%)",
+                        yaxis_range=[0, 100],
+                        showlegend=False,
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 下载按钮
+                    st.markdown("---")
+                    csv_data = df_align.to_csv(index=False, encoding="utf-8-sig")
+                    st.download_button(
+                        "⬇️ 下载比对率统计表",
+                        data=csv_data,
+                        file_name=f"{species}_{experiment}_alignment_stats.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("⚠️ 日志中未找到比对率信息（可能任务未完成或已中断）")
+            
+            except Exception as e:
+                st.error(f"解析日志文件失败: {e}")
+        else:
+            st.info(f"📌 日志文件不存在: `logs/{species}/{experiment}/3_1_ChIPseq.log`")
+            st.caption("运行 3_ChIPseq 模块后会生成该日志")
+
+    # ============================================================
+    # Tab 2: Peak Annotation 结果
+    # ============================================================
+    with tab2:
         anno_dir = os.path.join(result_dir, "4_analyse", "annoChIPPeaks")
         if os.path.isdir(anno_dir):
             # 列出所有 pair 目录
@@ -156,9 +254,9 @@ if selected_proj:
             st.info(f"目录不存在: `4_analyse/annoChIPPeaks/`")
 
     # ============================================================
-    # Tab 2: DeepTools 热图
+    # Tab 3: DeepTools 热图
     # ============================================================
-    with tab2:
+    with tab3:
         deeptools_dir = os.path.join(result_dir, "4_analyse", "deeptools")
         if os.path.isdir(deeptools_dir):
             # 查找所有图片文件
@@ -234,9 +332,9 @@ if selected_proj:
             st.info(f"目录不存在: `4_analyse/deeptools/`")
 
     # ============================================================
-    # Tab 3: 所有输出文件
+    # Tab 4: 所有输出文件
     # ============================================================
-    with tab3:
+    with tab4:
         st.markdown("**结果目录结构**")
 
         if os.path.isdir(result_dir):
