@@ -4,6 +4,8 @@
 
 import streamlit as st
 import os
+import re
+import glob
 import yaml
 import pandas as pd
 import copy
@@ -15,6 +17,7 @@ st.title("⚙️ 配置编辑")
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 METADATA_PATH = os.path.join(BASE_DIR, "config", "metadata.csv")
+ANNO_DIR = os.path.join(BASE_DIR, "workflow", "anno")
 
 
 def load_config():
@@ -33,6 +36,75 @@ def load_metadata():
 
 def save_metadata(df):
     df.to_csv(METADATA_PATH, index=False)
+
+
+def get_species_dirs():
+    """获取 workflow/anno/ 下的物种目录"""
+    if not os.path.isdir(ANNO_DIR):
+        return []
+    return sorted([
+        d for d in os.listdir(ANNO_DIR)
+        if os.path.isdir(os.path.join(ANNO_DIR, d))
+    ])
+
+
+def get_bowtie2_dirs(species):
+    """获取指定物种目录下 bowtie2 开头的文件夹"""
+    species_dir = os.path.join(ANNO_DIR, species)
+    if not os.path.isdir(species_dir):
+        return []
+    return sorted([
+        d for d in os.listdir(species_dir)
+        if os.path.isdir(os.path.join(species_dir, d)) and d.lower().startswith("bowtie2")
+    ])
+
+
+def get_bowtie2_index_prefix(species, bowtie2_folder):
+    """
+    从 bowtie2 文件夹中提取索引前缀。
+    Bowtie2 索引文件格式: prefix.1.bt2, prefix.2.bt2, ... prefix.rev.1.bt2, prefix.rev.2.bt2
+    需要截取 .1.bt2 / .rev.1.bt2 之前的部分作为前缀路径。
+    返回相对于项目根目录的完整路径前缀。
+    """
+    folder_path = os.path.join(ANNO_DIR, species, bowtie2_folder)
+    bt2_files = glob.glob(os.path.join(folder_path, "*.bt2"))
+    if not bt2_files:
+        return None
+
+    # 取第一个 .bt2 文件，截取前缀
+    # 匹配模式: prefix.1.bt2 或 prefix.rev.1.bt2
+    prefixes = set()
+    for f in bt2_files:
+        basename = os.path.basename(f)
+        # 去掉 .rev.1.bt2 / .rev.2.bt2 / .1.bt2 / .2.bt2 / .3.bt2 / .4.bt2
+        prefix = re.sub(r'\.(rev\.)?\d+\.bt2$', '', basename)
+        prefixes.add(prefix)
+
+    if len(prefixes) == 1:
+        prefix = prefixes.pop()
+        # 返回相对于 BASE_DIR 的路径
+        rel_folder = os.path.relpath(folder_path, BASE_DIR)
+        return os.path.join(rel_folder, prefix)
+    elif len(prefixes) > 1:
+        # 多个索引前缀，返回列表让用户选择
+        return sorted(prefixes)
+    return None
+
+
+def get_bed_files(species, bowtie2_folder):
+    """从 bowtie2 目录中检索 .bed 文件"""
+    folder_path = os.path.join(ANNO_DIR, species, bowtie2_folder)
+    bed_files = glob.glob(os.path.join(folder_path, "*.bed"))
+    return sorted([os.path.basename(f) for f in bed_files])
+
+
+def get_gff_files(species, bowtie2_folder):
+    """从 bowtie2 目录中检索 .gff3/.gff/.gtf 文件"""
+    folder_path = os.path.join(ANNO_DIR, species, bowtie2_folder)
+    gff_files = []
+    for ext in ["*.gff3", "*.gff", "*.gtf"]:
+        gff_files.extend(glob.glob(os.path.join(folder_path, ext)))
+    return sorted([os.path.basename(f) for f in gff_files])
 
 
 # ============================================================
@@ -99,6 +171,52 @@ with tab1:
             index=0,
         )
 
+    # BED/GFF 文件选择（当 bed_source 为 custom 或 genes 时）
+    if bed_source in ("custom", "genes"):
+        st.markdown("---")
+        st.markdown(f"**{'自定义 BED 文件' if bed_source == 'custom' else 'GFF/GTF 基因注释文件'} 选择**")
+
+        # 选择物种目录
+        species_list = get_species_dirs()
+        if species_list:
+            dt_species = st.selectbox(
+                "选择物种目录（用于检索文件）",
+                species_list,
+                key="dt_species_select",
+            )
+            # 获取该物种下的 bowtie2 目录
+            bowtie2_dirs = get_bowtie2_dirs(dt_species)
+            if bowtie2_dirs:
+                dt_bowtie2_dir = st.selectbox(
+                    "选择 Bowtie2 目录",
+                    bowtie2_dirs,
+                    key="dt_bowtie2_select",
+                )
+                # 根据模式检索文件
+                if bed_source == "custom":
+                    available_files = get_bed_files(dt_species, dt_bowtie2_dir)
+                    file_label = "BED 文件"
+                else:
+                    available_files = get_gff_files(dt_species, dt_bowtie2_dir)
+                    file_label = "GFF3/GFF/GTF 文件"
+
+                if available_files:
+                    selected_file = st.selectbox(f"选择 {file_label}", available_files, key="dt_file_select")
+                    # 构造完整相对路径
+                    dt_file_path = os.path.join("workflow", "anno", dt_species, dt_bowtie2_dir, selected_file)
+                    st.caption(f"📄 路径: `{dt_file_path}`")
+                else:
+                    st.warning(f"⚠️ 在 `workflow/anno/{dt_species}/{dt_bowtie2_dir}/` 下未找到 {file_label}")
+                    dt_file_path = st.text_input(f"手动输入 {file_label} 路径", value=dt.get("custom_bed", "") if bed_source == "custom" else dt.get("gtf_file", ""))
+            else:
+                st.warning(f"⚠️ 在 `workflow/anno/{dt_species}/` 下未找到 bowtie2 开头的目录")
+                dt_file_path = ""
+        else:
+            st.warning("⚠️ 未找到 `workflow/anno/` 下的物种目录")
+            dt_file_path = ""
+    else:
+        dt_file_path = ""
+
     if matrix_mode == "reference-point":
         st.markdown("**Reference-point 模式参数**")
         rp = dt.get("reference_point", {})
@@ -145,6 +263,12 @@ with tab1:
             new_config["deeptools"]["plot"] = {}
         new_config["deeptools"]["plot"]["color_map"] = color_map
 
+        # 保存 BED/GFF 路径
+        if bed_source == "custom" and dt_file_path:
+            new_config["deeptools"]["custom_bed"] = dt_file_path
+        elif bed_source == "genes" and dt_file_path:
+            new_config["deeptools"]["gtf_file"] = dt_file_path
+
         if matrix_mode == "reference-point":
             new_config["deeptools"]["reference_point"] = {
                 "point": ref_point,
@@ -177,10 +301,69 @@ with tab2:
         with st.expander(f"📁 {proj['species']}/{proj['experiment']}", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
-                st.text_input("物种", value=proj["species"], key=f"sp_{i}", disabled=True)
-                st.text_input("实验名称", value=proj["experiment"], key=f"exp_{i}", disabled=True)
+                # 物种选择（基于 workflow/anno 下的实际目录）
+                available_species = get_species_dirs()
+                if available_species and proj["species"] in available_species:
+                    sp_idx = available_species.index(proj["species"])
+                else:
+                    available_species = [proj["species"]] + get_species_dirs()
+                    sp_idx = 0
+                selected_species = st.selectbox(
+                    "物种",
+                    available_species,
+                    index=sp_idx,
+                    key=f"sp_{i}",
+                )
+
+                st.text_input("实验名称", value=proj["experiment"], key=f"exp_{i}")
                 st.text_input("原始数据目录", value=proj.get("rawdata_dir", ""), key=f"raw_{i}")
-                st.text_input("Bowtie2 索引路径", value=proj.get("index_dir", ""), key=f"idx_{i}")
+
+                # Bowtie2 索引选择
+                st.markdown("**Bowtie2 索引**")
+                bowtie2_dirs_i = get_bowtie2_dirs(selected_species)
+                if bowtie2_dirs_i:
+                    # 尝试从现有 index_dir 推断当前选中的 bowtie2 目录
+                    current_index = proj.get("index_dir", "")
+                    current_bt2_dir = None
+                    for d in bowtie2_dirs_i:
+                        if d in current_index:
+                            current_bt2_dir = d
+                            break
+                    bt2_idx = bowtie2_dirs_i.index(current_bt2_dir) if current_bt2_dir else 0
+
+                    selected_bt2_dir = st.selectbox(
+                        "Bowtie2 索引目录",
+                        bowtie2_dirs_i,
+                        index=bt2_idx,
+                        key=f"bt2dir_{i}",
+                    )
+
+                    # 提取索引前缀
+                    index_prefix = get_bowtie2_index_prefix(selected_species, selected_bt2_dir)
+                    if isinstance(index_prefix, list):
+                        # 多个前缀，让用户选择
+                        selected_prefix = st.selectbox(
+                            "索引前缀",
+                            index_prefix,
+                            key=f"bt2prefix_{i}",
+                        )
+                        final_index_dir = os.path.join(
+                            "workflow", "anno", selected_species, selected_bt2_dir, selected_prefix
+                        )
+                    elif index_prefix:
+                        final_index_dir = index_prefix
+                        st.caption(f"✅ 索引前缀: `{index_prefix}`")
+                    else:
+                        st.warning("⚠️ 未在该目录下找到 .bt2 文件")
+                        final_index_dir = current_index
+                else:
+                    st.warning(f"⚠️ `workflow/anno/{selected_species}/` 下无 bowtie2 开头的目录")
+                    final_index_dir = st.text_input(
+                        "手动输入 Bowtie2 索引路径",
+                        value=proj.get("index_dir", ""),
+                        key=f"idx_manual_{i}",
+                    )
+
             with col2:
                 st.text_input("TxDb", value=proj.get("txdb", ""), key=f"txdb_{i}")
                 st.text_input("OrgDb", value=proj.get("orgdb", ""), key=f"orgdb_{i}")
@@ -193,8 +376,10 @@ with tab2:
                 m4 = st.checkbox("4_analyse", value=modules.get("4_analyse", False), key=f"m4_{i}")
 
             if st.button(f"保存项目 {proj['species']}/{proj['experiment']}", key=f"save_proj_{i}"):
+                projects[i]["species"] = selected_species
+                projects[i]["experiment"] = st.session_state[f"exp_{i}"]
                 projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
-                projects[i]["index_dir"] = st.session_state[f"idx_{i}"]
+                projects[i]["index_dir"] = final_index_dir
                 projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
                 projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
                 projects[i]["modules"] = {
@@ -205,17 +390,42 @@ with tab2:
                 }
                 config["projects"] = projects
                 save_config(config)
-                st.success(f"✅ 项目 {proj['species']}/{proj['experiment']} 已保存")
+                st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
 
     st.markdown("---")
     st.subheader("添加新项目")
+
+    # 新项目：物种选择
+    available_species_new = get_species_dirs()
+    if not available_species_new:
+        available_species_new = ["TAIR10", "homo", "mouse"]
+
+    new_species = st.selectbox("物种", available_species_new, key="new_sp")
+
+    # 新项目：Bowtie2 索引目录选择
+    new_bt2_dirs = get_bowtie2_dirs(new_species)
+    if new_bt2_dirs:
+        new_bt2_dir = st.selectbox("Bowtie2 索引目录", new_bt2_dirs, key="new_bt2dir")
+        new_index_prefix = get_bowtie2_index_prefix(new_species, new_bt2_dir)
+        if isinstance(new_index_prefix, list):
+            new_selected_prefix = st.selectbox("索引前缀", new_index_prefix, key="new_bt2prefix")
+            new_index_value = os.path.join("workflow", "anno", new_species, new_bt2_dir, new_selected_prefix)
+        elif new_index_prefix:
+            new_index_value = new_index_prefix
+            st.caption(f"✅ 索引前缀: `{new_index_prefix}`")
+        else:
+            new_index_value = ""
+            st.warning("⚠️ 未在该目录下找到 .bt2 文件")
+    else:
+        st.warning(f"⚠️ `workflow/anno/{new_species}/` 下无 bowtie2 开头的目录")
+        new_index_value = st.text_input("手动输入 Bowtie2 索引路径", key="new_idx_manual")
+
     with st.form("new_project_form"):
         col1, col2 = st.columns(2)
         with col1:
-            new_species = st.selectbox("物种", ["TAIR", "homo", "mm"])
             new_experiment = st.text_input("实验名称")
             new_rawdata = st.text_input("原始数据目录")
-            new_index = st.text_input("Bowtie2 索引路径")
+            st.caption(f"📄 Bowtie2 索引: `{new_index_value}`")
         with col2:
             new_txdb = st.text_input("TxDb 包名")
             new_orgdb = st.text_input("OrgDb 包名")
@@ -226,7 +436,7 @@ with tab2:
                 "species": new_species,
                 "experiment": new_experiment,
                 "rawdata_dir": new_rawdata,
-                "index_dir": new_index,
+                "index_dir": new_index_value,
                 "txdb": new_txdb,
                 "orgdb": new_orgdb,
                 "modules": {
