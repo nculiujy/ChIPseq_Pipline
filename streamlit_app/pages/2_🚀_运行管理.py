@@ -155,6 +155,45 @@ for proj in projects:
                     else:
                         st.markdown(f"⬜ **{name}**")
                         st.caption("未启用")
+        
+        # 重跑模块功能
+        st.markdown("---")
+        st.markdown("**🔄 重跑已完成的模块**")
+        st.caption("删除标记文件后，下次运行 Snakemake 会重新执行该模块")
+        
+        # 收集已完成的模块
+        completed_modules = []
+        for name, marker in MARKERS.items():
+            if check_marker(species, experiment, marker):
+                completed_modules.append(name)
+        
+        if completed_modules:
+            rerun_selected = st.multiselect(
+                "选择要重跑的模块",
+                completed_modules,
+                key=f"rerun_{species}_{experiment}",
+            )
+            
+            if st.button(f"🗑️ 删除选中模块的标记文件", key=f"delete_markers_{species}_{experiment}"):
+                if rerun_selected:
+                    deleted_count = 0
+                    for module_name in rerun_selected:
+                        marker_path = MARKERS[module_name]
+                        full_path = os.path.join(BASE_DIR, "result", species, experiment, marker_path)
+                        try:
+                            if os.path.exists(full_path):
+                                os.remove(full_path)
+                                deleted_count += 1
+                        except Exception as e:
+                            st.error(f"删除 {marker_path} 失败: {e}")
+                    
+                    if deleted_count > 0:
+                        st.success(f"✅ 已删除 {deleted_count} 个标记文件，下次运行时将重新执行这些模块")
+                        st.rerun()
+                else:
+                    st.warning("⚠️ 请先选择要重跑的模块")
+        else:
+            st.info("📌 当前无已完成的模块")
 
 # 自动刷新实现
 if auto_refresh:
