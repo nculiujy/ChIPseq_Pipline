@@ -20,6 +20,14 @@ rule analyse_peakcalling:
         "result/{species}/{experiment}/4_analyse/peakcalling_finished.txt"
     log:
         "logs/{species}/{experiment}/4_1_peakcalling.log"
+    params:
+        qval = config["macs2_cutoff_value"],
+        cutoff_type = config["macs2_cutoff_type"],
+        norm_method = config["normalization_method"],
+        peak_type = config["macs2_peak_type"],
+        broad_cutoff = config.get("macs2_broad_cutoff", 0.1),
+        threads = config["threads"],
+        broad_cutoff_flag = lambda wildcards: f"--broad_cutoff {config.get('macs2_broad_cutoff', 0.1)}" if config["macs2_peak_type"] == "broad" else ""
     shell:
         """
         perl {input.script} \
@@ -28,12 +36,12 @@ rule analyse_peakcalling:
             --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
             --picdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/pictures \
             --genome {wildcards.species} \
-            --qval {config[macs2_cutoff_value]} \
-            --cutoff_type {config[macs2_cutoff_type]} \
-            --norm_method {config[normalization_method]} \
-            --peak_type {config[macs2_peak_type]} \
-            --broad_cutoff {config[macs2_broad_cutoff]} \
-            --threads {config[threads]} > {log} 2>&1
+            --qval {params.qval} \
+            --cutoff_type {params.cutoff_type} \
+            --norm_method {params.norm_method} \
+            --peak_type {params.peak_type} \
+            {params.broad_cutoff_flag} \
+            --threads {params.threads} > {log} 2>&1
         
         touch {output}
         """
@@ -58,7 +66,7 @@ rule analyse_annoChIPPeaks_single:
     input:
         script = "workflow/scripts/4_2_annoChIPPeaks.R",
         peak_marker = "result/{species}/{experiment}/4_analyse/peakcalling_finished.txt",
-        config = "config/config.yaml"
+        config = ancient("config/config.yaml")
     output:
         "result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_peak_anno.csv",
         "result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_pie_bp±2000.pdf"
@@ -99,11 +107,14 @@ rule analyse_deeptools:
         script = "workflow/scripts/4_3_deeptools.py",
         metadata = "config/metadata.csv",
         peak_marker = "result/{species}/{experiment}/4_analyse/peakcalling_finished.txt",
-        config = "config/config.yaml"
+        config = ancient("config/config.yaml")
     output:
         "result/{species}/{experiment}/4_analyse/deeptools_finished.txt"
     log:
         "logs/{species}/{experiment}/4_3_deeptools.log"
+    params:
+        threads = config["threads"],
+        norm = config["normalization_method"]
     shell:
         """
         python {input.script} \
@@ -111,8 +122,11 @@ rule analyse_deeptools:
             --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
             --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
             --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/deeptools \
-            --threads {config[threads]} \
-            --norm {config[normalization_method]} > {log} 2>&1
+            --config {input.config} \
+            --species {wildcards.species} \
+            --experiment {wildcards.experiment} \
+            --threads {params.threads} \
+            --norm {params.norm} > {log} 2>&1
             
         touch {output}
         """

@@ -260,6 +260,88 @@ snakemake -c 8 --forceall
 | `homo` | 人类 | `hs` |
 | `mm` | 小鼠 | `mm` |
 
+### deepTools 配置
+
+deepTools 模块提供灵活的可视化配置，详细说明见 [`workflow/scripts/deeptools_config_guide.md`](workflow/scripts/deeptools_config_guide.md)。
+
+#### computeMatrix 模式
+
+**reference-point 模式**（推荐用于 ChIP-seq peaks）：
+
+```yaml
+deeptools:
+  matrix_mode: "reference-point"
+  reference_point:
+    point: "center"    # center (peak中心), TSS, TES
+    upstream: 2000     # 上游距离 (bp)
+    downstream: 2000   # 下游距离 (bp)
+```
+
+**scale-regions 模式**（推荐用于基因体分析）：
+
+```yaml
+deeptools:
+  matrix_mode: "scale-regions"
+  scale_regions:
+    region_length: 5000     # 缩放后的统一长度
+    upstream: 2000          # 区域上游延伸
+    downstream: 2000        # 区域下游延伸
+```
+
+#### BED 文件来源
+
+控制分析的背景区域来源：
+
+| 选项 | 说明 | 适用场景 |
+|------|------|---------|
+| `macs2_peaks` | 使用 MACS2 输出的 peaks（每对样本用自己的） | 独立评估每对样本 |
+| `union_peaks` | 合并所有样本的 peaks 作为统一区域集 | 跨样本比较 |
+| `custom` | 使用自定义 BED 文件 | 分析特定区域（增强子、启动子等） |
+| `genes` | 从 GTF 文件提取基因区域 | 全基因组系统性分析 |
+
+**示例：跨样本比较配置**
+
+```yaml
+deeptools:
+  matrix_mode: "reference-point"
+  bed_source: "union_peaks"  # 所有样本使用统一的 peaks 合集
+  reference_point:
+    point: "center"
+    upstream: 2000
+    downstream: 2000
+```
+
+**示例：分析启动子区域**
+
+```yaml
+deeptools:
+  matrix_mode: "reference-point"
+  bed_source: "genes"
+  reference_point:
+    point: "TSS"
+    upstream: 2000
+    downstream: 1000
+  gtf_files:
+    TAIR: "workflow/anno/TAIR10_GFF3_genes.gtf"
+    homo: "workflow/anno/gencode.v38.annotation.gtf"
+```
+
+#### 可视化参数
+
+```yaml
+deeptools:
+  bin_size: 10              # bin 大小 (bp)
+  missing_data_as_zero: true
+  
+  plot:
+    color_map: "RdYlBu_r"   # 热图配色方案
+    z_min: 0                # 最小值 (或 "auto")
+    z_max: "auto"           # 最大值
+    interpolation: "bilinear"
+```
+
+常用配色方案：`RdYlBu_r`, `viridis`, `plasma`, `coolwarm`, `Reds`, `Blues`
+
 ---
 
 ## 输出结果
@@ -280,6 +362,80 @@ snakemake -c 8 --forceall
 | `annoChIPPeaks/{pair}/*_peak_anno.csv` | Peak 基因组注释表格 |
 | `annoChIPPeaks/{pair}/*_pie_bp±2000.pdf` | Peak 分布饼图 |
 | `deeptools/` | 热图（heatmap）与 Profile 图 |
+
+---
+
+## Streamlit 管理面板
+
+本项目集成了基于 **Streamlit** 的 Web 管理面板，无需记忆命令行即可完成配置、运行和结果查看。
+
+### 文件结构
+
+```
+streamlit_app/
+├── app.py                    # 主页（项目概览、系统信息）
+├── .streamlit/
+│   └── config.toml           # Streamlit 主题配置
+└── pages/
+    ├── 1_⚙️_配置编辑.py      # 可视化编辑 config.yaml / metadata.csv
+    ├── 2_🚀_运行管理.py      # 流程状态监控、启动/停止 Snakemake
+    └── 3_📊_结果预览.py      # 查看分析产出（表格、图片、PDF）
+```
+
+### 启动面板
+
+```bash
+# 1. 激活 conda 环境
+conda activate ChIPseq_Pipline
+
+# 2. 启动（默认监听 8501 端口）
+streamlit run streamlit_app/app.py --server.port 8501
+```
+
+> Streamlit 已包含在 `environment.yml` 中，`conda env create` 后无需额外安装。
+
+### 功能详解
+
+#### ⚙️ 配置编辑
+
+- 以表单形式编辑 `config/config.yaml` 中的全局参数（线程数、MACS2 模式、deepTools 选项等）
+- 可视化管理 **项目列表**：添加/删除项目，配置物种、实验名、数据路径、模块开关
+- 编辑 `config/metadata.csv` 中的 IP/Input 样本配对
+- 内置 **deepTools 高级配置**：矩阵模式（reference-point / scale-regions）、BED 来源、配色方案等
+- 保存后立即写入文件，下次 `snakemake` 调用时生效
+
+#### 🚀 运行管理
+
+- **流程状态总览**：实时检测各模块的 `*_finished.txt` 标记文件，显示已完成 / 运行中 / 待运行 / 未启用
+- **进程检测**：自动识别系统中是否有 snakemake 进程在运行，状态随任务推进更新
+- **自动刷新**：支持 15 秒轮询刷新，或手动点击刷新
+- **一键操作**：dry-run 预览、正式运行、强制全部重跑
+- **日志查看**：按时间排序列出所有日志文件，可查看最后 N 行内容
+- **常用命令速查**：列出常见 Snakemake 操作命令
+
+#### 📊 结果预览
+
+- **Peak 注释表格**：展示 ChIPseeker 输出的 `*_peak_anno.csv`，支持搜索和下载
+- **图片浏览**：预览 deepTools 热图、Profile 图、饼图等 PNG/PDF 文件
+- **PDF 下载**：对于 PDF 格式图片提供直接下载链接
+
+### 远程服务器访问
+
+面板通常运行在没有图形界面的远程服务器上，通过 SSH 隧道即可在本地浏览器中使用：
+
+```bash
+# 本地终端执行
+ssh -L 8501:localhost:8501 user@server_ip
+
+# 然后在本地浏览器打开
+# http://localhost:8501
+```
+
+### 注意事项
+
+- Streamlit 面板是 **只读监控 + 配置编辑** 工具，不会自动触发 snakemake（需要你手动点击运行按钮）
+- 面板通过 `pgrep` 检测 snakemake 进程状态，如果流程在其他 session/用户运行，也会被检测到
+- 配置保存后会直接覆盖 `config/config.yaml`，建议在保存前用 `git diff` 确认变更
 
 ---
 

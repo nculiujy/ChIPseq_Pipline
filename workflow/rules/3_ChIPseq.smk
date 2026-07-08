@@ -28,7 +28,6 @@ rule ChIPseq_step1:
     input:
         script = "workflow/scripts/3_1_ChIPseq.pl",
         metadata = "config/metadata.csv",
-        config = "config/config.yaml",
         qc_marker = get_step1_input_markers
     output:
         "result/{species}/{experiment}/3_ChIPseq/step1_finished.txt"
@@ -36,15 +35,17 @@ rule ChIPseq_step1:
         "logs/{species}/{experiment}/3_1_ChIPseq.log"
     params:
         index_dir = lambda wildcards: [p["index_dir"] for p in config["projects"] if p["species"] == wildcards.species and p["experiment"] == wildcards.experiment][0],
-        fqdir = get_fq_input_dir
+        fqdir = get_fq_input_dir,
+        picard_dir = config["picard_dir"],
+        threads = config["threads"]
     shell:
         """
         perl {input.script} \
             --inputdir "{params.fqdir}" \
             --outputdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
             --indexdir "{params.index_dir}" \
-            --picarddir "{config[picard_dir]}" \
-            --threads {config[threads]} > {log} 2>&1
+            --picarddir "{params.picard_dir}" \
+            --threads {params.threads} > {log} 2>&1
             
         touch {output}
         """
