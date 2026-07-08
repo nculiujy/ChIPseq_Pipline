@@ -8,6 +8,7 @@ import yaml
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from PIL import Image
 
 st.set_page_config(page_title="结果预览", page_icon="📊", layout="wide")
 st.title("📊 结果预览")
@@ -19,6 +20,19 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def pdf_to_images(pdf_path):
+    """尝试将 PDF 转换为图片以供预览（需要 pdf2image 库）"""
+    try:
+        from pdf2image import convert_from_path
+        images = convert_from_path(pdf_path, first_page=1, last_page=3, dpi=150)
+        return images
+    except ImportError:
+        return None
+    except Exception as e:
+        st.warning(f"PDF 转换失败: {e}")
+        return None
 
 
 config = load_config()
@@ -53,28 +67,51 @@ if selected_proj:
 
                 col1, col2 = st.columns(2)
 
-                # 查找 PDF 文件
+                # 查找图表文件
                 with col1:
-                    st.markdown("**📊 Peak 注释饼图**")
+                    st.markdown("**📊 Peak 注释可视化**")
+                    
+                    # PDF 文件
                     pdf_files = [f for f in os.listdir(pair_dir) if f.endswith(".pdf")]
-                    if pdf_files:
-                        for pdf in pdf_files:
-                            pdf_path = os.path.join(pair_dir, pdf)
-                            st.caption(pdf)
-                            # PDF 不能直接显示，提供下载
-                            with open(pdf_path, "rb") as f:
-                                st.download_button(
-                                    f"⬇️ 下载 {pdf}",
-                                    data=f.read(),
-                                    file_name=pdf,
-                                    mime="application/pdf",
-                                    key=f"dl_{pdf}",
-                                )
+                    for pdf in pdf_files:
+                        pdf_path = os.path.join(pair_dir, pdf)
+                        st.caption(f"📄 {pdf}")
+                        
+                        # 尝试预览 PDF
+                        with st.expander("🔍 预览 PDF", expanded=True):
+                            pdf_images = pdf_to_images(pdf_path)
+                            if pdf_images:
+                                for idx, img in enumerate(pdf_images[:3]):  # 最多显示前3页
+                                    st.image(img, caption=f"第 {idx+1} 页", use_container_width=True)
+                                if len(pdf_images) > 3:
+                                    st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
+                            else:
+                                st.info("💡 安装 `pdf2image` 和 `poppler-utils` 可预览 PDF 文件")
+                        
+                        # 下载按钮
+                        with open(pdf_path, "rb") as f:
+                            st.download_button(
+                                f"⬇️ 下载 {pdf}",
+                                data=f.read(),
+                                file_name=pdf,
+                                mime="application/pdf",
+                                key=f"dl_{pdf}",
+                            )
 
-                    # 查找 PNG 图片
-                    png_files = [f for f in os.listdir(pair_dir) if f.endswith((".png", ".jpg", ".jpeg"))]
-                    for png in png_files:
-                        st.image(os.path.join(pair_dir, png), caption=png)
+                    # PNG/JPG 图片
+                    image_files = [f for f in os.listdir(pair_dir) if f.endswith((".png", ".jpg", ".jpeg"))]
+                    if image_files:
+                        for img_file in image_files:
+                            img_path = os.path.join(pair_dir, img_file)
+                            st.caption(f"🖼️ {img_file}")
+                            try:
+                                img = Image.open(img_path)
+                                st.image(img, use_container_width=True)
+                            except Exception as e:
+                                st.error(f"无法加载图片 {img_file}: {e}")
+                    
+                    if not pdf_files and not image_files:
+                        st.info("暂无可视化文件")
 
                 # 查找 CSV 数据
                 with col2:
@@ -137,18 +174,37 @@ if selected_proj:
 
                 for img_file in image_files:
                     img_path = os.path.join(deeptools_dir, img_file)
-                    st.markdown(f"---\n**{img_file}**")
+                    st.markdown(f"---\n**📊 {img_file}**")
 
                     if img_file.endswith((".png", ".jpg", ".jpeg")):
-                        st.image(img_path, use_container_width=True)
+                        try:
+                            img = Image.open(img_path)
+                            st.image(img, use_container_width=True)
+                        except Exception as e:
+                            st.error(f"无法加载图片: {e}")
                     elif img_file.endswith(".svg"):
-                        with open(img_path, "r") as f:
-                            svg_content = f.read()
-                        st.markdown(svg_content, unsafe_allow_html=True)
+                        try:
+                            with open(img_path, "r", encoding="utf-8") as f:
+                                svg_content = f.read()
+                            st.markdown(svg_content, unsafe_allow_html=True)
+                        except Exception as e:
+                            st.error(f"无法加载 SVG: {e}")
                     elif img_file.endswith(".pdf"):
+                        # PDF 预览
+                        with st.expander("🔍 预览 PDF", expanded=False):
+                            pdf_images = pdf_to_images(img_path)
+                            if pdf_images:
+                                for idx, pimg in enumerate(pdf_images[:3]):
+                                    st.image(pimg, caption=f"第 {idx+1} 页", use_container_width=True)
+                                if len(pdf_images) > 3:
+                                    st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
+                            else:
+                                st.info("💡 安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
+                        
+                        # 下载按钮
                         with open(img_path, "rb") as f:
                             st.download_button(
-                                f"⬇️ 下载 {img_file}",
+                                f"⬇️ 下载 {os.path.basename(img_file)}",
                                 data=f.read(),
                                 file_name=os.path.basename(img_file),
                                 mime="application/pdf",
@@ -215,3 +271,4 @@ if selected_proj:
                 st.info("结果目录为空")
         else:
             st.warning("结果目录不存在")
+
