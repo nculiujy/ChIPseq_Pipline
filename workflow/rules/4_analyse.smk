@@ -1,5 +1,17 @@
 # 根据物种确定 MACS2 的 genome_size 参数
 def get_genome_size(species):
+    """
+    获取 MACS2 的 genome size 参数。
+    优先使用 config 中的 macs2_genome_size；
+    如果设置为 'auto' 或未设置，则根据 species 推断。
+    """
+    genome_size = config.get("macs2_genome_size", "auto")
+    
+    # 如果配置了固定值（非 auto），直接返回
+    if genome_size != "auto":
+        return genome_size
+    
+    # 否则根据物种自动推断
     species = str(species).lower()
     if species == "tair":
         return "1.2e8"  # 拟南芥
@@ -27,6 +39,7 @@ rule analyse_peakcalling:
         peak_type = config["macs2_peak_type"],
         broad_cutoff = config.get("macs2_broad_cutoff", 0.1),
         threads = config["threads"],
+        genome_size = lambda wildcards: get_genome_size(wildcards.species),
         broad_cutoff_flag = lambda wildcards: f"--broad_cutoff {config.get('macs2_broad_cutoff', 0.1)}" if config["macs2_peak_type"] == "broad" else ""
     shell:
         """
@@ -35,7 +48,7 @@ rule analyse_peakcalling:
             --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
             --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
             --picdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/pictures \
-            --genome {wildcards.species} \
+            --genome {params.genome_size} \
             --qval {params.qval} \
             --cutoff_type {params.cutoff_type} \
             --norm_method {params.norm_method} \

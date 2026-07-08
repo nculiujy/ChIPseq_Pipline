@@ -139,12 +139,44 @@ with tab1:
     with col3:
         cutoff_value = st.number_input("阈值", min_value=0.0001, max_value=1.0, value=float(config.get("macs2_cutoff_value", 0.05)), format="%.4f")
 
-    # Broad cutoff 仅在 broad 模式下有意义
-    broad_cutoff = None
-    if peak_type == "broad":
-        broad_cutoff = st.number_input("Broad cutoff", min_value=0.0001, max_value=1.0, value=float(config.get("macs2_broad_cutoff", 0.1)), format="%.4f")
-    else:
-        st.caption("ℹ️ Narrow 模式下无需 Broad cutoff 参数")
+    col1, col2 = st.columns(2)
+    with col1:
+        # Broad cutoff 仅在 broad 模式下有意义
+        if peak_type == "broad":
+            broad_cutoff = st.number_input("Broad cutoff", min_value=0.0001, max_value=1.0, value=float(config.get("macs2_broad_cutoff", 0.1)), format="%.4f")
+        else:
+            broad_cutoff = None
+            st.caption("ℹ️ Narrow 模式下无需 Broad cutoff 参数")
+    
+    with col2:
+        # MACS2 基因组大小参数
+        genome_options = {
+            "自动（根据项目物种）": "auto",
+            "拟南芥 (1.2e8)": "1.2e8",
+            "人类 (hs)": "hs",
+            "小鼠 (mm)": "mm",
+            "自定义": "custom"
+        }
+        current_genome = config.get("macs2_genome_size", "auto")
+        if current_genome in genome_options.values():
+            genome_idx = list(genome_options.values()).index(current_genome)
+        else:
+            genome_idx = 4  # 自定义
+        
+        genome_select = st.selectbox(
+            "MACS2 基因组大小",
+            list(genome_options.keys()),
+            index=genome_idx,
+            help="设置为'自动'时从项目配置的 species 推断；否则使用固定值"
+        )
+        genome_size = genome_options[genome_select]
+        
+        if genome_size == "custom":
+            genome_size = st.text_input(
+                "自定义基因组大小",
+                value=current_genome if current_genome not in genome_options.values() else "2.7e9",
+                placeholder="如: 2.7e9 或 dm"
+            )
 
     st.subheader("DeepTools 参数")
     dt = config.get("deeptools", {})
@@ -247,6 +279,7 @@ with tab1:
         new_config["macs2_peak_type"] = peak_type
         new_config["macs2_cutoff_type"] = cutoff_type
         new_config["macs2_cutoff_value"] = cutoff_value
+        new_config["macs2_genome_size"] = genome_size
         # broad_cutoff 仅 broad 模式有意义，但保留 key 以兼容 snakemake 读取
         if peak_type == "broad" and broad_cutoff is not None:
             new_config["macs2_broad_cutoff"] = broad_cutoff
