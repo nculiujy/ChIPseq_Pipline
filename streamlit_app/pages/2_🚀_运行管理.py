@@ -194,6 +194,80 @@ for proj in projects:
                     st.warning("⚠️ 请先选择要重跑的模块")
         else:
             st.info("📌 当前无已完成的模块")
+        
+        # 清理未完成任务功能
+        st.markdown("---")
+        st.markdown("**🧹 清理未完成任务（断点续行）**")
+        st.caption("检测有输出目录但无完成标记的模块，清理中间文件后可重新运行")
+        
+        # 定义各模块的输出目录
+        MODULE_DIRS = {
+            "1_download": "1_download",
+            "2_QC": "2_QC",
+            "3_ChIPseq": "3_ChIPseq",
+            "4_peakcalling": "4_analyse/peakcalling",
+            "4_annotation": "4_analyse/annoChIPPeaks",
+            "4_deeptools": "4_analyse/deeptools",
+        }
+        
+        # 检测未完成的模块
+        incomplete_modules = []
+        for name, marker in MARKERS.items():
+            # 跳过 step1/step2 子步骤，只看主模块
+            if "step" in name:
+                continue
+            
+            # 映射到模块目录
+            if name in MODULE_DIRS:
+                module_dir = MODULE_DIRS[name]
+            else:
+                continue
+            
+            marker_exists = check_marker(species, experiment, marker)
+            dir_path = os.path.join(BASE_DIR, "result", species, experiment, module_dir)
+            dir_exists = os.path.isdir(dir_path)
+            
+            # 如果目录存在但标记不存在，说明未完成
+            if dir_exists and not marker_exists:
+                incomplete_modules.append((name, module_dir, dir_path))
+        
+        if incomplete_modules:
+            st.warning(f"⚠️ 检测到 {len(incomplete_modules)} 个未完成的模块")
+            
+            for mod_name, mod_dir, full_path in incomplete_modules:
+                with st.expander(f"🔍 {mod_name} ({mod_dir})", expanded=False):
+                    # 列出目录下的文件
+                    try:
+                        files = []
+                        for root, dirs, filelist in os.walk(full_path):
+                            for f in filelist:
+                                fpath = os.path.join(root, f)
+                                rel_path = os.path.relpath(fpath, full_path)
+                                size_kb = os.path.getsize(fpath) / 1024
+                                files.append({
+                                    "文件": rel_path,
+                                    "大小": f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb/1024:.1f} MB"
+                                })
+                        
+                        if files:
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(files).head(20), use_container_width=True)
+                            st.caption(f"共 {len(files)} 个文件（显示前 20 个）")
+                            
+                            if st.button(f"🗑️ 清空 {mod_name} 目录", key=f"clean_{species}_{experiment}_{mod_name}"):
+                                try:
+                                    import shutil
+                                    shutil.rmtree(full_path)
+                                    st.success(f"✅ 已清空 {mod_dir}，下次运行时将从头开始")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"清空目录失败: {e}")
+                        else:
+                            st.info("目录为空")
+                    except Exception as e:
+                        st.error(f"读取目录失败: {e}")
+        else:
+            st.success("✅ 无未完成的任务，所有启用的模块都已正常完成或尚未开始")
 
 # 自动刷新实现
 if auto_refresh:
@@ -205,6 +279,35 @@ if auto_refresh:
 # ============================================================
 st.markdown("---")
 st.subheader("🎮 运行控制")
+
+# 检测是否有未完成的任务（提示可以续行）
+has_incomplete = False
+for proj in projects:
+    species = proj["species"]
+    experiment = proj["experiment"]
+    for name, marker in MARKERS.items():
+        if "step" in name:
+            continue
+        module_dir = {
+            "1_download": "1_download",
+            "2_QC": "2_QC",
+            "3_ChIPseq": "3_ChIPseq",
+            "4_peakcalling": "4_analyse/peakcalling",
+            "4_annotation": "4_analyse/annoChIPPeaks",
+            "4_deeptools": "4_analyse/deeptools",
+        }.get(name)
+        if module_dir:
+            marker_exists = check_marker(species, experiment, marker)
+            dir_path = os.path.join(BASE_DIR, "result", species, experiment, module_dir)
+            dir_exists = os.path.isdir(dir_path)
+            if dir_exists and not marker_exists:
+                has_incomplete = True
+                break
+    if has_incomplete:
+        break
+
+if has_incomplete:
+    st.info("💡 **检测到未完成的任务** — 可以直接启动继续运行，Snakemake 会自动从断点续行")
 
 col1, col2, col3 = st.columns(3)
 
@@ -240,7 +343,9 @@ if st.session_state.snakemake_pid:
 
 st.session_state.snakemake_running = snakemake_active or (st.session_state.snakemake_pid is not None)
 
-if st.button("▶️ 启动 Snakemake", type="primary", disabled=st.session_state.snakemake_running):
+# 启动/恢复按钮
+button_label = "▶️ 恢复运行（从断点继续）" if has_incomplete else "▶️ 启动 Snakemake"
+if st.button(button_label, type="primary", disabled=st.session_state.snakemake_running):
     cmd = ["snakemake", "-c", str(int(cores))]
 
     if run_mode == "Dry-run（仅预览）":
@@ -252,8 +357,13 @@ if st.button("▶️ 启动 Snakemake", type="primary", disabled=st.session_stat
         cmd.extend(extra_args.strip().split())
 
     st.session_state.snakemake_running = True
-    st.info(f"🚀 正在运行: `{' '.join(cmd)}`")
-    st.caption("流程在后台运行中。请查看日志了解进度。终端中运行效果更佳。")
+    
+    if has_incomplete:
+        st.info(f"🔄 正在恢复运行: `{' '.join(cmd)}`")
+        st.caption("Snakemake 会检查已完成的任务，跳过它们，只执行未完成的部分")
+    else:
+        st.info(f"� 正在运行: `{' '.join(cmd)}`")
+        st.caption("流程在后台运行中。请查看日志了解进度")
 
     # 使用 subprocess 异步启动
     try:
@@ -273,16 +383,20 @@ if st.button("▶️ 启动 Snakemake", type="primary", disabled=st.session_stat
 
 if st.session_state.snakemake_running and st.session_state.snakemake_pid:
     st.warning(f"⚠️ Snakemake 正在运行 (PID: {st.session_state.snakemake_pid})")
-    if st.button("⏹️ 停止运行"):
-        try:
-            os.kill(st.session_state.snakemake_pid, signal.SIGTERM)
-            st.session_state.snakemake_running = False
-            st.session_state.snakemake_pid = None
-            st.success("已发送停止信号")
-        except ProcessLookupError:
-            st.session_state.snakemake_running = False
-            st.session_state.snakemake_pid = None
-            st.info("进程已结束")
+    col_pause1, col_pause2 = st.columns([1, 3])
+    with col_pause1:
+        if st.button("⏸️ 暂停"):
+            try:
+                os.kill(st.session_state.snakemake_pid, signal.SIGTERM)
+                st.session_state.snakemake_running = False
+                st.session_state.snakemake_pid = None
+                st.success("✅ 已暂停，下次启动时会从断点继续")
+            except ProcessLookupError:
+                st.session_state.snakemake_running = False
+                st.session_state.snakemake_pid = None
+                st.info("进程已结束")
+    with col_pause2:
+        st.caption("💡 暂停后可以点击上面的「恢复运行」按钮继续执行")
 
 # ============================================================
 # 常用命令速查
