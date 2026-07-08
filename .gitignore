@@ -57,3 +57,7 @@ __pycache__/
 *.tmp
 *.bak
 *.swp
+
+# Streamlit 缓存
+streamlit_app/__pycache__/
+streamlit_app/.streamlit/secrets.toml
