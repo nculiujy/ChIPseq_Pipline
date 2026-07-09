@@ -140,16 +140,16 @@ for proj in projects:
                 else:
                     # 判断是否启用了该模块
                     is_enabled = False
-                    if "download" in name:
+                    if name.startswith("4_"):
+                        is_enabled = modules.get("4_analyse", False)
+                    elif name.startswith("5_") or "gsea" in name:
+                        is_enabled = modules.get("5_gsea", False)
+                    elif "download" in name:
                         is_enabled = modules.get("1_download", False)
                     elif "QC" in name:
                         is_enabled = modules.get("2_QC", False)
                     elif "ChIPseq" in name:
                         is_enabled = modules.get("3_ChIPseq", False)
-                    elif name.startswith("4_"):
-                        is_enabled = modules.get("4_analyse", False)
-                    elif "gsea" in name:
-                        is_enabled = modules.get("5_gsea", False)
 
                     if is_enabled and snakemake_active:
                         st.markdown(f"🔄 **{name}**")
