@@ -116,6 +116,7 @@ MARKERS = {
     "4_peakcalling": "4_analyse/peakcalling_finished.txt",
     "4_annotation": "4_analyse/annoChIPPeaks_finished.txt",
     "4_deeptools": "4_analyse/deeptools_finished.txt",
+    "5_gsea": "5_gsea/gsea_finished.txt",
 }
 
 for proj in projects:
@@ -145,6 +146,8 @@ for proj in projects:
                         is_enabled = modules.get("3_ChIPseq", False)
                     elif "peakcalling" in name or "annotation" in name or "deeptools" in name:
                         is_enabled = modules.get("4_analyse", False)
+                    elif "gsea" in name:
+                        is_enabled = modules.get("5_gsea", False)
 
                     if is_enabled and snakemake_active:
                         st.markdown(f"🔄 **{name}**")
@@ -208,6 +211,7 @@ for proj in projects:
             "4_peakcalling": "4_analyse/peakcalling",
             "4_annotation": "4_analyse/annoChIPPeaks",
             "4_deeptools": "4_analyse/deeptools",
+            "5_gsea": "5_gsea",
         }
         
         # 检测未完成的模块
@@ -295,6 +299,7 @@ for proj in projects:
             "4_peakcalling": "4_analyse/peakcalling",
             "4_annotation": "4_analyse/annoChIPPeaks",
             "4_deeptools": "4_analyse/deeptools",
+            "5_gsea": "5_gsea",
         }.get(name)
         if module_dir:
             marker_exists = check_marker(species, experiment, marker)
