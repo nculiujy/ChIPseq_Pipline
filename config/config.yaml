@@ -27,6 +27,19 @@ deeptools:
   bed_source: union_peaks
   custom_bed_files: {}
   gtf_files: {}
+gsea:
+  run_go: true
+  run_kegg: true
+  go_types:
+    - BP
+    - MF
+    - CC
+  pvalue_cutoff: 0.05
+  qvalue_cutoff: 0.2
+  min_gs_size: 10
+  max_gs_size: 500
+  top_n: 20
+  promoter_only: false
 projects:
 - species: TAIR
   experiment: C-ChIRP
@@ -39,6 +52,7 @@ projects:
     2_QC: false
     3_ChIPseq: false
     4_analyse: false
+    5_gsea: false
 - species: TAIR
   experiment: 314Com5
   rawdata_dir: workflow/resources/TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427
@@ -50,6 +64,7 @@ projects:
     2_QC: false
     3_ChIPseq: true
     4_analyse: true
+    5_gsea: false
 - species: TAIR
   experiment: 314OE
   rawdata_dir: workflow/resources/TAIR10/314OE CUT tag-seq 20260427/cleandata
@@ -61,3 +76,4 @@ projects:
     2_QC: false
     3_ChIPseq: false
     4_analyse: false
+    5_gsea: false

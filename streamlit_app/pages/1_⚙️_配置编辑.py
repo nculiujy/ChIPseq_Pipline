@@ -110,7 +110,7 @@ def get_gff_files(species, bowtie2_folder):
 # ============================================================
 # Tab 布局
 # ============================================================
-tab1, tab2, tab3 = st.tabs(["🔧 全局参数", "🧬 项目管理", "📋 样本配对表"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔧 全局参数", "🧬 项目管理", "📋 样本配对表", "🔬 GSEA 参数"])
 
 # ============================================================
 # Tab 1: 全局参数
@@ -197,11 +197,62 @@ with tab1:
             ["macs2_peaks", "union_peaks", "custom", "genes"],
             index=["macs2_peaks", "union_peaks", "custom", "genes"].index(dt.get("bed_source", "union_peaks")),
         )
+
+        # ---- 热图配色选择（含软色调分组 + 色带预览）----
+        COLOR_MAP_GROUPS = {
+            "🔵 经典对比": {
+                "RdYlBu_r":   ["#313695","#4575b4","#74add1","#abd9e9","#ffffbf","#fdae61","#f46d43","#d73027"],
+                "coolwarm":   ["#3b4cc0","#6f92f3","#b8d0f9","#f7f7f7","#f5c4ac","#e0735a","#b40426"],
+                "RdBu_r":     ["#053061","#2166ac","#92c5de","#f7f7f7","#f4a582","#d6604d","#67001f"],
+            },
+            "🌈 渐变单色": {
+                "viridis":    ["#440154","#414487","#2a788e","#22a884","#7ad151","#fde725"],
+                "plasma":     ["#0d0887","#7e03a8","#cc4778","#f89441","#f0f921"],
+                "magma":      ["#000004","#3b0f70","#8c2981","#de4968","#fea16e","#fcfdbf"],
+                "inferno":    ["#000004","#420a68","#932667","#dd513a","#fca50a","#fcffa4"],
+                "Blues":      ["#f7fbff","#c6dbef","#6baed6","#2171b5","#08306b"],
+                "Greens":     ["#f7fcf5","#c7e9c0","#74c476","#238b45","#00441b"],
+                "Reds":       ["#fff5f0","#fcbba1","#fb6a4a","#cb181d","#67000d"],
+            },
+            "🌸 软色调": {
+                "PuBuGn":     ["#fff7fb","#ece2f0","#a6bddb","#67a9cf","#1c9099","#016c59"],
+                "YlOrBr":     ["#ffffe5","#fff7bc","#fec44f","#d95f0e","#662506"],
+                "PiYG":       ["#8e0152","#de77ae","#f7f7f7","#b8e186","#4d9221"],
+                "BrBG":       ["#543005","#bf812d","#f5f5f5","#80cdc1","#003c30"],
+                "PRGn":       ["#40004b","#9970ab","#f7f7f7","#5aae61","#00441b"],
+                "RdYlGn":     ["#a50026","#f46d43","#fee08b","#d9ef8b","#1a9850","#006837"],
+                "Pastel1":    ["#fbb4ae","#b3cde3","#ccebc5","#decbe4","#fed9a6","#ffffcc"],
+            },
+        }
+        ALL_COLOR_MAPS = {k: v for grp in COLOR_MAP_GROUPS.values() for k, v in grp.items()}
+
+        current_cmap = dt.get("plot", {}).get("color_map", "RdYlBu_r")
+        cmap_names = list(ALL_COLOR_MAPS.keys())
+        cmap_idx = cmap_names.index(current_cmap) if current_cmap in cmap_names else 0
+
         color_map = st.selectbox(
             "热图配色",
-            ["RdYlBu_r", "viridis", "plasma", "inferno", "magma", "coolwarm", "Blues", "Reds"],
-            index=0,
+            cmap_names,
+            index=cmap_idx,
+            format_func=lambda x: (
+                "🌸 " + x if x in COLOR_MAP_GROUPS.get("🌸 软色调", {}) else
+                "🌈 " + x if x in COLOR_MAP_GROUPS.get("🌈 渐变单色", {}) else
+                "🔵 " + x
+            ),
+            help="软色调配色适合发表级图片，对比度柔和；经典对比色适合强调信号差异",
         )
+        # 色带预览
+        if color_map in ALL_COLOR_MAPS:
+            stops = ALL_COLOR_MAPS[color_map]
+            gradient = ", ".join(stops)
+            st.markdown(
+                f'<div style="height:18px;border-radius:4px;margin-top:4px;'
+                f'background:linear-gradient(to right,{gradient});'
+                f'border:1px solid #ddd"></div>'
+                f'<div style="font-size:11px;color:#888;margin-top:2px">'
+                f'{color_map} — {len(stops)} 色节点</div>',
+                unsafe_allow_html=True,
+            )
 
     # BED/GFF 文件选择（当 bed_source 为 custom 或 genes 时）
     if bed_source in ("custom", "genes"):
@@ -407,6 +458,7 @@ with tab2:
                 m2 = st.checkbox("2_QC", value=modules.get("2_QC", False), key=f"m2_{i}")
                 m3 = st.checkbox("3_ChIPseq", value=modules.get("3_ChIPseq", False), key=f"m3_{i}")
                 m4 = st.checkbox("4_analyse", value=modules.get("4_analyse", False), key=f"m4_{i}")
+                m5 = st.checkbox("5_gsea（需先完成4_analyse）", value=modules.get("5_gsea", False), key=f"m5_{i}")
 
             if st.button(f"保存项目 {proj['species']}/{proj['experiment']}", key=f"save_proj_{i}"):
                 projects[i]["species"] = selected_species
@@ -420,6 +472,7 @@ with tab2:
                     "2_QC": m2,
                     "3_ChIPseq": m3,
                     "4_analyse": m4,
+                    "5_gsea": m5,
                 }
                 config["projects"] = projects
                 save_config(config)
@@ -477,6 +530,7 @@ with tab2:
                     "2_QC": False,
                     "3_ChIPseq": False,
                     "4_analyse": False,
+                    "5_gsea": False,
                 },
             }
             config["projects"].append(new_proj)
@@ -509,3 +563,114 @@ with tab3:
             pd.DataFrame({"IP sample": [], "Input": []}).to_csv(METADATA_PATH, index=False)
             st.success("已创建空模板")
             st.rerun()
+
+# ============================================================
+# Tab 4: GSEA 参数
+# ============================================================
+with tab4:
+    config = load_config()
+    gsea = config.get("gsea", {})
+
+    st.subheader("🔬 模块5：GSEA 富集分析全局参数")
+    st.caption("这些参数对所有开启了 5_gsea 模块的项目生效")
+
+    st.markdown("#### 分析内容开关")
+    col1, col2 = st.columns(2)
+    with col1:
+        run_go   = st.checkbox("运行 GO 富集分析",   value=gsea.get("run_go",   True))
+        run_kegg = st.checkbox("运行 KEGG 通路分析", value=gsea.get("run_kegg", True))
+        promoter_only = st.checkbox(
+            "仅使用 Promoter 区域的基因",
+            value=gsea.get("promoter_only", False),
+            help="勾选后只取 annotation 中 Promoter 类别的 gene_id 进行富集分析",
+        )
+    with col2:
+        st.info(
+            "**数据来源：**\n"
+            "自动扫描 `result/{species}/{experiment}/4_analyse/peakcalling/` "
+            "下所有 `*_peak_anno.csv`，整合 gene_id 后去重，再进行富集分析。"
+        )
+
+    st.markdown("---")
+    st.markdown("#### GO 分析参数")
+    if run_go:
+        current_go_types = gsea.get("go_types", ["BP", "MF", "CC"])
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            go_bp = st.checkbox("BP（生物学过程）", value="BP" in current_go_types)
+        with col2:
+            go_mf = st.checkbox("MF（分子功能）",   value="MF" in current_go_types)
+        with col3:
+            go_cc = st.checkbox("CC（细胞组分）",   value="CC" in current_go_types)
+        go_types_selected = [t for t, v in [("BP", go_bp), ("MF", go_mf), ("CC", go_cc)] if v]
+        if not go_types_selected:
+            st.warning("⚠️ 请至少选择一种 GO 类型")
+    else:
+        go_types_selected = gsea.get("go_types", ["BP", "MF", "CC"])
+        st.caption("GO 分析已关闭")
+
+    st.markdown("---")
+    st.markdown("#### 显著性阈值")
+    col1, col2 = st.columns(2)
+    with col1:
+        pvalue_cutoff = st.number_input(
+            "p-value 阈值",
+            min_value=0.001, max_value=1.0,
+            value=float(gsea.get("pvalue_cutoff", 0.05)),
+            step=0.01, format="%.3f",
+            help="富集分析的 p-value 截断值（BH 多重校正前）",
+        )
+    with col2:
+        qvalue_cutoff = st.number_input(
+            "q-value 阈值（BH 校正后）",
+            min_value=0.01, max_value=1.0,
+            value=float(gsea.get("qvalue_cutoff", 0.2)),
+            step=0.05, format="%.2f",
+            help="BH 校正后的 FDR 阈值，通常设为 0.2",
+        )
+
+    st.markdown("---")
+    st.markdown("#### 基因集过滤")
+    col1, col2 = st.columns(2)
+    with col1:
+        min_gs_size = st.number_input(
+            "最小基因集大小",
+            min_value=1, max_value=100,
+            value=int(gsea.get("min_gs_size", 10)),
+            help="富集通路/GO条目至少包含的基因数",
+        )
+    with col2:
+        max_gs_size = st.number_input(
+            "最大基因集大小",
+            min_value=50, max_value=5000,
+            value=int(gsea.get("max_gs_size", 500)),
+            help="富集通路/GO条目最多包含的基因数（过大的条目通常不够具体）",
+        )
+
+    top_n = st.slider(
+        "图表展示 Top N 条目",
+        min_value=5, max_value=50,
+        value=int(gsea.get("top_n", 20)),
+        help="柱状图和点图各展示最显著的前 N 个富集条目",
+    )
+
+    st.markdown("---")
+    if st.button("💾 保存 GSEA 参数", type="primary", key="save_gsea"):
+        config["gsea"] = {
+            "run_go":         run_go,
+            "run_kegg":       run_kegg,
+            "go_types":       go_types_selected,
+            "pvalue_cutoff":  float(pvalue_cutoff),
+            "qvalue_cutoff":  float(qvalue_cutoff),
+            "min_gs_size":    int(min_gs_size),
+            "max_gs_size":    int(max_gs_size),
+            "top_n":          int(top_n),
+            "promoter_only":  promoter_only,
+        }
+        save_config(config)
+        st.success("✅ GSEA 参数已保存到 config/config.yaml！")
+        st.caption(
+            f"GO 类型: {', '.join(go_types_selected)} | "
+            f"p < {pvalue_cutoff} | q < {qvalue_cutoff} | "
+            f"基因集大小: {min_gs_size}–{max_gs_size} | Top {top_n}"
+        )
