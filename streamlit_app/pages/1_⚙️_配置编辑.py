@@ -721,46 +721,35 @@ with tab4:
     config = load_config()
     gsea = config.get("gsea", {})
 
-    st.subheader("🔬 模块5：GSEA 富集分析全局参数")
+    st.subheader("🔬 模块5：GSEA 富集分析参数")
 
-    # ---- 数据来源：基于已激活项目的样本选择 ----
-    st.markdown("#### 数据来源")
-    projects = config.get("projects", [])
-    # 筛选出模块开关中 5_gsea 已开启的项目（即"已激活"项目）
-    active_projects = [
-        p for p in projects
-        if p.get("modules", {}).get("5_gsea", False)
-    ]
+    # ---- 数据来源说明 ----
+    st.markdown("#### 分析逻辑")
+    st.info(
+        "**基于重复组 Consensus Peaks 的富集分析：**\n\n"
+        "1. 读取 metadata.csv 中的 **group** 列，识别各重复组\n"
+        "2. 每个 group 的 consensus peaks（模块4生成）进行 ChIPseeker 注释\n"
+        "3. 提取注释到的基因列表，做 GO 和 KEGG 富集分析\n"
+        "4. 每个 group 独立输出富集结果（柱状图 + 点图 + CSV）\n\n"
+        "⚠️ 需要先运行模块4（含 consensus peaks 步骤）才能执行 GSEA"
+    )
 
-    if active_projects:
-        st.success(f"当前已激活 GSEA 的项目共 {len(active_projects)} 个")
-        # 列出激活的项目供选择
-        proj_labels = [f"{p['species']}/{p['experiment']}" for p in active_projects]
-        selected_proj_labels = st.multiselect(
-            "选择参与 GSEA 分析的项目",
-            proj_labels,
-            default=proj_labels,
-            help="从已激活 5_gsea 的项目中选择要纳入分析的项目",
-        )
-        # 进一步显示各项目下的样本对
-        for label in selected_proj_labels:
-            sp, exp = label.split("/", 1)
-            anno_dir = os.path.join(BASE_DIR, "result", sp, exp, "4_analyse", "peakcalling")
-            if os.path.isdir(anno_dir):
-                # 扫描可用的 annotation 结果
-                anno_csvs = glob.glob(os.path.join(anno_dir, "*", "*_peak_anno.csv"))
-                sample_pairs = sorted(set(
-                    os.path.basename(os.path.dirname(f)) for f in anno_csvs
-                ))
-                if sample_pairs:
-                    st.caption(f"📁 `{label}` 下可用样本对: {', '.join(sample_pairs)}")
-                else:
-                    st.caption(f"📁 `{label}` 下暂无 annotation 结果（需先运行模块4）")
+    # 显示当前 metadata 中的重复组
+    if os.path.exists(METADATA_PATH):
+        meta_df = load_metadata()
+        if "group" in meta_df.columns:
+            groups_series = meta_df["group"].dropna().replace("", pd.NA).dropna()
+            if len(groups_series) > 0:
+                group_counts = groups_series.value_counts()
+                st.markdown("**当前重复组（将各自独立做 GSEA）：**")
+                for grp, cnt in group_counts.items():
+                    st.caption(f"  • `{grp}`: {cnt} 个样本对 → consensus peaks → 注释基因 → 富集分析")
             else:
-                st.caption(f"📁 `{label}` 结果目录尚不存在")
+                st.warning("⚠️ metadata.csv 中未设置 group 列，请在「样本配对表」中配置重复组")
+        else:
+            st.warning("⚠️ metadata.csv 中缺少 group 列，请在「样本配对表」中添加")
     else:
-        st.warning("⚠️ 当前无项目激活了 5_gsea 模块。请在「项目管理」中开启。")
-        selected_proj_labels = []
+        st.warning("⚠️ 未找到 metadata.csv")
 
     st.markdown("---")
     st.markdown("#### 分析内容开关")
