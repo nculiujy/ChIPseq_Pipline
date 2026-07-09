@@ -458,7 +458,7 @@ with tab2:
                 m2 = st.checkbox("2_QC", value=modules.get("2_QC", False), key=f"m2_{i}")
                 m3 = st.checkbox("3_ChIPseq", value=modules.get("3_ChIPseq", False), key=f"m3_{i}")
                 m4 = st.checkbox("4_analyse", value=modules.get("4_analyse", False), key=f"m4_{i}")
-                m5 = st.checkbox("5_gsea（需先完成4_analyse）", value=modules.get("5_gsea", False), key=f"m5_{i}")
+                m5 = st.checkbox("5_gsea", value=modules.get("5_gsea", False), key=f"m5_{i}")
 
             if st.button(f"保存项目 {proj['species']}/{proj['experiment']}", key=f"save_proj_{i}"):
                 projects[i]["species"] = selected_species
@@ -572,8 +572,47 @@ with tab4:
     gsea = config.get("gsea", {})
 
     st.subheader("🔬 模块5：GSEA 富集分析全局参数")
-    st.caption("这些参数对所有开启了 5_gsea 模块的项目生效")
 
+    # ---- 数据来源：基于已激活项目的样本选择 ----
+    st.markdown("#### 数据来源")
+    projects = config.get("projects", [])
+    # 筛选出模块开关中 5_gsea 已开启的项目（即"已激活"项目）
+    active_projects = [
+        p for p in projects
+        if p.get("modules", {}).get("5_gsea", False)
+    ]
+
+    if active_projects:
+        st.success(f"当前已激活 GSEA 的项目共 {len(active_projects)} 个")
+        # 列出激活的项目供选择
+        proj_labels = [f"{p['species']}/{p['experiment']}" for p in active_projects]
+        selected_proj_labels = st.multiselect(
+            "选择参与 GSEA 分析的项目",
+            proj_labels,
+            default=proj_labels,
+            help="从已激活 5_gsea 的项目中选择要纳入分析的项目",
+        )
+        # 进一步显示各项目下的样本对
+        for label in selected_proj_labels:
+            sp, exp = label.split("/", 1)
+            anno_dir = os.path.join(BASE_DIR, "result", sp, exp, "4_analyse", "peakcalling")
+            if os.path.isdir(anno_dir):
+                # 扫描可用的 annotation 结果
+                anno_csvs = glob.glob(os.path.join(anno_dir, "*", "*_peak_anno.csv"))
+                sample_pairs = sorted(set(
+                    os.path.basename(os.path.dirname(f)) for f in anno_csvs
+                ))
+                if sample_pairs:
+                    st.caption(f"📁 `{label}` 下可用样本对: {', '.join(sample_pairs)}")
+                else:
+                    st.caption(f"📁 `{label}` 下暂无 annotation 结果（需先运行模块4）")
+            else:
+                st.caption(f"📁 `{label}` 结果目录尚不存在")
+    else:
+        st.warning("⚠️ 当前无项目激活了 5_gsea 模块。请在「项目管理」中开启。")
+        selected_proj_labels = []
+
+    st.markdown("---")
     st.markdown("#### 分析内容开关")
     col1, col2 = st.columns(2)
     with col1:
@@ -583,12 +622,6 @@ with tab4:
             "仅使用 Promoter 区域的基因",
             value=gsea.get("promoter_only", False),
             help="勾选后只取 annotation 中 Promoter 类别的 gene_id 进行富集分析",
-        )
-    with col2:
-        st.info(
-            "**数据来源：**\n"
-            "自动扫描 `result/{species}/{experiment}/4_analyse/peakcalling/` "
-            "下所有 `*_peak_anno.csv`，整合 gene_id 后去重，再进行富集分析。"
         )
 
     st.markdown("---")
