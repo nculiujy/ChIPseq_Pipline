@@ -629,7 +629,11 @@ with tab3:
             "deeptools 会将这些 group 的 IP bigwig 放在一起做 computeMatrix + plotHeatmap。"
         )
 
-        comparisons_cfg = config_for_tab3.get("deeptools", {}).get("comparisons", [])
+        # 使用 session_state 管理 comparisons 列表（跨 rerun 持久化）
+        if "comparisons_list" not in st.session_state:
+            st.session_state.comparisons_list = copy.deepcopy(
+                config_for_tab3.get("deeptools", {}).get("comparisons", [])
+            )
 
         # 获取当前 metadata 中的 group 列表
         available_groups = []
@@ -643,21 +647,29 @@ with tab3:
         else:
             st.caption(f"可用 group: {', '.join(f'`{g}`' for g in available_groups)}")
 
-            # 显示现有比较
-            st.markdown("**现有比较项：**")
-            comparisons_to_keep = []
-            for idx, comp in enumerate(comparisons_cfg):
-                comp_name = comp.get("name", f"comparison_{idx+1}")
-                comp_groups = comp.get("groups", [])
-                col1, col2, col3 = st.columns([2, 5, 1])
-                with col1:
-                    st.text(f"📊 {comp_name}")
-                with col2:
-                    st.caption(f"groups: {' vs '.join(comp_groups)}")
-                with col3:
-                    if st.button("🗑️", key=f"del_comp_{idx}"):
-                        continue  # skip this one (don't add to keep list)
-                comparisons_to_keep.append(comp)
+            # 显示现有比较项
+            if st.session_state.comparisons_list:
+                st.markdown("**现有比较项：**")
+                to_delete = None
+                for idx, comp in enumerate(st.session_state.comparisons_list):
+                    comp_name = comp.get("name", f"comparison_{idx+1}")
+                    comp_groups = comp.get("groups", [])
+                    col1, col2, col3 = st.columns([2, 5, 1])
+                    with col1:
+                        st.text(f"📊 {comp_name}")
+                    with col2:
+                        st.caption(f"groups: {' vs '.join(comp_groups)}")
+                    with col3:
+                        if st.button("🗑️", key=f"del_comp_{idx}"):
+                            to_delete = idx
+
+                # 执行删除（在循环外操作以避免 rerun 问题）
+                if to_delete is not None:
+                    removed = st.session_state.comparisons_list.pop(to_delete)
+                    st.success(f"✅ 已删除比较: {removed.get('name', '')}")
+                    st.rerun()
+            else:
+                st.caption("📌 当前无比较项，请在下方添加")
 
             # 添加新比较
             st.markdown("**添加新比较：**")
@@ -678,15 +690,16 @@ with tab3:
 
             if st.button("➕ 添加比较", key="add_comparison"):
                 if new_comp_name and len(new_comp_groups) >= 2:
-                    comparisons_to_keep.append({
+                    st.session_state.comparisons_list.append({
                         "name": new_comp_name,
                         "groups": new_comp_groups,
                     })
                     st.success(f"✅ 已添加比较: {new_comp_name} ({' vs '.join(new_comp_groups)})")
-                elif len(new_comp_groups) < 2:
-                    st.error("❌ 请至少选择 2 个 group")
-                else:
+                    st.rerun()
+                elif not new_comp_name:
                     st.error("❌ 请输入比较名称")
+                else:
+                    st.error("❌ 请至少选择 2 个 group")
 
         # ---- 统一保存按钮 ----
         st.markdown("---")
@@ -700,10 +713,12 @@ with tab3:
                 "min_fraction": float(consensus_frac),
             }
 
-            # 3. 保存 comparisons 到 config.yaml
+            # 3. 保存 comparisons 到 config.yaml（从 session_state 读取）
             if "deeptools" not in config_for_tab3:
                 config_for_tab3["deeptools"] = {}
-            config_for_tab3["deeptools"]["comparisons"] = comparisons_to_keep if available_groups else []
+            config_for_tab3["deeptools"]["comparisons"] = (
+                st.session_state.get("comparisons_list", []) if available_groups else []
+            )
 
             save_config(config_for_tab3)
             st.success("✅ 样本配对表、Consensus 参数、Comparisons 已全部保存！")
