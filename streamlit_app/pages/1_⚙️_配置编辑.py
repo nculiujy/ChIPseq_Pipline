@@ -688,28 +688,25 @@ with tab3:
                 else:
                     st.error("❌ 请输入比较名称")
 
-        # ---- 保存按钮 ----
+        # ---- 统一保存按钮 ----
         st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("💾 保存样本配对表", type="primary", key="save_metadata"):
-                save_metadata(edited_df)
-                st.success("✅ 样本配对表已保存！")
-        with col2:
-            if st.button("💾 保存 Consensus 参数", key="save_consensus"):
-                config_for_tab3["consensus_peaks"] = {
-                    "min_overlap": int(consensus_min),
-                    "min_fraction": float(consensus_frac),
-                }
-                save_config(config_for_tab3)
-                st.success("✅ Consensus 参数已保存！")
-        with col3:
-            if st.button("💾 保存 Comparisons", key="save_comparisons"):
-                if "deeptools" not in config_for_tab3:
-                    config_for_tab3["deeptools"] = {}
-                config_for_tab3["deeptools"]["comparisons"] = comparisons_to_keep if available_groups else []
-                save_config(config_for_tab3)
-                st.success("✅ Comparisons 已保存！")
+        if st.button("💾 保存本页所有设置", type="primary", key="save_tab3_all"):
+            # 1. 保存 metadata.csv
+            save_metadata(edited_df)
+
+            # 2. 保存 consensus_peaks 参数到 config.yaml
+            config_for_tab3["consensus_peaks"] = {
+                "min_overlap": int(consensus_min),
+                "min_fraction": float(consensus_frac),
+            }
+
+            # 3. 保存 comparisons 到 config.yaml
+            if "deeptools" not in config_for_tab3:
+                config_for_tab3["deeptools"] = {}
+            config_for_tab3["deeptools"]["comparisons"] = comparisons_to_keep if available_groups else []
+
+            save_config(config_for_tab3)
+            st.success("✅ 样本配对表、Consensus 参数、Comparisons 已全部保存！")
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):

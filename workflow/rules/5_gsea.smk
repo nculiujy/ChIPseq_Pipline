@@ -2,7 +2,7 @@ import os
 
 # ============================================================
 # 模块5: GSEA 富集分析
-# 整合 annotation 结果中的 gene_id，进行 GO + KEGG 富集分析
+# 基于重复组（group）的 consensus peaks 注释基因进行 GO + KEGG 富集
 # ============================================================
 
 def get_gsea_params(config):
@@ -23,8 +23,10 @@ def get_gsea_params(config):
 
 rule gsea_analysis:
     """
-    整合所有样本对的 peak_anno.csv，提取去重 gene_id，
-    运行 GO（BP/MF/CC）和 KEGG 通路富集分析
+    基于重复组的 GSEA 富集分析：
+    1. 读取 metadata.csv 中的 group 列
+    2. 对每个 group，取组内所有样本对的注释基因交集
+    3. 对交集基因运行 GO + KEGG 富集分析
     """
     input:
         anno_finished = "result/{species}/{experiment}/4_analyse/annoChIPPeaks_finished.txt"
@@ -33,7 +35,7 @@ rule gsea_analysis:
     log:
         "logs/{species}/{experiment}/5_1_gsea.log"
     params:
-        indir      = lambda wc: os.path.join("result", wc.species, wc.experiment, "4_analyse", "peakcalling"),
+        indir      = lambda wc: os.path.join("result", wc.species, wc.experiment, "4_analyse", "annoChIPPeaks"),
         outdir     = lambda wc: os.path.join("result", wc.species, wc.experiment, "5_gsea"),
         species    = lambda wc: wc.species,
         experiment = lambda wc: wc.experiment,
@@ -43,6 +45,7 @@ rule gsea_analysis:
         Rscript workflow/scripts/5_1_gsea.R \
             --indir      {params.indir} \
             --outdir     {params.outdir} \
+            --metadata   config/metadata.csv \
             --config     config/config.yaml \
             --species    {params.species} \
             --experiment {params.experiment} \
