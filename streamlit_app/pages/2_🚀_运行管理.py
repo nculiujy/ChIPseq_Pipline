@@ -146,7 +146,7 @@ for proj in projects:
                         is_enabled = modules.get("2_QC", False)
                     elif "ChIPseq" in name:
                         is_enabled = modules.get("3_ChIPseq", False)
-                    elif "peakcalling" in name or "annotation" in name or "deeptools" in name:
+                    elif name.startswith("4_"):
                         is_enabled = modules.get("4_analyse", False)
                     elif "gsea" in name:
                         is_enabled = modules.get("5_gsea", False)
