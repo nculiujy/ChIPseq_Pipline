@@ -29,6 +29,22 @@ deeptools:
   bed_source: union_peaks
   custom_bed_files: {}
   gtf_files: {}
+  # comparisons 定义组间比较关系
+  # 每个 comparison 是一个命名的对比任务，包含要比较的 groups 列表
+  # deeptools 会将这些 group 的 IP bigwig 放在一起做 computeMatrix + plotHeatmap
+  comparisons:
+  - name: WT_vs_OE
+    groups:
+    - rep_INPUT2
+    - rep_INPUT3
+    - rep_INPUT4
+    bed_source: consensus_peaks
+  # 也可以做重复间 QC（单个 group 内部比较一致性）
+  replicate_qc:
+    enabled: true
+    plot_correlation: true
+    plot_pca: true
+    correlation_method: spearman
 gsea:
   run_go: true
   run_kegg: true
@@ -79,3 +95,6 @@ projects:
     3_ChIPseq: false
     4_analyse: false
     5_gsea: false
+consensus_peaks:
+  min_overlap: 2
+  min_fraction: 0.5

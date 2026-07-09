@@ -1,8 +1,22 @@
+"""
+DeepTools 分析脚本 - 基于 comparisons 配置的组间比较
+
+设计逻辑:
+1. 每个 IP 样本生成一个 bigwig 文件（bamCoverage）
+2. 根据 comparisons 配置，将指定 groups 的 IP bigwig 放在一起做:
+   - computeMatrix (reference-point 或 scale-regions)
+   - plotHeatmap + plotProfile
+3. replicate_qc: 对每个 group 内部做 multiBigwigSummary + plotCorrelation + plotPCA
+"""
+
 import os
 import sys
 import argparse
 import subprocess
 import yaml
+import pandas as pd
+from collections import defaultdict
+
 
 def run_cmd(cmd):
     print(f"[RUNNING] {cmd}")
@@ -12,254 +26,422 @@ def run_cmd(cmd):
         print(f"[ERROR] Command failed with exit code {e.returncode}")
         sys.exit(1)
 
+
+def parse_metadata(metadata_file):
+    """
+    解析 metadata.csv，返回:
+    - pairs: list of dict {treat, control, group}
+    - group_map: dict {group_name: [list of IP sample names]}
+    """
+    df = pd.read_csv(metadata_file)
+    pairs = []
+    group_map = defaultdict(list)
+
+    for _, row in df.iterrows():
+        treat = str(row.get("IP sample", "")).strip()
+        control = str(row.get("Input", "")).strip()
+        group = str(row.get("group", "")).strip()
+
+        if not treat or not control or treat == "nan" or control == "nan":
+            continue
+
+        pair = {"treat": treat, "control": control, "group": group if group and group != "nan" else ""}
+        pairs.append(pair)
+
+        if pair["group"]:
+            if treat not in group_map[pair["group"]]:
+                group_map[pair["group"]].append(treat)
+
+    return pairs, dict(group_map)
+
+
+def generate_bigwigs(pairs, bamdir, outdir, threads, norm):
+    """为所有 IP 样本生成 bigwig 文件（跳过已存在的）"""
+    bw_map = {}  # sample_name -> bigwig_path
+    norm_arg = f"--normalizeUsing {norm}" if norm != "none" else ""
+
+    # 收集所有唯一的 IP 样本
+    all_ip_samples = list(set(p["treat"] for p in pairs))
+
+    for sample in all_ip_samples:
+        bam_path = os.path.join(bamdir, sample, "accepted_hits.sorted.unique.bam")
+        bw_path = os.path.join(outdir, "bigwig", f"{sample}.bw")
+
+        if not os.path.exists(bam_path):
+            print(f"[WARNING] BAM not found for {sample}: {bam_path}")
+            continue
+
+        os.makedirs(os.path.dirname(bw_path), exist_ok=True)
+
+        if not os.path.exists(bw_path):
+            cmd = f"bamCoverage -b {bam_path} -o {bw_path} -p {threads} {norm_arg}"
+            run_cmd(cmd)
+        else:
+            print(f"[INFO] BigWig already exists: {bw_path}")
+
+        bw_map[sample] = bw_path
+
+    return bw_map
+
+
+def run_replicate_qc(group_map, bw_map, outdir, dt_config, threads):
+    """对每个 group 做重复间 QC (multiBigwigSummary + plotCorrelation + plotPCA)"""
+    qc_config = dt_config.get("replicate_qc", {})
+    if not qc_config.get("enabled", True):
+        print("[INFO] Replicate QC is disabled, skipping")
+        return
+
+    corr_method = qc_config.get("correlation_method", "spearman")
+    qc_dir = os.path.join(outdir, "replicate_qc")
+    os.makedirs(qc_dir, exist_ok=True)
+
+    for group_name, samples in group_map.items():
+        if len(samples) < 2:
+            print(f"[INFO] Group '{group_name}' has only {len(samples)} sample(s), skipping QC")
+            continue
+
+        # 过滤出有 bigwig 的样本
+        valid_bws = [bw_map[s] for s in samples if s in bw_map]
+        valid_samples = [s for s in samples if s in bw_map]
+
+        if len(valid_bws) < 2:
+            print(f"[WARNING] Group '{group_name}': not enough bigwig files for QC")
+            continue
+
+        group_dir = os.path.join(qc_dir, group_name)
+        os.makedirs(group_dir, exist_ok=True)
+
+        # multiBigwigSummary
+        summary_npz = os.path.join(group_dir, f"{group_name}_multiBigwigSummary.npz")
+        if not os.path.exists(summary_npz):
+            bw_args = " ".join(valid_bws)
+            labels = " ".join(valid_samples)
+            cmd = (
+                f"multiBigwigSummary bins "
+                f"-b {bw_args} "
+                f"--labels {labels} "
+                f"-p {threads} "
+                f"-o {summary_npz}"
+            )
+            run_cmd(cmd)
+
+        # plotCorrelation
+        if qc_config.get("plot_correlation", True):
+            corr_pdf = os.path.join(group_dir, f"{group_name}_correlation.pdf")
+            corr_tab = os.path.join(group_dir, f"{group_name}_correlation.tab")
+            if not os.path.exists(corr_pdf):
+                cmd = (
+                    f"plotCorrelation -in {summary_npz} "
+                    f"--corMethod {corr_method} "
+                    f"--whatToPlot heatmap "
+                    f"--skipZeros "
+                    f"--plotTitle '{group_name} Replicate Correlation ({corr_method})' "
+                    f"--plotFile {corr_pdf} "
+                    f"--outFileCorMatrix {corr_tab}"
+                )
+                run_cmd(cmd)
+
+        # plotPCA
+        if qc_config.get("plot_pca", True):
+            pca_pdf = os.path.join(group_dir, f"{group_name}_PCA.pdf")
+            if not os.path.exists(pca_pdf):
+                cmd = (
+                    f"plotPCA -in {summary_npz} "
+                    f"--plotTitle '{group_name} PCA' "
+                    f"--plotFile {pca_pdf}"
+                )
+                run_cmd(cmd)
+
+        print(f"[INFO] Replicate QC done for group '{group_name}' ({len(valid_samples)} samples)")
+
+
+def get_bed_for_comparison(comparison, peakdir, outdir, group_map, dt_config):
+    """
+    确定 comparison 使用的 BED 区域文件。
+    - consensus_peaks: 使用所有涉及 group 的 consensus peaks 合集
+    - union_peaks: 使用全局 union peaks
+    - 其他: 使用全局 bed_source 配置
+    """
+    comp_bed_source = comparison.get("bed_source", dt_config.get("bed_source", "union_peaks"))
+    groups = comparison.get("groups", [])
+
+    if comp_bed_source == "consensus_peaks":
+        # 合并涉及的 groups 的 consensus peaks
+        consensus_dir = os.path.join(peakdir, "..", "consensus_peaks")
+        consensus_beds = []
+        for grp in groups:
+            grp_bed = os.path.join(consensus_dir, f"{grp}_consensus.bed")
+            if os.path.exists(grp_bed):
+                consensus_beds.append(grp_bed)
+            else:
+                print(f"[WARNING] Consensus BED not found for group '{grp}': {grp_bed}")
+
+        if not consensus_beds:
+            print("[WARNING] No consensus BED files found, falling back to union_peaks")
+            return _get_union_bed(peakdir, outdir, group_map)
+
+        # 合并多个 consensus beds
+        comp_name = comparison.get("name", "comparison")
+        merged_bed = os.path.join(outdir, "comparisons", comp_name, "merged_consensus.bed")
+        os.makedirs(os.path.dirname(merged_bed), exist_ok=True)
+
+        if not os.path.exists(merged_bed):
+            cat_cmd = f"cat {' '.join(consensus_beds)} | sort -k1,1 -k2,2n | bedtools merge -i - > {merged_bed}"
+            run_cmd(cat_cmd)
+
+        return merged_bed
+
+    elif comp_bed_source == "union_peaks":
+        return _get_union_bed(peakdir, outdir, group_map)
+
+    else:
+        # 使用全局配置中的 bed_source
+        return _get_union_bed(peakdir, outdir, group_map)
+
+
+def _get_union_bed(peakdir, outdir, group_map):
+    """获取或创建 union peaks BED"""
+    union_bed = os.path.join(outdir, "union_peaks.bed")
+    if os.path.exists(union_bed):
+        return union_bed
+
+    # 收集所有 peak 文件
+    import glob
+    peak_files = glob.glob(os.path.join(peakdir, "*", "*_peaks_tab.bed"))
+    peak_files = [f for f in peak_files if os.path.getsize(f) > 0]
+
+    if not peak_files:
+        print("[ERROR] No peak files found for union_peaks")
+        return None
+
+    temp_concat = os.path.join(outdir, "temp_all_peaks.bed")
+    concat_cmd = f"cat {' '.join(peak_files)} | sort -k1,1 -k2,2n > {temp_concat}"
+    run_cmd(concat_cmd)
+
+    merge_cmd = f"bedtools merge -i {temp_concat} > {union_bed}"
+    run_cmd(merge_cmd)
+    os.remove(temp_concat)
+
+    return union_bed
+
+
+def run_comparisons(comparisons, group_map, bw_map, peakdir, outdir, dt_config, threads):
+    """执行 comparisons 中定义的每个组间比较"""
+    matrix_mode = dt_config.get("matrix_mode", "reference-point")
+    bin_size = dt_config.get("bin_size", 10)
+    missing_as_zero = dt_config.get("missing_data_as_zero", True)
+    plot_config = dt_config.get("plot", {})
+    color_map = plot_config.get("color_map", "RdYlBu_r")
+    z_min = plot_config.get("z_min", 0)
+    z_max = plot_config.get("z_max", "auto")
+    interpolation = plot_config.get("interpolation", "bilinear")
+
+    # 模式参数
+    if matrix_mode == "reference-point":
+        ref_config = dt_config.get("reference_point", {})
+        ref_point = ref_config.get("point", "center")
+        upstream = ref_config.get("upstream", 2000)
+        downstream = ref_config.get("downstream", 2000)
+    else:
+        scale_config = dt_config.get("scale_regions", {})
+        region_length = scale_config.get("region_length", 5000)
+        upstream = scale_config.get("upstream", 2000)
+        downstream = scale_config.get("downstream", 2000)
+        unscaled_5 = scale_config.get("unscaled_5prime", 0)
+        unscaled_3 = scale_config.get("unscaled_3prime", 0)
+
+    for comp in comparisons:
+        comp_name = comp.get("name", "unnamed")
+        comp_groups = comp.get("groups", [])
+
+        if not comp_groups:
+            print(f"[WARNING] Comparison '{comp_name}' has no groups defined, skipping")
+            continue
+
+        print(f"\n{'='*60}")
+        print(f"[COMPARISON] {comp_name}: {' vs '.join(comp_groups)}")
+        print(f"{'='*60}")
+
+        comp_dir = os.path.join(outdir, "comparisons", comp_name)
+        os.makedirs(comp_dir, exist_ok=True)
+
+        # 收集所有涉及 group 的 IP bigwig
+        all_bws = []
+        all_labels = []
+        group_labels = []  # 用于标记每个样本属于哪个 group
+
+        for grp in comp_groups:
+            if grp not in group_map:
+                print(f"[WARNING] Group '{grp}' not found in metadata, skipping")
+                continue
+            samples = group_map[grp]
+            for sample in samples:
+                if sample in bw_map:
+                    all_bws.append(bw_map[sample])
+                    all_labels.append(sample)
+                    group_labels.append(grp)
+
+        if len(all_bws) < 2:
+            print(f"[WARNING] Comparison '{comp_name}': not enough bigwig files ({len(all_bws)}), skipping")
+            continue
+
+        # 获取 BED 区域
+        bed_file = get_bed_for_comparison(comp, peakdir, outdir, group_map, dt_config)
+        if not bed_file or not os.path.exists(bed_file):
+            print(f"[WARNING] No BED file available for comparison '{comp_name}', skipping")
+            continue
+
+        # computeMatrix
+        matrix_gz = os.path.join(comp_dir, f"{comp_name}_matrix.gz")
+        missing_arg = "--missingDataAsZero" if missing_as_zero else ""
+        bw_args = " ".join(all_bws)
+        labels_arg = " ".join(all_labels)
+
+        if not os.path.exists(matrix_gz):
+            if matrix_mode == "reference-point":
+                cmd = (
+                    f"computeMatrix reference-point "
+                    f"-R {bed_file} "
+                    f"-S {bw_args} "
+                    f"--referencePoint {ref_point} "
+                    f"-b {upstream} -a {downstream} "
+                    f"--binSize {bin_size} "
+                    f"-p {threads} "
+                    f"{missing_arg} "
+                    f"--samplesLabel {labels_arg} "
+                    f"-o {matrix_gz}"
+                )
+            else:
+                cmd = (
+                    f"computeMatrix scale-regions "
+                    f"-R {bed_file} "
+                    f"-S {bw_args} "
+                    f"-m {region_length} "
+                    f"-b {upstream} -a {downstream} "
+                    f"--binSize {bin_size} "
+                    f"-p {threads} "
+                    f"{missing_arg} "
+                    f"--samplesLabel {labels_arg} "
+                )
+                if unscaled_5 > 0:
+                    cmd += f" --unscaled5prime {unscaled_5}"
+                if unscaled_3 > 0:
+                    cmd += f" --unscaled3prime {unscaled_3}"
+                cmd += f" -o {matrix_gz}"
+
+            run_cmd(cmd)
+
+        # plotHeatmap
+        heatmap_pdf = os.path.join(comp_dir, f"{comp_name}_heatmap.pdf")
+        z_min_arg = f"--zMin {z_min}" if z_min != "auto" else ""
+        z_max_arg = f"--zMax {z_max}" if z_max != "auto" else ""
+
+        if not os.path.exists(heatmap_pdf):
+            cmd = (
+                f"plotHeatmap -m {matrix_gz} "
+                f"-out {heatmap_pdf} "
+                f"--colorMap {color_map} "
+                f"{z_min_arg} {z_max_arg} "
+                f"--interpolation {interpolation} "
+                f"--plotTitle '{comp_name}' "
+                f"--samplesLabel {labels_arg}"
+            )
+            run_cmd(cmd)
+
+        # plotProfile
+        profile_pdf = os.path.join(comp_dir, f"{comp_name}_profile.pdf")
+        if not os.path.exists(profile_pdf):
+            cmd = (
+                f"plotProfile -m {matrix_gz} "
+                f"-out {profile_pdf} "
+                f"--plotTitle '{comp_name} Profile' "
+                f"--samplesLabel {labels_arg} "
+                f"--perGroup"
+            )
+            run_cmd(cmd)
+
+        print(f"[INFO] Comparison '{comp_name}' done: {len(all_bws)} bigwigs, BED={bed_file}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Run deeptools (bamCoverage, computeMatrix, plotProfile/plotHeatmap) based on MACS2 peaks.")
+    parser = argparse.ArgumentParser(
+        description="DeepTools analysis based on comparisons config (group-vs-group)"
+    )
     parser.add_argument("--metadata", required=True, help="Path to metadata.csv")
-    parser.add_argument("--bamdir", required=True, help="Directory containing sample bam files (e.g. result/3_ChIPseq)")
-    parser.add_argument("--peakdir", required=True, help="Directory containing peak calling results (e.g. result/4_analyse/peakcalling)")
-    parser.add_argument("--outdir", required=True, help="Directory to save deeptools output")
+    parser.add_argument("--bamdir", required=True, help="Directory containing sample BAM dirs")
+    parser.add_argument("--peakdir", required=True, help="Directory containing peak calling results")
+    parser.add_argument("--outdir", required=True, help="Output directory for deeptools results")
     parser.add_argument("--config", required=True, help="Path to config.yaml")
     parser.add_argument("--species", required=True, help="Species name")
     parser.add_argument("--experiment", required=True, help="Experiment name")
-    parser.add_argument("--threads", type=int, default=8, help="Number of threads")
-    parser.add_argument("--norm", default="BPM", choices=["BPM", "RPKM", "CPM", "none"], help="Normalization method for bamCoverage")
+    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--norm", default="BPM", choices=["BPM", "RPKM", "CPM", "RPGC", "none"])
 
     args = parser.parse_args()
-    
-    # 读取配置文件
-    with open(args.config, 'r') as f:
+
+    # 读取配置
+    with open(args.config, "r") as f:
         config = yaml.safe_load(f)
-    
-    # 获取deeptools配置
-    dt_config = config.get('deeptools', {})
-    matrix_mode = dt_config.get('matrix_mode', 'reference-point')
-    bin_size = dt_config.get('bin_size', 10)
-    missing_as_zero = dt_config.get('missing_data_as_zero', True)
-    bed_source = dt_config.get('bed_source', 'macs2_peaks')
-    
-    # 获取plot配置
-    plot_config = dt_config.get('plot', {})
-    color_map = plot_config.get('color_map', 'RdYlBu_r')
-    z_min = plot_config.get('z_min', 0)
-    z_max = plot_config.get('z_max', 'auto')
-    interpolation = plot_config.get('interpolation', 'bilinear')
-    
-    # 获取模式特定参数
-    if matrix_mode == "reference-point":
-        ref_config = dt_config.get('reference_point', {})
-        ref_point = ref_config.get('point', 'center')
-        upstream = ref_config.get('upstream', 2000)
-        downstream = ref_config.get('downstream', 2000)
-        print(f"[INFO] Using reference-point mode: point={ref_point}, upstream={upstream}, downstream={downstream}")
-    else:  # scale-regions
-        scale_config = dt_config.get('scale_regions', {})
-        region_length = scale_config.get('region_length', 5000)
-        upstream = scale_config.get('upstream', 2000)
-        downstream = scale_config.get('downstream', 2000)
-        unscaled_5 = scale_config.get('unscaled_5prime', 0)
-        unscaled_3 = scale_config.get('unscaled_3prime', 0)
-        print(f"[INFO] Using scale-regions mode: length={region_length}, upstream={upstream}, downstream={downstream}")
+
+    dt_config = config.get("deeptools", {})
+
+    # 解析 metadata
+    pairs, group_map = parse_metadata(args.metadata)
+
+    if not pairs:
+        print("[ERROR] No valid sample pairs in metadata")
+        sys.exit(1)
+
+    print(f"[INFO] Parsed {len(pairs)} sample pairs, {len(group_map)} groups")
+    for grp, samples in group_map.items():
+        print(f"  Group '{grp}': {', '.join(samples)}")
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    # 1. Parse metadata to get sample pairs (支持 2列或3列格式)
-    pairs = []
-    with open(args.metadata, "r") as f:
-        header = f.readline()
-        for line in f:
-            if line.strip():
-                fields = [x.strip() for x in line.strip().split(",")]
-                treat = fields[0]
-                control = fields[1] if len(fields) > 1 else ""
-                group = fields[2] if len(fields) > 2 else ""
-                pairs.append({"treat": treat, "control": control, "group": group})
-    
-    # 如果使用 union_peaks，需要先合并所有样本的peaks
-    union_bed = None
-    if bed_source == "union_peaks":
-        union_bed = os.path.join(args.outdir, "union_peaks.bed")
-        if not os.path.exists(union_bed):
-            print(f"[INFO] Creating union peaks from all sample pairs...")
-            all_peak_files = []
-            for pair in pairs:
-                pair_name = f"{pair['treat']}_vs_{pair['control']}"
-                peak_file = os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks_tab.bed")
-                if os.path.exists(peak_file) and os.path.getsize(peak_file) > 0:
-                    all_peak_files.append(peak_file)
-            
-            if not all_peak_files:
-                print(f"[ERROR] No valid peak files found for union_peaks")
-                sys.exit(1)
-            
-            # 合并所有peaks并去重、排序
-            # 使用bedtools merge需要先sort，这里用简单的cat + sort + bedtools merge
-            temp_concat = os.path.join(args.outdir, "temp_all_peaks.bed")
-            concat_cmd = f"cat {' '.join(all_peak_files)} | sort -k1,1 -k2,2n > {temp_concat}"
-            run_cmd(concat_cmd)
-            
-            # 使用bedtools merge合并重叠区域
-            merge_cmd = f"bedtools merge -i {temp_concat} > {union_bed}"
-            run_cmd(merge_cmd)
-            
-            # 清理临时文件
-            os.remove(temp_concat)
-            
-            # 统计信息
-            with open(union_bed) as f:
-                num_regions = sum(1 for _ in f)
-            print(f"[INFO] Union peaks created: {num_regions} regions in {union_bed}")
-        else:
-            print(f"[INFO] Using existing union peaks: {union_bed}")
+    # Step 1: 生成所有 IP 样本的 bigwig
+    print("\n" + "=" * 60)
+    print("[STEP 1] Generating BigWig files for all IP samples")
+    print("=" * 60)
+    bw_map = generate_bigwigs(pairs, args.bamdir, args.outdir, args.threads, args.norm)
+    print(f"[INFO] Generated/found {len(bw_map)} bigwig files")
 
-    # 2. Process each pair
-    for pair in pairs:
-        treat = pair["treat"]
-        control = pair["control"]
-        pair_name = f"{treat}_vs_{control}"
-        print(f"\n========== Processing {pair_name} ==========")
+    # Step 2: 重复间 QC
+    if group_map:
+        print("\n" + "=" * 60)
+        print("[STEP 2] Replicate QC (within-group correlation)")
+        print("=" * 60)
+        run_replicate_qc(group_map, bw_map, args.outdir, dt_config, args.threads)
+    else:
+        print("\n[INFO] No groups defined, skipping replicate QC")
 
-        pair_outdir = os.path.join(args.outdir, pair_name)
-        os.makedirs(pair_outdir, exist_ok=True)
+    # Step 3: 运行 comparisons（组间比较）
+    comparisons = dt_config.get("comparisons", [])
+    if comparisons:
+        print("\n" + "=" * 60)
+        print(f"[STEP 3] Running {len(comparisons)} comparison(s)")
+        print("=" * 60)
+        run_comparisons(comparisons, group_map, bw_map, args.peakdir, args.outdir, dt_config, args.threads)
+    else:
+        # 如果没有定义 comparisons，fallback 到旧逻辑：所有样本一起做一个比较
+        print("\n[INFO] No comparisons defined, running default all-samples comparison")
+        if len(bw_map) >= 2:
+            default_comp = {
+                "name": "all_samples",
+                "groups": list(group_map.keys()) if group_map else [],
+                "bed_source": dt_config.get("bed_source", "union_peaks"),
+            }
+            # 如果没有 group，直接用所有 IP 样本
+            if not group_map:
+                # 创建一个虚拟 group 包含所有 IP
+                group_map["all"] = list(bw_map.keys())
+                default_comp["groups"] = ["all"]
 
-        treat_bam = os.path.join(args.bamdir, treat, "accepted_hits.sorted.unique.bam")
-        control_bam = os.path.join(args.bamdir, control, "accepted_hits.sorted.unique.bam")
+            run_comparisons([default_comp], group_map, bw_map, args.peakdir, args.outdir, dt_config, args.threads)
 
-        if not os.path.exists(treat_bam):
-            print(f"[WARNING] Treat BAM not found: {treat_bam}. Skipping.")
-            continue
-        if not os.path.exists(control_bam):
-            print(f"[WARNING] Control BAM not found: {control_bam}. Skipping.")
-            continue
+    print("\n" + "=" * 60)
+    print("[DONE] DeepTools analysis complete!")
+    print("=" * 60)
 
-        # Step A: Convert BAM to BigWig using bamCoverage
-        treat_bw = os.path.join(pair_outdir, f"{treat}.bw")
-        control_bw = os.path.join(pair_outdir, f"{control}.bw")
-
-        norm_arg = f"--normalizeUsing {args.norm}" if args.norm != "none" else ""
-
-        if not os.path.exists(treat_bw):
-            cmd = f"bamCoverage -b {treat_bam} -o {treat_bw} -p {args.threads} {norm_arg}"
-            run_cmd(cmd)
-        
-        if not os.path.exists(control_bw):
-            cmd = f"bamCoverage -b {control_bam} -o {control_bw} -p {args.threads} {norm_arg}"
-            run_cmd(cmd)
-
-        # Step B: 获取BED文件
-        # 根据配置决定使用哪个BED文件作为背景区域
-        project_key = f"{args.species}_{args.experiment}"
-        
-        if bed_source == "macs2_peaks":
-            # 使用MACS2 peak calling的输出（每对样本用自己的peaks）
-            peak_bed = os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks_tab.bed")
-            bed_description = f"MACS2 peaks (pair-specific: {pair_name})"
-        elif bed_source == "union_peaks":
-            # 使用所有样本的peaks合集
-            peak_bed = union_bed
-            bed_description = f"Union peaks (all samples merged)"
-        elif bed_source == "custom":
-            # 使用自定义BED文件
-            custom_beds = dt_config.get('custom_bed_files', {})
-            if project_key in custom_beds:
-                peak_bed = custom_beds[project_key]
-                bed_description = f"custom BED ({peak_bed})"
-            else:
-                print(f"[ERROR] bed_source='custom' but no custom_bed_files defined for {project_key}")
-                continue
-        elif bed_source == "genes":
-            # 使用基因注释GTF文件
-            gtf_files = dt_config.get('gtf_files', {})
-            if args.species in gtf_files:
-                gtf_file = gtf_files[args.species]
-                # 将GTF转换为BED格式（只提取基因区域）
-                peak_bed = os.path.join(pair_outdir, "genes_from_gtf.bed")
-                if not os.path.exists(peak_bed):
-                    convert_cmd = f"awk '$3==\"gene\" {{print $1,$4-1,$5,$10,$6,$7}}' {gtf_file} | sed 's/[;\"]//g' > {peak_bed}"
-                    print(f"[INFO] Converting GTF to BED: {convert_cmd}")
-                    run_cmd(convert_cmd)
-                bed_description = f"genes from GTF ({gtf_file})"
-            else:
-                print(f"[ERROR] bed_source='genes' but no gtf_files defined for {args.species}")
-                continue
-        else:
-            print(f"[ERROR] Unknown bed_source: {bed_source}")
-            continue
-        
-        print(f"[INFO] Using BED source: {bed_description}")
-        
-        if not os.path.exists(peak_bed):
-            print(f"[WARNING] BED file not found: {peak_bed}. Cannot run computeMatrix. Skipping.")
-            continue
-        
-        if os.path.getsize(peak_bed) == 0:
-            print(f"[WARNING] BED file is empty (0 bytes): {peak_bed}. Skipping computeMatrix.")
-            continue
-
-        matrix_gz = os.path.join(pair_outdir, f"matrix_{pair_name}.gz")
-        
-        # 构建computeMatrix命令
-        missing_arg = "--missingDataAsZero" if missing_as_zero else ""
-        
-        if matrix_mode == "reference-point":
-            cmd = (
-                f"computeMatrix reference-point "
-                f"-R {peak_bed} "
-                f"-S {treat_bw} {control_bw} "
-                f"--referencePoint {ref_point} "
-                f"-b {upstream} -a {downstream} "
-                f"--binSize {bin_size} "
-                f"-p {args.threads} "
-                f"{missing_arg} "
-                f"-o {matrix_gz}"
-            )
-        else:  # scale-regions
-            cmd = (
-                f"computeMatrix scale-regions "
-                f"-R {peak_bed} "
-                f"-S {treat_bw} {control_bw} "
-                f"-m {region_length} "
-                f"-b {upstream} -a {downstream} "
-                f"--binSize {bin_size} "
-                f"-p {args.threads} "
-                f"{missing_arg} "
-            )
-            if unscaled_5 > 0:
-                cmd += f" --unscaled5prime {unscaled_5}"
-            if unscaled_3 > 0:
-                cmd += f" --unscaled3prime {unscaled_3}"
-            cmd += f" -o {matrix_gz}"
-        
-        run_cmd(cmd)
-
-        # Step C: plotProfile
-        plot_profile_pdf = os.path.join(pair_outdir, f"{pair_name}_plotProfile.pdf")
-        cmd = (
-            f"plotProfile -m {matrix_gz} "
-            f"-out {plot_profile_pdf} "
-            f"--plotTitle '{pair_name} Profile' "
-            f"--samplesLabel {treat} {control}"
-        )
-        run_cmd(cmd)
-
-        # Step D: plotHeatmap
-        plot_heatmap_pdf = os.path.join(pair_outdir, f"{pair_name}_plotHeatmap.pdf")
-        
-        # 构建热图参数
-        z_min_arg = f"--zMin {z_min}" if z_min != "auto" else ""
-        z_max_arg = f"--zMax {z_max}" if z_max != "auto" else ""
-        
-        cmd = (
-            f"plotHeatmap -m {matrix_gz} "
-            f"-out {plot_heatmap_pdf} "
-            f"--colorMap {color_map} "
-            f"{z_min_arg} {z_max_arg} "
-            f"--interpolation {interpolation} "
-            f"--plotTitle '{pair_name} Heatmap' "
-            f"--samplesLabel {treat} {control}"
-        )
-        run_cmd(cmd)
-
-    print("\n========== Deeptools processing finished! ==========")
 
 if __name__ == "__main__":
     main()

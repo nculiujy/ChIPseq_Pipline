@@ -620,7 +620,77 @@ with tab3:
                 help="设为 >0 时使用比例模式（如 0.5 表示≥50%重复中出现）。设为 0 则使用上面的绝对数",
             )
 
-        col1, col2 = st.columns(2)
+        # ---- DeepTools 组间比较配置 ----
+        st.markdown("---")
+        st.markdown("#### 🔬 DeepTools 组间比较 (Comparisons)")
+        st.info(
+            "**比较逻辑：** Peakcalling 使用 IP vs Input 配对，而 DeepTools 比较的是 **IP 之间**。\n\n"
+            "在此配置哪些 group 之间需要做热图/profile 对比。每个比较项包含 2 个或更多 group，"
+            "deeptools 会将这些 group 的 IP bigwig 放在一起做 computeMatrix + plotHeatmap。"
+        )
+
+        comparisons_cfg = config_for_tab3.get("deeptools", {}).get("comparisons", [])
+
+        # 获取当前 metadata 中的 group 列表
+        available_groups = []
+        if "group" in edited_df.columns:
+            available_groups = sorted(
+                edited_df["group"].dropna().replace("", pd.NA).dropna().unique().tolist()
+            )
+
+        if not available_groups:
+            st.warning("⚠️ 请先在上方配对表中设置 group 列，才能配置组间比较")
+        else:
+            st.caption(f"可用 group: {', '.join(f'`{g}`' for g in available_groups)}")
+
+            # 显示现有比较
+            st.markdown("**现有比较项：**")
+            comparisons_to_keep = []
+            for idx, comp in enumerate(comparisons_cfg):
+                comp_name = comp.get("name", f"comparison_{idx+1}")
+                comp_groups = comp.get("groups", [])
+                col1, col2, col3 = st.columns([2, 5, 1])
+                with col1:
+                    st.text(f"📊 {comp_name}")
+                with col2:
+                    st.caption(f"groups: {' vs '.join(comp_groups)}")
+                with col3:
+                    if st.button("🗑️", key=f"del_comp_{idx}"):
+                        continue  # skip this one (don't add to keep list)
+                comparisons_to_keep.append(comp)
+
+            # 添加新比较
+            st.markdown("**添加新比较：**")
+            new_comp_col1, new_comp_col2 = st.columns([1, 3])
+            with new_comp_col1:
+                new_comp_name = st.text_input(
+                    "比较名称",
+                    placeholder="如: WT_vs_OE",
+                    key="new_comp_name",
+                )
+            with new_comp_col2:
+                new_comp_groups = st.multiselect(
+                    "选择要比较的 group（≥2组）",
+                    available_groups,
+                    key="new_comp_groups",
+                    help="选择 2 个或更多 group，它们的 IP bigwig 将一起出现在热图中进行对比",
+                )
+
+            if st.button("➕ 添加比较", key="add_comparison"):
+                if new_comp_name and len(new_comp_groups) >= 2:
+                    comparisons_to_keep.append({
+                        "name": new_comp_name,
+                        "groups": new_comp_groups,
+                    })
+                    st.success(f"✅ 已添加比较: {new_comp_name} ({' vs '.join(new_comp_groups)})")
+                elif len(new_comp_groups) < 2:
+                    st.error("❌ 请至少选择 2 个 group")
+                else:
+                    st.error("❌ 请输入比较名称")
+
+        # ---- 保存按钮 ----
+        st.markdown("---")
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("💾 保存样本配对表", type="primary", key="save_metadata"):
                 save_metadata(edited_df)
@@ -633,6 +703,13 @@ with tab3:
                 }
                 save_config(config_for_tab3)
                 st.success("✅ Consensus 参数已保存！")
+        with col3:
+            if st.button("💾 保存 Comparisons", key="save_comparisons"):
+                if "deeptools" not in config_for_tab3:
+                    config_for_tab3["deeptools"] = {}
+                config_for_tab3["deeptools"]["comparisons"] = comparisons_to_keep if available_groups else []
+                save_config(config_for_tab3)
+                st.success("✅ Comparisons 已保存！")
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):
