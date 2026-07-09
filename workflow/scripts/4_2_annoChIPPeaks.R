@@ -1,5 +1,20 @@
 #!/usr/bin/env Rscript
 
+# 强制只使用 conda 环境的 R 库，防止混入其他用户或系统的 R 库路径
+# 这解决了 "undefined symbol: R_getRegisteredNamespace" 等版本不兼容错误
+conda_prefix <- Sys.getenv("CONDA_PREFIX")
+if (nchar(conda_prefix) > 0) {
+  conda_r_lib <- file.path(conda_prefix, "lib", "R", "library")
+  if (dir.exists(conda_r_lib)) {
+    .libPaths(conda_r_lib)
+    cat("R library path set to conda env:", conda_r_lib, "\n")
+  }
+} else {
+  # 如果不在 conda 环境中，清除用户级别的库路径，只保留系统库
+  sys_libs <- .libPaths()[grep("^/usr|^/opt|^/home/public", .libPaths())]
+  if (length(sys_libs) > 0) .libPaths(sys_libs)
+}
+
 # 所有包由 conda 环境或 workflow/env/install_R_packages.R 预先安装
 # 不在运行时动态安装，确保跨服务器版本一致
 library(optparse)
