@@ -36,7 +36,9 @@ for proj in PROJECTS:
         TARGET_FILES.extend([
             os.path.join("result", species, experiment, "4_analyse", "peakcalling_finished.txt"),
             os.path.join("result", species, experiment, "4_analyse", "annoChIPPeaks_finished.txt"),
-            os.path.join("result", species, experiment, "4_analyse", "deeptools_finished.txt")
+            os.path.join("result", species, experiment, "4_analyse", "deeptools_finished.txt"),
+            os.path.join("result", species, experiment, "4_analyse", "consensus_finished.txt"),
+            os.path.join("result", species, experiment, "4_analyse", "replicate_qc_finished.txt"),
         ])
 
     if modules.get("5_gsea", False):

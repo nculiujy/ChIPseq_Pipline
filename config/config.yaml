@@ -33,12 +33,12 @@ deeptools:
   # 每个 comparison 是一个命名的对比任务，包含要比较的 groups 列表
   # deeptools 会将这些 group 的 IP bigwig 放在一起做 computeMatrix + plotHeatmap
   comparisons:
-  - name: WT_vs_OE
+  - name: rep1_vs_rep2_vs_rep3
     groups:
-    - rep_INPUT2
-    - rep_INPUT3
-    - rep_INPUT4
-    bed_source: consensus_peaks
+    - rep1
+    - rep2
+    - rep3
+    bed_source: union_peaks
   # 也可以做重复间 QC（单个 group 内部比较一致性）
   replicate_qc:
     enabled: true
