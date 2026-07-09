@@ -460,23 +460,31 @@ with tab2:
                 m4 = st.checkbox("4_analyse", value=modules.get("4_analyse", False), key=f"m4_{i}")
                 m5 = st.checkbox("5_gsea", value=modules.get("5_gsea", False), key=f"m5_{i}")
 
-            if st.button(f"保存项目 {proj['species']}/{proj['experiment']}", key=f"save_proj_{i}"):
-                projects[i]["species"] = selected_species
-                projects[i]["experiment"] = st.session_state[f"exp_{i}"]
-                projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
-                projects[i]["index_dir"] = final_index_dir
-                projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
-                projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
-                projects[i]["modules"] = {
-                    "1_download": m1,
-                    "2_QC": m2,
-                    "3_ChIPseq": m3,
-                    "4_analyse": m4,
-                    "5_gsea": m5,
-                }
-                config["projects"] = projects
-                save_config(config)
-                st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+            btn_col1, btn_col2 = st.columns([3, 1])
+            with btn_col1:
+                if st.button(f"💾 保存项目", key=f"save_proj_{i}"):
+                    projects[i]["species"] = selected_species
+                    projects[i]["experiment"] = st.session_state[f"exp_{i}"]
+                    projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
+                    projects[i]["index_dir"] = final_index_dir
+                    projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
+                    projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
+                    projects[i]["modules"] = {
+                        "1_download": m1,
+                        "2_QC": m2,
+                        "3_ChIPseq": m3,
+                        "4_analyse": m4,
+                        "5_gsea": m5,
+                    }
+                    config["projects"] = projects
+                    save_config(config)
+                    st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+            with btn_col2:
+                if st.button(f"🗑️ 删除", key=f"del_proj_{i}", type="secondary"):
+                    config["projects"].pop(i)
+                    save_config(config)
+                    st.success(f"✅ 项目 {proj['species']}/{proj['experiment']} 已删除")
+                    st.rerun()
 
     st.markdown("---")
     st.subheader("添加新项目")
