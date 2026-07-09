@@ -114,8 +114,10 @@ MARKERS = {
     "3_ChIPseq_step1": "3_ChIPseq/step1_finished.txt",
     "3_ChIPseq_step2": "3_ChIPseq/step2_finished.txt",
     "4_peakcalling": "4_analyse/peakcalling_finished.txt",
+    "4_consensus": "4_analyse/consensus_peaks_finished.txt",
     "4_annotation": "4_analyse/annoChIPPeaks_finished.txt",
     "4_deeptools": "4_analyse/deeptools_finished.txt",
+    "4_repQC": "4_analyse/replicate_qc_finished.txt",
     "5_gsea": "5_gsea/gsea_finished.txt",
 }
 
@@ -209,8 +211,10 @@ for proj in projects:
             "2_QC": "2_QC",
             "3_ChIPseq": "3_ChIPseq",
             "4_peakcalling": "4_analyse/peakcalling",
+            "4_consensus": "4_analyse/consensus_peaks",
             "4_annotation": "4_analyse/annoChIPPeaks",
             "4_deeptools": "4_analyse/deeptools",
+            "4_repQC": "4_analyse/replicate_qc",
             "5_gsea": "5_gsea",
         }
         
@@ -297,8 +301,10 @@ for proj in projects:
             "2_QC": "2_QC",
             "3_ChIPseq": "3_ChIPseq",
             "4_peakcalling": "4_analyse/peakcalling",
+            "4_consensus": "4_analyse/consensus_peaks",
             "4_annotation": "4_analyse/annoChIPPeaks",
             "4_deeptools": "4_analyse/deeptools",
+            "4_repQC": "4_analyse/replicate_qc",
             "5_gsea": "5_gsea",
         }.get(name)
         if module_dir:

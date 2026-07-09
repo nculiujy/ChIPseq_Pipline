@@ -4,7 +4,9 @@ macs2_peak_type: narrow
 macs2_cutoff_type: pvalue
 macs2_cutoff_value: 0.05
 macs2_broad_cutoff: 0.1
+macs2_genome_size: auto
 normalization_method: BPM
+consensus_min_overlap: 2
 deeptools:
   matrix_mode: reference-point
   reference_point:
@@ -31,9 +33,9 @@ gsea:
   run_go: true
   run_kegg: true
   go_types:
-    - BP
-    - MF
-    - CC
+  - BP
+  - MF
+  - CC
   pvalue_cutoff: 0.05
   qvalue_cutoff: 0.2
   min_gs_size: 10
@@ -64,7 +66,7 @@ projects:
     2_QC: false
     3_ChIPseq: true
     4_analyse: true
-    5_gsea: false
+    5_gsea: true
 - species: TAIR
   experiment: 314OE
   rawdata_dir: workflow/resources/TAIR10/314OE CUT tag-seq 20260427/cleandata

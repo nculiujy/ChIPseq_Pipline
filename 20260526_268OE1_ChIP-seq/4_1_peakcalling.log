@@ -1,0 +1,164 @@
+[2026-07-08 19:54:54] ChIP-seq 步骤4: Peak Calling 开始
+[2026-07-08 19:54:54] 参数: cutoff_type=pvalue, value=0.05, normalization=BPM
+[2026-07-08 19:54:54] >>> 正在处理样本对: 268OE1-IP1_vs_268OE1-INPUT | genome: mm
+[2026-07-08 19:54:54] >>> [SPP] 执行命令: run_spp.R -rf -c=result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP1/accepted_hits.sorted.unique.bam -i=result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -p=8 -odir=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/bam_control -savp=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/pictures/268OE1-IP1_vs_268OE1-INPUT_bam_control.q05.pdf -out=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/bam_control/268OE1-IP1_vs_268OE1-INPUT_cross.txt
+[2026-07-08 19:54:54] 警告: [SPP] 268OE1-IP1_vs_268OE1-INPUT 运行失败 (如果未安装 SPP 可忽略)
+[2026-07-08 19:54:54] >>> [MACS2] 执行 Peak Calling: 268OE1-IP1_vs_268OE1-INPUT
+[2026-07-08 19:54:54] >>> [MACS2] Cmd: macs2 callpeak -t result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP1/accepted_hits.sorted.unique.bam -c result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -g mm -n 268OE1-IP1_vs_268OE1-INPUT --keep-dup all -p 0.05  --SPMR --broad --broad-cutoff 0.1 --outdir result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT
+INFO  @ Wed, 08 Jul 2026 19:54:55: 
+# Command line: callpeak -t result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP1/accepted_hits.sorted.unique.bam -c result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -g mm -n 268OE1-IP1_vs_268OE1-INPUT --keep-dup all -p 0.05 --SPMR --broad --broad-cutoff 0.1 --outdir result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT
+# ARGUMENTS LIST:
+# name = 268OE1-IP1_vs_268OE1-INPUT
+# format = AUTO
+# ChIP-seq file = ['result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP1/accepted_hits.sorted.unique.bam']
+# control file = ['result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam']
+# effective genome size = 1.87e+09
+# band width = 300
+# model fold = [5, 50]
+# pvalue cutoff for narrow/strong regions = 5.00e-02
+# pvalue cutoff for broad/weak regions = 1.00e-01
+# qvalue will not be calculated and reported as -1 in the final output.
+# The maximum gap between significant sites is assigned as the read length/tag size.
+# The minimum length of peaks is assigned as the predicted fragment length "d".
+# Larger dataset will be scaled towards smaller dataset.
+# Range for calculating regional lambda is: 1000 bps and 10000 bps
+# Broad region calling is on
+# Paired-End mode is off
+ 
+INFO  @ Wed, 08 Jul 2026 19:54:55: #1 read tag files... 
+INFO  @ Wed, 08 Jul 2026 19:54:55: #1 read treatment tags... 
+INFO  @ Wed, 08 Jul 2026 19:54:55: Detected format is: BAM 
+INFO  @ Wed, 08 Jul 2026 19:54:55: * Input file is gzipped. 
+INFO  @ Wed, 08 Jul 2026 19:55:00:  1000000 
+INFO  @ Wed, 08 Jul 2026 19:55:05:  2000000 
+INFO  @ Wed, 08 Jul 2026 19:55:10:  3000000 
+INFO  @ Wed, 08 Jul 2026 19:55:15:  4000000 
+INFO  @ Wed, 08 Jul 2026 19:55:20:  5000000 
+INFO  @ Wed, 08 Jul 2026 19:55:25:  6000000 
+INFO  @ Wed, 08 Jul 2026 19:55:30:  7000000 
+INFO  @ Wed, 08 Jul 2026 19:55:39: 7067816 reads have been read. 
+INFO  @ Wed, 08 Jul 2026 19:55:39: #1.2 read input tags... 
+INFO  @ Wed, 08 Jul 2026 19:55:39: Detected format is: BAM 
+INFO  @ Wed, 08 Jul 2026 19:55:39: * Input file is gzipped. 
+INFO  @ Wed, 08 Jul 2026 19:55:43:  1000000 
+INFO  @ Wed, 08 Jul 2026 19:55:48:  2000000 
+INFO  @ Wed, 08 Jul 2026 19:55:53:  3000000 
+INFO  @ Wed, 08 Jul 2026 19:55:57:  4000000 
+INFO  @ Wed, 08 Jul 2026 19:56:02:  5000000 
+INFO  @ Wed, 08 Jul 2026 19:56:06:  6000000 
+INFO  @ Wed, 08 Jul 2026 19:56:10:  7000000 
+INFO  @ Wed, 08 Jul 2026 19:56:14:  8000000 
+INFO  @ Wed, 08 Jul 2026 19:56:18:  9000000 
+INFO  @ Wed, 08 Jul 2026 19:56:22:  10000000 
+INFO  @ Wed, 08 Jul 2026 19:56:26:  11000000 
+INFO  @ Wed, 08 Jul 2026 19:56:29:  12000000 
+INFO  @ Wed, 08 Jul 2026 19:56:36: 12159782 reads have been read. 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #1 tag size is determined as 150 bps 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #1 tag size = 150.0 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #1  total tags in treatment: 7067816 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #1  total tags in control: 12159782 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #1 finished! 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #2 Build Peak Model... 
+INFO  @ Wed, 08 Jul 2026 19:56:36: #2 looking for paired plus/minus strand peaks... 
+INFO  @ Wed, 08 Jul 2026 19:56:39: #2 number of paired peaks: 149822 
+INFO  @ Wed, 08 Jul 2026 19:56:39: start model_add_line... 
+INFO  @ Wed, 08 Jul 2026 19:56:40: start X-correlation... 
+INFO  @ Wed, 08 Jul 2026 19:56:40: end of X-cor 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #2 finished! 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #2 predicted fragment length is 299 bps 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #2 alternative fragment length(s) may be 299 bps 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #2.2 Generate R script for model : result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/268OE1-IP1_vs_268OE1-INPUT_model.r 
+WARNING @ Wed, 08 Jul 2026 19:56:40: #2 Since the d (299) calculated from paired-peaks are smaller than 2*tag length, it may be influenced by unknown sequencing problem! 
+WARNING @ Wed, 08 Jul 2026 19:56:40: #2 You may need to consider one of the other alternative d(s): 299 
+WARNING @ Wed, 08 Jul 2026 19:56:40: #2 You can restart the process with --nomodel --extsize XXX with your choice or an arbitrary number. Nontheless, MACS will continute computing. 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #3 Call peaks... 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #3 Call broad peaks with given level1 -log10pvalue cutoff and level2: 1.30103, 1.00000... 
+INFO  @ Wed, 08 Jul 2026 19:56:40: #3 Pre-compute pvalue-qvalue table... 
+INFO  @ Wed, 08 Jul 2026 19:58:48: #3 Call peaks for each chromosome... 
+INFO  @ Wed, 08 Jul 2026 19:59:11: #4 Write output xls file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/268OE1-IP1_vs_268OE1-INPUT_peaks.xls 
+INFO  @ Wed, 08 Jul 2026 19:59:12: #4 Write broad peak in broadPeak format file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/268OE1-IP1_vs_268OE1-INPUT_peaks.broadPeak 
+INFO  @ Wed, 08 Jul 2026 19:59:12: #4 Write broad peak in bed12/gappedPeak format file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP1_vs_268OE1-INPUT/268OE1-IP1_vs_268OE1-INPUT_peaks.gappedPeak 
+INFO  @ Wed, 08 Jul 2026 19:59:12: Done! 
+[2026-07-08 19:59:12] >>> 正在处理样本对: 268OE1-IP2_vs_268OE1-INPUT | genome: mm
+[2026-07-08 19:59:12] >>> [SPP] 执行命令: run_spp.R -rf -c=result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP2/accepted_hits.sorted.unique.bam -i=result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -p=8 -odir=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/bam_control -savp=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/pictures/268OE1-IP2_vs_268OE1-INPUT_bam_control.q05.pdf -out=result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/bam_control/268OE1-IP2_vs_268OE1-INPUT_cross.txt
+[2026-07-08 19:59:12] 警告: [SPP] 268OE1-IP2_vs_268OE1-INPUT 运行失败 (如果未安装 SPP 可忽略)
+[2026-07-08 19:59:12] >>> [MACS2] 执行 Peak Calling: 268OE1-IP2_vs_268OE1-INPUT
+[2026-07-08 19:59:12] >>> [MACS2] Cmd: macs2 callpeak -t result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP2/accepted_hits.sorted.unique.bam -c result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -g mm -n 268OE1-IP2_vs_268OE1-INPUT --keep-dup all -p 0.05  --SPMR --broad --broad-cutoff 0.1 --outdir result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT
+INFO  @ Wed, 08 Jul 2026 19:59:12: 
+# Command line: callpeak -t result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP2/accepted_hits.sorted.unique.bam -c result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam -g mm -n 268OE1-IP2_vs_268OE1-INPUT --keep-dup all -p 0.05 --SPMR --broad --broad-cutoff 0.1 --outdir result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT
+# ARGUMENTS LIST:
+# name = 268OE1-IP2_vs_268OE1-INPUT
+# format = AUTO
+# ChIP-seq file = ['result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-IP2/accepted_hits.sorted.unique.bam']
+# control file = ['result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq/268OE1-INPUT/accepted_hits.sorted.unique.bam']
+# effective genome size = 1.87e+09
+# band width = 300
+# model fold = [5, 50]
+# pvalue cutoff for narrow/strong regions = 5.00e-02
+# pvalue cutoff for broad/weak regions = 1.00e-01
+# qvalue will not be calculated and reported as -1 in the final output.
+# The maximum gap between significant sites is assigned as the read length/tag size.
+# The minimum length of peaks is assigned as the predicted fragment length "d".
+# Larger dataset will be scaled towards smaller dataset.
+# Range for calculating regional lambda is: 1000 bps and 10000 bps
+# Broad region calling is on
+# Paired-End mode is off
+ 
+INFO  @ Wed, 08 Jul 2026 19:59:12: #1 read tag files... 
+INFO  @ Wed, 08 Jul 2026 19:59:12: #1 read treatment tags... 
+INFO  @ Wed, 08 Jul 2026 19:59:12: Detected format is: BAM 
+INFO  @ Wed, 08 Jul 2026 19:59:12: * Input file is gzipped. 
+INFO  @ Wed, 08 Jul 2026 19:59:16:  1000000 
+INFO  @ Wed, 08 Jul 2026 19:59:21:  2000000 
+INFO  @ Wed, 08 Jul 2026 19:59:25:  3000000 
+INFO  @ Wed, 08 Jul 2026 19:59:29:  4000000 
+INFO  @ Wed, 08 Jul 2026 19:59:33:  5000000 
+INFO  @ Wed, 08 Jul 2026 19:59:38:  6000000 
+INFO  @ Wed, 08 Jul 2026 19:59:42:  7000000 
+INFO  @ Wed, 08 Jul 2026 19:59:52: 7564183 reads have been read. 
+INFO  @ Wed, 08 Jul 2026 19:59:52: #1.2 read input tags... 
+INFO  @ Wed, 08 Jul 2026 19:59:52: Detected format is: BAM 
+INFO  @ Wed, 08 Jul 2026 19:59:52: * Input file is gzipped. 
+INFO  @ Wed, 08 Jul 2026 19:59:56:  1000000 
+INFO  @ Wed, 08 Jul 2026 20:00:01:  2000000 
+INFO  @ Wed, 08 Jul 2026 20:00:05:  3000000 
+INFO  @ Wed, 08 Jul 2026 20:00:09:  4000000 
+INFO  @ Wed, 08 Jul 2026 20:00:13:  5000000 
+INFO  @ Wed, 08 Jul 2026 20:00:17:  6000000 
+INFO  @ Wed, 08 Jul 2026 20:00:21:  7000000 
+INFO  @ Wed, 08 Jul 2026 20:00:25:  8000000 
+INFO  @ Wed, 08 Jul 2026 20:00:29:  9000000 
+INFO  @ Wed, 08 Jul 2026 20:00:33:  10000000 
+INFO  @ Wed, 08 Jul 2026 20:00:37:  11000000 
+INFO  @ Wed, 08 Jul 2026 20:00:40:  12000000 
+INFO  @ Wed, 08 Jul 2026 20:00:47: 12159782 reads have been read. 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #1 tag size is determined as 150 bps 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #1 tag size = 150.0 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #1  total tags in treatment: 7564183 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #1  total tags in control: 12159782 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #1 finished! 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #2 Build Peak Model... 
+INFO  @ Wed, 08 Jul 2026 20:00:47: #2 looking for paired plus/minus strand peaks... 
+INFO  @ Wed, 08 Jul 2026 20:00:50: #2 number of paired peaks: 153772 
+INFO  @ Wed, 08 Jul 2026 20:00:50: start model_add_line... 
+INFO  @ Wed, 08 Jul 2026 20:00:51: start X-correlation... 
+INFO  @ Wed, 08 Jul 2026 20:00:51: end of X-cor 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #2 finished! 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #2 predicted fragment length is 299 bps 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #2 alternative fragment length(s) may be 299 bps 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #2.2 Generate R script for model : result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/268OE1-IP2_vs_268OE1-INPUT_model.r 
+WARNING @ Wed, 08 Jul 2026 20:00:51: #2 Since the d (299) calculated from paired-peaks are smaller than 2*tag length, it may be influenced by unknown sequencing problem! 
+WARNING @ Wed, 08 Jul 2026 20:00:51: #2 You may need to consider one of the other alternative d(s): 299 
+WARNING @ Wed, 08 Jul 2026 20:00:51: #2 You can restart the process with --nomodel --extsize XXX with your choice or an arbitrary number. Nontheless, MACS will continute computing. 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #3 Call peaks... 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #3 Call broad peaks with given level1 -log10pvalue cutoff and level2: 1.30103, 1.00000... 
+INFO  @ Wed, 08 Jul 2026 20:00:51: #3 Pre-compute pvalue-qvalue table... 
+INFO  @ Wed, 08 Jul 2026 20:03:10: #3 Call peaks for each chromosome... 
+INFO  @ Wed, 08 Jul 2026 20:03:33: #4 Write output xls file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/268OE1-IP2_vs_268OE1-INPUT_peaks.xls 
+INFO  @ Wed, 08 Jul 2026 20:03:33: #4 Write broad peak in broadPeak format file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/268OE1-IP2_vs_268OE1-INPUT_peaks.broadPeak 
+INFO  @ Wed, 08 Jul 2026 20:03:34: #4 Write broad peak in bed12/gappedPeak format file... result/TAIR10/20260526_268OE1_ChIP-seq/4_analyse/peakcalling/268OE1-IP2_vs_268OE1-INPUT/268OE1-IP2_vs_268OE1-INPUT_peaks.gappedPeak 
+INFO  @ Wed, 08 Jul 2026 20:03:34: Done! 
+[2026-07-08 20:03:34] 警告: 实验组 BAM 文件不存在: result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq//accepted_hits.sorted.unique.bam，跳过  vs 
+[2026-07-08 20:03:34] 警告: 实验组 BAM 文件不存在: result/TAIR10/20260526_268OE1_ChIP-seq/3_ChIPseq//accepted_hits.sorted.unique.bam，跳过  vs 
+[2026-07-08 20:03:34] 所有样本 Peak Calling 处理完成！
+

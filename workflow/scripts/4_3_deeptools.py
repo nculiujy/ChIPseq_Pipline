@@ -62,14 +62,17 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    # 1. Parse metadata to get sample pairs
+    # 1. Parse metadata to get sample pairs (支持 2列或3列格式)
     pairs = []
     with open(args.metadata, "r") as f:
         header = f.readline()
         for line in f:
             if line.strip():
-                treat, control = [x.strip() for x in line.strip().split(",")]
-                pairs.append({"treat": treat, "control": control})
+                fields = [x.strip() for x in line.strip().split(",")]
+                treat = fields[0]
+                control = fields[1] if len(fields) > 1 else ""
+                group = fields[2] if len(fields) > 2 else ""
+                pairs.append({"treat": treat, "control": control, "group": group})
     
     # 如果使用 union_peaks，需要先合并所有样本的peaks
     union_bed = None

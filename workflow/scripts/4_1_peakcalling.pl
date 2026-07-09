@@ -55,11 +55,12 @@ my $processed_count = 0;
 while (my $line = <$IN>) {
     chomp $line;
     next if $line =~ /^\s*$/;
-    my ($treat_sample, $control_sample) = split(/,/, $line);
+    my @fields = split(/,/, $line);
+    my $treat_sample = $fields[0] // "";
+    my $control_sample = $fields[1] // "";
+    # 第三列 group 在此脚本中不使用，仅用于 consensus peaks 步骤
     
     # 去除可能存在的空白字符
-    $treat_sample  //= "";
-    $control_sample //= "";
     $treat_sample =~ s/^\s+|\s+$//g;
     $control_sample =~ s/^\s+|\s+$//g;
 

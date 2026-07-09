@@ -542,26 +542,94 @@ with tab2:
 # Tab 3: 样本配对表
 # ============================================================
 with tab3:
-    st.subheader("IP vs Input 样本配对表")
+    st.subheader("IP vs Input 样本配对表（含重复组）")
     st.caption(f"文件路径: `{METADATA_PATH}`")
+
+    st.info(
+        "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
+        "Pipeline 会自动对同组样本取 Consensus Peaks（重叠区域），"
+        "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。"
+    )
 
     if os.path.exists(METADATA_PATH):
         df = load_metadata()
+        # 兼容旧格式：如果没有 group 列，自动添加
+        if "group" not in df.columns:
+            df["group"] = ""
+
+        # 配置列顺序
+        col_order = ["IP sample", "Input", "group"]
+        df = df[[c for c in col_order if c in df.columns]]
+
         edited_df = st.data_editor(
             df,
             num_rows="dynamic",
             use_container_width=True,
+            column_config={
+                "IP sample": st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名"),
+                "Input": st.column_config.TextColumn("Input 对照", help="对照组样本名"),
+                "group": st.column_config.TextColumn(
+                    "重复组",
+                    help="相同组名的样本为生物学重复，留空表示独立分析",
+                ),
+            },
             key="metadata_editor",
         )
 
-        if st.button("💾 保存样本配对表", type="primary", key="save_metadata"):
-            save_metadata(edited_df)
-            st.success("✅ 样本配对表已保存！")
+        # 显示重复组统计
+        if "group" in edited_df.columns:
+            groups = edited_df["group"].dropna().replace("", pd.NA).dropna()
+            if len(groups) > 0:
+                group_counts = groups.value_counts()
+                st.markdown("**重复组统计：**")
+                for grp, cnt in group_counts.items():
+                    st.caption(f"  • `{grp}`: {cnt} 个样本对")
+            else:
+                st.caption("📌 当前未设置重复组，所有样本对将独立分析")
+
+        # ---- Consensus Peaks 参数 ----
+        st.markdown("---")
+        st.markdown("#### Consensus Peaks 参数")
+        st.caption("当同一 group 有多个重复时，取重叠 peaks 作为 consensus")
+
+        config_for_tab3 = load_config()
+        consensus_cfg = config_for_tab3.get("consensus_peaks", {})
+
+        col1, col2 = st.columns(2)
+        with col1:
+            consensus_min = st.number_input(
+                "最小重叠数 (min_overlap)",
+                min_value=1, max_value=10,
+                value=int(consensus_cfg.get("min_overlap", 2)),
+                help="一个 peak 至少在 N 个重复中出现才被保留。例如 3 个重复设 2 表示≥2/3重叠即保留",
+            )
+        with col2:
+            consensus_frac = st.number_input(
+                "最小重叠比例 (min_fraction)",
+                min_value=0.0, max_value=1.0,
+                value=float(consensus_cfg.get("min_fraction", 0.0)),
+                step=0.1, format="%.1f",
+                help="设为 >0 时使用比例模式（如 0.5 表示≥50%重复中出现）。设为 0 则使用上面的绝对数",
+            )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 保存样本配对表", type="primary", key="save_metadata"):
+                save_metadata(edited_df)
+                st.success("✅ 样本配对表已保存！")
+        with col2:
+            if st.button("💾 保存 Consensus 参数", key="save_consensus"):
+                config_for_tab3["consensus_peaks"] = {
+                    "min_overlap": int(consensus_min),
+                    "min_fraction": float(consensus_frac),
+                }
+                save_config(config_for_tab3)
+                st.success("✅ Consensus 参数已保存！")
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):
-            pd.DataFrame({"IP sample": [], "Input": []}).to_csv(METADATA_PATH, index=False)
-            st.success("已创建空模板")
+            pd.DataFrame({"IP sample": [], "Input": [], "group": []}).to_csv(METADATA_PATH, index=False)
+            st.success("已创建空模板（含 group 列）")
             st.rerun()
 
 # ============================================================

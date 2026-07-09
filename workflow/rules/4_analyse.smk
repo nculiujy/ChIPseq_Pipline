@@ -61,19 +61,43 @@ rule analyse_peakcalling:
 
 # 定义一个辅助函数，用于获取所有样本对名称
 def get_sample_pairs(metadata_file):
+    """解析 metadata.csv，支持 2 列 (IP,Input) 和 3 列 (IP,Input,group) 格式"""
     pairs = []
     with open(metadata_file, 'r') as f:
-        next(f) # skip header
+        next(f)  # skip header
         for line in f:
             if line.strip():
-                treat, control = line.strip().split(',')
-                treat = treat.strip()
-                control = control.strip()
+                fields = line.strip().split(',')
+                treat = fields[0].strip()
+                control = fields[1].strip()
                 pairs.append(f"{treat}_vs_{control}")
     return pairs
 
-# 动态获取样本对
+
+def get_replicate_groups(metadata_file):
+    """
+    解析 metadata.csv 的 group 列，返回 {group_name: [pair_name, ...]} 字典。
+    仅当 metadata 含第 3 列且 group 非空时生效。
+    """
+    groups = {}
+    with open(metadata_file, 'r') as f:
+        header = next(f).strip().split(',')
+        has_group = len(header) >= 3
+        for line in f:
+            if line.strip():
+                fields = line.strip().split(',')
+                treat = fields[0].strip()
+                control = fields[1].strip()
+                pair_name = f"{treat}_vs_{control}"
+                group = fields[2].strip() if has_group and len(fields) >= 3 else ""
+                if group:
+                    groups.setdefault(group, []).append(pair_name)
+    return groups
+
+
+# 动态获取样本对和重复组
 SAMPLE_PAIRS = get_sample_pairs("config/metadata.csv")
+REPLICATE_GROUPS = get_replicate_groups("config/metadata.csv")
 
 rule analyse_annoChIPPeaks_single:
     input:
@@ -143,3 +167,137 @@ rule analyse_deeptools:
             
         touch {output}
         """
+
+# ============================================================
+# Consensus Peaks（重复样本取交集）
+# ============================================================
+rule analyse_consensus_peaks:
+    input:
+        script = "workflow/scripts/4_4_consensus_peaks.py",
+        metadata = "config/metadata.csv",
+        peak_marker = "result/{species}/{experiment}/4_analyse/peakcalling_finished.txt",
+        config = ancient("config/config.yaml")
+    output:
+        "result/{species}/{experiment}/4_analyse/consensus_finished.txt"
+    log:
+        "logs/{species}/{experiment}/4_4_consensus_peaks.log"
+    params:
+        threads = config["threads"],
+        min_overlap = config.get("consensus_min_overlap", 2)
+    shell:
+        """
+        python {input.script} \
+            --metadata {input.metadata} \
+            --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
+            --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus \
+            --min-overlap {params.min_overlap} \
+            --config {input.config} > {log} 2>&1
+
+        touch {output}
+        """
+
+# ============================================================
+# Replicate QC（重复样本相关性分析 via deeptools）
+# ============================================================
+rule analyse_replicate_qc:
+    input:
+        metadata = "config/metadata.csv",
+        peak_marker = "result/{species}/{experiment}/4_analyse/peakcalling_finished.txt",
+        deeptools_marker = "result/{species}/{experiment}/4_analyse/deeptools_finished.txt",
+        config = ancient("config/config.yaml")
+    output:
+        "result/{species}/{experiment}/4_analyse/replicate_qc_finished.txt"
+    log:
+        "logs/{species}/{experiment}/4_5_replicate_qc.log"
+    params:
+        threads = config["threads"],
+        norm = config["normalization_method"]
+    run:
+        import os, yaml, subprocess
+
+        with open(input.config, 'r') as f:
+            cfg = yaml.safe_load(f)
+
+        # 解析重复组
+        groups = {}
+        with open(input.metadata, 'r') as f:
+            header = next(f).strip().split(',')
+            has_group = len(header) >= 3
+            for line in f:
+                if line.strip():
+                    fields = line.strip().split(',')
+                    treat = fields[0].strip()
+                    control = fields[1].strip()
+                    group = fields[2].strip() if has_group and len(fields) >= 3 else ""
+                    if group:
+                        pair_name = f"{treat}_vs_{control}"
+                        groups.setdefault(group, []).append(pair_name)
+
+        if not groups:
+            # 无重复组则直接完成
+            with open(output[0], 'w') as f:
+                f.write("No replicate groups defined.\n")
+            return
+
+        outdir = f"result/{wildcards.species}/{wildcards.experiment}/4_analyse/replicate_qc"
+        os.makedirs(outdir, exist_ok=True)
+        dt_dir = f"result/{wildcards.species}/{wildcards.experiment}/4_analyse/deeptools"
+
+        for group_name, pair_list in groups.items():
+            # 收集该组所有 IP 样本的 bigwig 文件
+            bw_files = []
+            labels = []
+            for pair_name in pair_list:
+                treat = pair_name.split("_vs_")[0]
+                bw = os.path.join(dt_dir, pair_name, f"{treat}.bw")
+                if os.path.exists(bw):
+                    bw_files.append(bw)
+                    labels.append(treat)
+
+            if len(bw_files) < 2:
+                continue
+
+            # multiBigwigSummary
+            npz_out = os.path.join(outdir, f"{group_name}_multiBwSummary.npz")
+            cmd_summary = (
+                f"multiBigwigSummary bins "
+                f"-b {' '.join(bw_files)} "
+                f"--labels {' '.join(labels)} "
+                f"-p {params.threads} "
+                f"-o {npz_out}"
+            )
+            shell(f"{cmd_summary} >> {log} 2>&1")
+
+            # plotCorrelation - heatmap
+            corr_pdf = os.path.join(outdir, f"{group_name}_correlation_heatmap.pdf")
+            cmd_corr = (
+                f"plotCorrelation -in {npz_out} "
+                f"--corMethod pearson --skipZeros "
+                f"--whatToPlot heatmap "
+                f"--plotNumbers "
+                f"-o {corr_pdf} "
+                f"--plotTitle '{group_name} Replicate Correlation'"
+            )
+            shell(f"{cmd_corr} >> {log} 2>&1")
+
+            # plotCorrelation - scatterplot
+            scatter_pdf = os.path.join(outdir, f"{group_name}_correlation_scatter.pdf")
+            cmd_scatter = (
+                f"plotCorrelation -in {npz_out} "
+                f"--corMethod pearson --skipZeros "
+                f"--whatToPlot scatterplot "
+                f"-o {scatter_pdf} "
+                f"--plotTitle '{group_name} Replicate Scatter'"
+            )
+            shell(f"{cmd_scatter} >> {log} 2>&1")
+
+            # plotPCA
+            pca_pdf = os.path.join(outdir, f"{group_name}_PCA.pdf")
+            cmd_pca = (
+                f"plotPCA -in {npz_out} "
+                f"-o {pca_pdf} "
+                f"--plotTitle '{group_name} PCA'"
+            )
+            shell(f"{cmd_pca} >> {log} 2>&1")
+
+        shell(f"touch {output}")
