@@ -55,11 +55,20 @@ my $processed_count = 0;
 while (my $line = <$IN>) {
     chomp $line;
     next if $line =~ /^\s*$/;
-    my ($treat_sample, $control_sample) = split(/,/, $line);
+    my @fields = split(/,/, $line);
+    my $treat_sample = $fields[0] // "";
+    my $control_sample = $fields[1] // "";
+    # 第三列 group 在此脚本中不使用，仅用于 consensus peaks 步骤
     
     # 去除可能存在的空白字符
     $treat_sample =~ s/^\s+|\s+$//g;
     $control_sample =~ s/^\s+|\s+$//g;
+
+    # 跳过空样本名（metadata.csv 末尾空行或只有逗号的行）
+    if (!$treat_sample || !$control_sample) {
+        log_message("跳过空样本对（metadata.csv 可能含有空行）") if $treat_sample || $control_sample;
+        next;
+    }
 
     my $treat_bam = "$bamdir/$treat_sample/accepted_hits.sorted.unique.bam";
     my $control_bam = "$bamdir/$control_sample/accepted_hits.sorted.unique.bam";

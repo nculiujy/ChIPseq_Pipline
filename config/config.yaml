@@ -1,16 +1,20 @@
 picard_dir: /home/public_software_annotation/software/picard-2.18.2
-threads: 8
+threads: 10
 macs2_peak_type: narrow
 macs2_cutoff_type: pvalue
 macs2_cutoff_value: 0.05
 macs2_broad_cutoff: 0.1
+macs2_genome_size: auto
 normalization_method: BPM
+consensus_min_overlap: 2
 deeptools:
   matrix_mode: reference-point
+  input_mode: include_input
+  subtract_input_operation: log2
   reference_point:
     point: center
-    upstream: 2000
-    downstream: 2000
+    upstream: 3000
+    downstream: 3000
   scale_regions:
     region_length: 5000
     upstream: 2000
@@ -20,29 +24,47 @@ deeptools:
   bin_size: 10
   missing_data_as_zero: true
   plot:
-    color_map: RdYlBu_r
+    color_map: Pastel1
     z_min: 0
     z_max: auto
     interpolation: bilinear
+    per_group: true
   bed_source: union_peaks
   custom_bed_files: {}
   gtf_files: {}
+  comparisons:
+  - name: rep1vsrep2
+    groups:
+    - rep1
+    - rep2
+  - name: rep1vsrep3
+    groups:
+    - rep1
+    - rep3
+  replicate_qc:
+    enabled: true
+    plot_correlation: true
+    plot_pca: true
+    correlation_method: spearman
+  subtract_input: false
+gsea:
+  run_go: true
+  run_kegg: true
+  go_types:
+  - BP
+  - MF
+  - CC
+  pvalue_cutoff: 0.05
+  qvalue_cutoff: 0.2
+  min_gs_size: 10
+  max_gs_size: 500
+  top_n: 50
+  promoter_only: false
 projects:
-- species: TAIR
-  experiment: C-ChIRP
-  rawdata_dir: workflow/resources/TAIR10/C-ChIRP/fastqfile
-  index_dir: workflow/anno/Bowtie2anno_TAIR10/TAIR10
-  txdb: TxDb.Athaliana.BioMart.plantsmart28
-  orgdb: org.At.tair.db
-  modules:
-    1_download: false
-    2_QC: false
-    3_ChIPseq: false
-    4_analyse: false
-- species: TAIR
+- species: TAIR10
   experiment: 314Com5
   rawdata_dir: workflow/resources/TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427
-  index_dir: workflow/anno/Bowtie2anno_TAIR10_arabidopsis/TAIR10
+  index_dir: workflow/anno/TAIR10/bowtie2_index_TAIR/TAIR10_Chr
   txdb: TxDb.Athaliana.BioMart.plantsmart28
   orgdb: org.At.tair.db
   modules:
@@ -50,14 +72,50 @@ projects:
     2_QC: false
     3_ChIPseq: true
     4_analyse: true
-- species: TAIR
-  experiment: 314OE
-  rawdata_dir: workflow/resources/TAIR10/314OE CUT tag-seq 20260427/cleandata
-  index_dir: workflow/anno/Bowtie2anno_TAIR10_arabidopsis/TAIR10
-  txdb: TxDb.Athaliana.BioMart.plantsmart28
-  orgdb: org.At.tair.db
-  modules:
-    1_download: false
-    2_QC: false
-    3_ChIPseq: false
-    4_analyse: false
+    5_gsea: true
+    6_motif: true
+consensus_peaks:
+  min_overlap: 2
+  min_fraction: 0.5
+chipseeker:
+  tssRegion:
+  - -3000
+  - 3000
+  flankDistance: 3000
+  level: gene
+  add_flank_gene_info: false
+  genomicAnnotationPriority:
+  - 5UTR
+  - 3UTR
+  - Promoter
+  - Exon
+  - Intron
+  - Downstream
+  - Intergenic
+  ignore_1st_exon: true
+  ignore_1st_intron: true
+  ignore_downstream: false
+  ignore_promoter_subcategory: false
+  downstream_distance: 3000
+  ignoreOverlap: false
+  verbose: true
+  outputs:
+    anno_csv: true
+    pie_chart: true
+    bar_chart: true
+    dist_to_tss: true
+    avg_profile: true
+    covplot: false
+    promoter_csv: true
+    venn: false
+motif:
+  use_consensus_peaks: true
+  flank_size: 100
+  max_peaks: 1000
+  genome_fasta: ''
+  meme_db: ''
+  meme_nmotifs: 5
+  meme_minw: 6
+  meme_maxw: 15
+  meme_mod: zoops
+  streme_pvt: 0.05

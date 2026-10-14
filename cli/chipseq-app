@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# ChIPseq Pipeline — 主启动命令
+# 由 scripts/install-cli.sh 在安装时把 @@LIB@@ / @@RUNTIME_DIR@@ / @@ASSETS@@ 替换成绝对路径。
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "@@LIB@@"
+
+DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+PORT="${CHIPSEQ_PORT:-$CHIPSEQ_DEFAULT_PORT}"
+BIND="${CHIPSEQ_BIND:-127.0.0.1}"
+RUNTIME_OVERRIDE=""
+NO_BROWSER="${NO_BROWSER:-0}"
+FORCE_PULL=0
+
+# ---------- 参数解析 ----------
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --public)     BIND="0.0.0.0"; shift ;;
+        --port)       [ $# -ge 2 ] || die "--port 需要参数"; PORT="$2"; shift 2 ;;
+        --port=*)     PORT="${1#*=}"; shift ;;
+        --runtime)    [ $# -ge 2 ] || die "--runtime 需要参数"; RUNTIME_OVERRIDE="$2"; shift 2 ;;
+        --runtime=*)  RUNTIME_OVERRIDE="${1#*=}"; shift ;;
+        --no-browser) NO_BROWSER=1; shift ;;
+        --pull)       FORCE_PULL=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        *)            die "未知参数 '$1'；-h 查看帮助" ;;
+    esac
+done
+
+# ---------- 1. 读运行时 ----------
+if [ -n "$RUNTIME_OVERRIDE" ]; then
+    RUNTIME="$RUNTIME_OVERRIDE"
+    case "$RUNTIME" in apptainer|podman|docker|conda) ;; *) die "无效运行时 '$RUNTIME'" ;; esac
+else
+    RUNTIME=$(read_runtime "$DATA_DIR")
+fi
+log "运行时: $RUNTIME"
+log "数据目录: $DATA_DIR"
+
+# ---------- 2. 加载后端 ----------
+BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
+[ -f "$BACKEND" ] || die "找不到后端脚本 $BACKEND"
+# shellcheck disable=SC1090
+source "$BACKEND"
+
+# ---------- 3. 可选强制拉取 ----------
+if [ "$FORCE_PULL" = "1" ]; then
+    log "--pull 已指定，先升级 ..."
+    runtime_update || true
+fi
+
+# ---------- 4. 端口占用检查 ----------
+FREE_PORT=$(find_free_port "$PORT")
+if [ "$FREE_PORT" != "$PORT" ]; then
+    warn "端口 $PORT 已被占用，改用 $FREE_PORT"
+    PORT="$FREE_PORT"
+fi
+
+# ---------- 5. 启动 ----------
+BINDS=$(build_binds "$RUNTIME" "$DATA_DIR")
+runtime_run "$BINDS" "$PORT" "$BIND"
+
+# ---------- 6. 探活 ----------
+log "等待 Streamlit 就绪 (最多 90s) ..."
+if ! wait_ready "http://127.0.0.1:${PORT}" 90; then
+    warn "启动超时；最近日志如下："
+    runtime_logs_head 80 || true
+    die "启动失败，用 'chipseq-app-logs' 排查"
+fi
+
+# ---------- 7. 输出访问信息 ----------
+print_access_info "$BIND" "$PORT" "$DATA_DIR" "$RUNTIME"
+maybe_open_browser "$BIND" "$PORT"

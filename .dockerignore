@@ -1,0 +1,75 @@
+# ChIPseq Pipeline — Docker/Podman 构建上下文过滤
+# 防止 GB 级中间文件、结果、日志被打进镜像
+
+# Snakemake 元数据与锁
+.snakemake/
+.snakemake_timestamp
+
+# 结果与日志（用户数据外挂，不进镜像）
+result/
+logs/
+benchmarks/
+*.log
+
+# R 包缓存（构建时会重新 renv::restore；用户可挂载自己的 renv/）
+renv/library/
+renv/staging/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/sandbox/
+
+# Git / IDE / 编辑器
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.trae/
+*.swp
+*~
+
+# 大文件类型
+*.bam
+*.bai
+*.sam
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bed.gz
+*.bigWig
+*.bw
+*.sif
+*.tar
+*.tar.gz
+*.tar.zst
+*.zip
+
+# Python / R 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.Rhistory
+.RData
+.Rproj.user/
+
+# 本地数据目录（如果误放）
+data/
+references/
+annotations/
+resources/
+
+# 文档 & 元数据（可留可不留；留下增加镜像层大小）
+cloudflared.md
+miniconda_setup.md
+参考_README.md
+
+# 构建产物本身
+chipseq-pipeline.sif
+chipseq-env-*.tar.gz
+chipseq-pipeline-image.tar*

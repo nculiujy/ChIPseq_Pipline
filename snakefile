@@ -12,6 +12,8 @@ include: "workflow/rules/1_download.smk"
 include: "workflow/rules/2_QC.smk"
 include: "workflow/rules/3_ChIPseq.smk"
 include: "workflow/rules/4_analyse.smk"
+include: "workflow/rules/5_gsea.smk"
+include: "workflow/rules/6_motif.smk"
 
 # 根据每个 project 的独立 modules 开关来添加 TARGET_FILES
 for proj in PROJECTS:
@@ -35,8 +37,21 @@ for proj in PROJECTS:
         TARGET_FILES.extend([
             os.path.join("result", species, experiment, "4_analyse", "peakcalling_finished.txt"),
             os.path.join("result", species, experiment, "4_analyse", "annoChIPPeaks_finished.txt"),
-            os.path.join("result", species, experiment, "4_analyse", "deeptools_finished.txt")
+            os.path.join("result", species, experiment, "4_analyse", "deeptools_finished.txt"),
+            os.path.join("result", species, experiment, "4_analyse", "consensus_finished.txt"),
+            os.path.join("result", species, experiment, "4_analyse", "anno_consensus_finished.txt"),
+            os.path.join("result", species, experiment, "4_analyse", "replicate_qc_finished.txt"),
         ])
+
+    if modules.get("5_gsea", False):
+        TARGET_FILES.append(
+            os.path.join("result", species, experiment, "5_gsea", "gsea_finished.txt")
+        )
+
+    if modules.get("6_motif", False):
+        TARGET_FILES.append(
+            os.path.join("result", species, experiment, "6_motif", "motif_finished.txt")
+        )
 
 rule all:
     input:

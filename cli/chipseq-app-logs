@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ChIPseq Pipeline — 实时日志（Ctrl-C 退出）
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "@@LIB@@"
+
+DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+RUNTIME=$(read_runtime "$DATA_DIR")
+
+BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
+# shellcheck disable=SC1090
+source "$BACKEND"
+
+log "跟随日志 (runtime=$RUNTIME)，Ctrl-C 退出 ..."
+runtime_logs

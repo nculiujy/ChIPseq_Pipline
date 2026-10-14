@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ChIPseq Pipeline — 进入容器/环境的交互式 shell
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "@@LIB@@"
+
+DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+RUNTIME=$(read_runtime "$DATA_DIR")
+
+BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
+# shellcheck disable=SC1090
+source "$BACKEND"
+
+log "进入 shell (runtime=$RUNTIME) ..."
+runtime_shell

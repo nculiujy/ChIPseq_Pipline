@@ -14,6 +14,26 @@ workflow/anno/Bowtie2anno_TAIR10_arabidopsis/*
 workflow/anno/Bowtie2anno_GRCh38/*
 !workflow/anno/Bowtie2anno_GRCh38/.gitkeep
 
+# ---------- 由 UI（🧬 物种注释页）下载 / 本地构建的注释文件（体积大，不入 git）----------
+# bowtie2 索引目录（任意物种下的 bowtie2_index_*/）
+workflow/anno/*/bowtie2_index*/
+# 基因组 / 注释 / faidx 等常见大文件（.gz 已在下面全局忽略）
+workflow/anno/*/*.fa
+workflow/anno/*/*.fna
+workflow/anno/*/*.fai
+workflow/anno/*/*.bt2
+workflow/anno/*/*.gff
+workflow/anno/*/*.gff3
+workflow/anno/*/*.gtf
+workflow/anno/*/*.2bit
+# 物种注释下载任务的运行时状态与断点续传中间文件
+workflow/anno/tasks/
+workflow/anno/*/*.part
+workflow/anno/*/*.download
+# Glycine_max_v4 目录只保留 README
+workflow/anno/Glycine_max_v4/*
+!workflow/anno/Glycine_max_v4/README.md
+
 # 分析结果（可重新生成）
 result/*
 !result/.gitkeep
@@ -61,3 +81,18 @@ __pycache__/
 # Streamlit 缓存
 streamlit_app/__pycache__/
 streamlit_app/.streamlit/secrets.toml
+
+# ---------- 部署产物（由 container/build*.sh 生成，不入 git） ----------
+# Apptainer .sif
+*.sif
+chipseq-pipeline.sif
+
+# conda-pack 环境包
+chipseq-env-*.tar.gz
+
+# OCI 镜像离线包
+chipseq-pipeline-image.tar
+chipseq-pipeline-image.tar.zst
+
+# 用户数据目录（默认在 ~/.chipseq-pipeline，仅防误建到仓库内）
+.chipseq-pipeline/
