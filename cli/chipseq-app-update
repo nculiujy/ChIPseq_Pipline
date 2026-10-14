@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# ChIPseq Pipeline — 升级到最新镜像/环境
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "@@LIB@@"
+
+DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+RUNTIME=$(read_runtime "$DATA_DIR")
+
+BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
+# shellcheck disable=SC1090
+source "$BACKEND"
+
+log "升级中 (runtime=$RUNTIME) ..."
+runtime_update
+ok "升级完成；再次运行 'chipseq-app' 启动新版本"

@@ -1,8 +1,0 @@
-警告信息:
-程序包‘optparse’是用R版本4.6.0 来建造的 
-错误: package or namespace load failed for ‘ChIPseeker’ in dyn.load(file, DLLpath = DLLpath, ...):
- 无法载入共享目标对象‘/home/caijingjing/R/library/RSQLite/libs/RSQLite.so’：:
-  /home/caijingjing/R/library/RSQLite/libs/RSQLite.so: undefined symbol: R_getRegisteredNamespace
-此外: 警告信息:
-程序包‘ChIPseeker’是用R版本4.6.0 来建造的 
-停止执行

@@ -13,12 +13,18 @@ def get_genome_size(species):
     
     # 否则根据物种自动推断
     species = str(species).lower()
-    if species == "tair":
-        return "1.2e8"  # 拟南芥
-    elif species == "mm":
+    if species.startswith("tair"):
+        return "1.2e8"  # 拟南芥 (TAIR10 ~120Mb)
+    elif species.startswith("glyma") or species.startswith("glycine") or species.startswith("gmax") or species.startswith("soy"):
+        return "1.0e9"  # 大豆 (Glycine max v4 ~1.025Gb)
+    elif species.startswith("mm") or species.startswith("mus"):
         return "mm"     # 小鼠
-    elif species == "homo":
+    elif species.startswith("hg") or species.startswith("homo") or species == "hs":
         return "hs"     # 人类
+    elif species.startswith("dm") or species.startswith("drosophila"):
+        return "dm"     # 果蝇
+    elif species.startswith("ce") or species.startswith("caenorhabditis"):
+        return "ce"     # 线虫
     else:
         # 默认返回用户输入的原始值或一个安全默认值
         return species
@@ -68,9 +74,11 @@ def get_sample_pairs(metadata_file):
         for line in f:
             if line.strip():
                 fields = line.strip().split(',')
-                treat = fields[0].strip()
-                control = fields[1].strip()
-                pairs.append(f"{treat}_vs_{control}")
+                treat = fields[0].strip() if len(fields) > 0 else ""
+                control = fields[1].strip() if len(fields) > 1 else ""
+                # 跳过空字段的行
+                if treat and control:
+                    pairs.append(f"{treat}_vs_{control}")
     return pairs
 
 
@@ -86,11 +94,15 @@ def get_replicate_groups(metadata_file):
         for line in f:
             if line.strip():
                 fields = line.strip().split(',')
-                treat = fields[0].strip()
-                control = fields[1].strip()
+                treat = fields[0].strip() if len(fields) > 0 else ""
+                control = fields[1].strip() if len(fields) > 1 else ""
+                # 跳过空字段或 None 值的行
+                if not treat or not control or treat.lower() == "none" or control.lower() == "none":
+                    continue
                 pair_name = f"{treat}_vs_{control}"
                 group = fields[2].strip() if has_group and len(fields) >= 3 else ""
-                if group:
+                # 跳过 group 为空或 None/nan 的行
+                if group and group.lower() not in ("none", "nan", ""):
                     groups.setdefault(group, []).append(pair_name)
     return groups
 
@@ -106,13 +118,14 @@ rule analyse_annoChIPPeaks_single:
         config = ancient("config/config.yaml")
     output:
         "result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_peak_anno.csv",
-        "result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_pie_bp±2000.pdf"
+        "result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_annoPie.pdf"
     log:
         "logs/{species}/{experiment}/4_2_annoChIPPeaks_{pair}.log"
     params:
         peak_ext = lambda wildcards: "broadPeak" if config["macs2_peak_type"] == "broad" else "narrowPeak"
     shell:
         """
+        export LD_LIBRARY_PATH="${{CONDA_PREFIX:-$(dirname $(which Rscript))/..}}/lib:${{LD_LIBRARY_PATH:-}}"
         Rscript {input.script} \
             --peakfile result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/{wildcards.pair}/{wildcards.pair}_peaks.{params.peak_ext} \
             --output result/{wildcards.species}/{wildcards.experiment}/4_analyse/annoChIPPeaks/{wildcards.pair} \
@@ -183,15 +196,20 @@ rule analyse_consensus_peaks:
         "logs/{species}/{experiment}/4_4_consensus_peaks.log"
     params:
         threads = config["threads"],
-        min_overlap = config.get("consensus_min_overlap", 2)
+        min_overlap = config.get("consensus_min_overlap", 2),
+        min_fraction = config.get("consensus_peaks", {}).get("min_fraction", 0.5),
+        norm = config["normalization_method"]
     shell:
         """
         python {input.script} \
             --metadata {input.metadata} \
             --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
+            --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
             --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus \
-            --min-overlap {params.min_overlap} \
-            --config {input.config} > {log} 2>&1
+            --min_overlap {params.min_overlap} \
+            --min_fraction {params.min_fraction} \
+            --threads {params.threads} \
+            --norm {params.norm} > {log} 2>&1
 
         touch {output}
         """
@@ -301,3 +319,73 @@ rule analyse_replicate_qc:
             shell(f"{cmd_pca} >> {log} 2>&1")
 
         shell(f"touch {output}")
+
+
+# ============================================================
+# Consensus Peaks 注释（对每个 group 的 consensus BED 做 ChIPseeker 注释）
+# ============================================================
+rule analyse_anno_consensus:
+    input:
+        script = "workflow/scripts/4_2_annoChIPPeaks.R",
+        consensus_marker = "result/{species}/{experiment}/4_analyse/consensus_finished.txt",
+        config = ancient("config/config.yaml")
+    output:
+        "result/{species}/{experiment}/4_analyse/anno_consensus_finished.txt"
+    log:
+        "logs/{species}/{experiment}/4_6_anno_consensus.log"
+    shell:
+        """
+        set +euo pipefail  # 禁用 strict mode（此脚本自行处理错误）
+
+        # 设置 LD_LIBRARY_PATH
+        CONDA_LIB_DIR="${{CONDA_PREFIX:-$(dirname $(which Rscript))/..}}/lib"
+        if [ -d "$CONDA_LIB_DIR" ]; then
+            export LD_LIBRARY_PATH="$CONDA_LIB_DIR:${{LD_LIBRARY_PATH:-}}"
+        fi
+
+        CONSENSUS_DIR="result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus"
+        ANNO_OUTBASE="result/{wildcards.species}/{wildcards.experiment}/4_analyse/annoChIPPeaks"
+
+        # 直接扫描 consensus 目录中的 BED 文件来获取 group 名称
+        # 注意: 不能用 GROUPS 变量名（bash 内建特殊变量，返回 GID）
+        GRP_LIST=""
+        for BED_FILE in "$CONSENSUS_DIR"/consensus_*.bed; do
+            if [ -f "$BED_FILE" ] && [ -s "$BED_FILE" ]; then
+                GRP_NAME=$(basename "$BED_FILE" .bed | sed 's/^consensus_//')
+                GRP_LIST="$GRP_LIST $GRP_NAME"
+            fi
+        done
+        GRP_LIST=$(echo $GRP_LIST)  # trim leading space
+        echo "[DEBUG] GRP_LIST=[$GRP_LIST]" >> {log} 2>&1
+
+        set -o pipefail  # 恢复 pipefail
+
+        SUCCESS=0
+        FAIL=0
+
+        for GRP in $GRP_LIST; do
+            BED="$CONSENSUS_DIR/consensus_$GRP.bed"
+            if [ ! -f "$BED" ] || [ ! -s "$BED" ]; then
+                echo "[SKIP] consensus BED not found or empty: $BED" >> {log} 2>&1
+                continue
+            fi
+
+            OUTDIR="$ANNO_OUTBASE/consensus_$GRP"
+            mkdir -p "$OUTDIR"
+
+            echo "[INFO] Annotating consensus_$GRP ..." >> {log} 2>&1
+            if Rscript {input.script} \
+                --peakfile "$BED" \
+                --output "$OUTDIR" \
+                --name "consensus_$GRP" \
+                --config {input.config} >> {log} 2>&1; then
+                SUCCESS=$((SUCCESS + 1))
+            else
+                FAIL=$((FAIL + 1))
+                echo "[WARNING] consensus_$GRP annotation failed" >> {log} 2>&1
+            fi
+        done
+
+        echo "[SUMMARY] Consensus annotation: $SUCCESS succeeded, $FAIL failed" >> {log} 2>&1
+        touch {output}
+        """

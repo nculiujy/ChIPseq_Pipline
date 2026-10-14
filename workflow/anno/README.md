@@ -2,7 +2,7 @@
 
 本目录 (`workflow/anno`) 用于统一存放 ChIP-seq 流程中 Bowtie2 比对步骤所需的参考基因组索引文件。
 
-根据流程的设计，目前主要支持以下三类核心物种。本教程将指导您如何获取并配置这三个物种的注释文件。
+根据流程的设计，目前主要支持以下核心物种。本教程将指导您如何获取并配置这些物种的注释文件。
 
 ---
 
@@ -122,6 +122,31 @@ rm mm10.zip
   species: "mm"
   index_dir: "workflow/anno/mm10"
   ```
+
+---
+
+## 4. 大豆 (Glycine max v4)
+
+大豆基因组较大（~1.025 Gb），建议使用 `bowtie2-build --large-index` 自建索引。
+详细放置结构与配置示例见 [Glycine_max_v4/README.md](Glycine_max_v4/README.md)。
+
+### 关键约定（UI 自动识别）
+```
+workflow/anno/Glycine_max_v4/
+└── bowtie2_index_Glycine_max_v4/        # 目录名必须以 bowtie2 开头
+    ├── <prefix>.1.bt2 ...               # bowtie2 索引
+    ├── Glycine_max_v4.fa                # 基因组 FASTA（motif 分析需要）
+    └── Glycine_max_v4_v4.gff3           # 基因注释（填到 txdb 字段）
+```
+
+- **`config.yaml` 配置**：
+  ```yaml
+  species: "Glycine_max_v4"
+  index_dir: "workflow/anno/Glycine_max_v4/bowtie2_index_Glycine_max_v4/<prefix>"
+  txdb: "workflow/anno/Glycine_max_v4/bowtie2_index_Glycine_max_v4/Glycine_max_v4_v4.gff3"
+  orgdb: ""   # 大豆无官方 OrgDb，留空即可（注释正常，GO/KEGG 自动跳过）
+  ```
+- `species` 以 `Glyma/Glycine/gmax/soy` 开头时，流程自动使用：MACS2 genome size = 1.0e9、KEGG code = gmx、motif 数据库 = CIS-BP Glycine_max。
 
 ---
 

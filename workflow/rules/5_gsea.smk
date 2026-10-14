@@ -25,11 +25,13 @@ rule gsea_analysis:
     """
     基于重复组的 GSEA 富集分析：
     1. 读取 metadata.csv 中的 group 列
-    2. 对每个 group，取组内所有样本对的注释基因交集
-    3. 对交集基因运行 GO + KEGG 富集分析
+    2. 对每个 group，优先使用 consensus peaks 注释的基因列表
+    3. 若无 consensus annotation，回退到取组内所有样本对的注释基因交集
+    4. 对基因列表运行 GO + KEGG 富集分析
     """
     input:
-        anno_finished = "result/{species}/{experiment}/4_analyse/annoChIPPeaks_finished.txt"
+        anno_finished = "result/{species}/{experiment}/4_analyse/annoChIPPeaks_finished.txt",
+        anno_consensus_finished = "result/{species}/{experiment}/4_analyse/anno_consensus_finished.txt"
     output:
         finished = "result/{species}/{experiment}/5_gsea/gsea_finished.txt"
     log:
@@ -40,8 +42,14 @@ rule gsea_analysis:
         species    = lambda wc: wc.species,
         experiment = lambda wc: wc.experiment,
         p          = lambda wc: get_gsea_params(config),
+        flags      = lambda wc: " ".join(filter(None, [
+            "--run_go" if get_gsea_params(config)["run_go"] else "",
+            "--run_kegg" if get_gsea_params(config)["run_kegg"] else "",
+            "--promoter_only" if get_gsea_params(config)["promoter_only"] else "",
+        ])),
     shell:
         """
+        export LD_LIBRARY_PATH="${{CONDA_PREFIX}}/lib:${{LD_LIBRARY_PATH:-}}"
         Rscript workflow/scripts/5_1_gsea.R \
             --indir      {params.indir} \
             --outdir     {params.outdir} \
@@ -55,8 +63,6 @@ rule gsea_analysis:
             --min_gs_size    {params.p[min_gs_size]} \
             --max_gs_size    {params.p[max_gs_size]} \
             --top_n          {params.p[top_n]} \
-            {params.p[run_go]:?--run_go:} \
-            {params.p[run_kegg]:?--run_kegg:} \
-            {params.p[promoter_only]:?--promoter_only:} \
+            {params.flags} \
             > {log} 2>&1
         """

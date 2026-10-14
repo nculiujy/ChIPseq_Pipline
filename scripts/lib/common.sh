@@ -1,0 +1,223 @@
+# shellcheck shell=bash
+# ChIPseq Pipeline — 公共 Bash 函数库
+# 被 bootstrap.sh、cli/chipseq-app*、runtime/*.sh 共同 source
+
+# ---------- 日志 ----------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    _C_INFO=$'\033[1;34m'; _C_WARN=$'\033[1;33m'; _C_ERR=$'\033[1;31m'
+    _C_OK=$'\033[1;32m';   _C_RST=$'\033[0m'
+else
+    _C_INFO=""; _C_WARN=""; _C_ERR=""; _C_OK=""; _C_RST=""
+fi
+
+log()   { printf '%s[chipseq]%s %s\n'      "$_C_INFO" "$_C_RST" "$*"; }
+ok()    { printf '%s[chipseq][OK]%s %s\n'   "$_C_OK"   "$_C_RST" "$*"; }
+warn()  { printf '%s[chipseq][WARN]%s %s\n' "$_C_WARN" "$_C_RST" "$*" >&2; }
+die()   { printf '%s[chipseq][ERROR]%s %s\n' "$_C_ERR" "$_C_RST" "$*" >&2; exit 1; }
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "缺少命令 '$1'：$2"
+}
+
+# ---------- 全局常量 ----------
+CHIPSEQ_APP_NAME="chipseq-pipeline"
+CHIPSEQ_CONTAINER_NAME="chipseq-pipeline"
+CHIPSEQ_DEFAULT_PORT=8501
+CHIPSEQ_DEFAULT_IMAGE="${CHIPSEQ_IMAGE:-ghcr.io/chipseq-pipeline/chipseq-pipeline:latest}"
+CHIPSEQ_DEFAULT_DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+
+# ---------- 数据目录 ----------
+# init_data_dir <root> <assets_dir>
+init_data_dir() {
+    local root="$1" assets="${2:-}"
+    mkdir -p "$root"/{config,data,references,annotations,results,logs,renv,.snakemake}
+    if [ -n "$assets" ] && [ -d "$assets" ]; then
+        [ -f "$root/config/config.yaml"  ] || cp "$assets/config.yaml"  "$root/config/" 2>/dev/null || true
+        [ -f "$root/config/metadata.csv" ] || cp "$assets/metadata.csv" "$root/config/" 2>/dev/null || true
+    fi
+}
+
+# ---------- 运行时读取 ----------
+# read_runtime <data_dir> -> echo runtime name (apptainer|podman|docker|conda)
+read_runtime() {
+    local data_dir="$1"
+    [ -f "$data_dir/runtime" ] || die "未初始化，请先在仓库目录执行 ./bootstrap.sh"
+    local rt; rt=$(cat "$data_dir/runtime")
+    case "$rt" in
+        apptainer|podman|docker|conda) echo "$rt" ;;
+        *) die "未知运行时 '$rt'，请重跑 ./bootstrap.sh" ;;
+    esac
+}
+
+# ---------- 端口探测 ----------
+# find_free_port <起始端口>
+find_free_port() {
+    local p="${1:-$CHIPSEQ_DEFAULT_PORT}"
+    local max_tries=100 i=0
+    while [ "$i" -lt "$max_tries" ]; do
+        if ! _port_in_use "$p"; then
+            echo "$p"; return 0
+        fi
+        p=$((p + 1))
+        i=$((i + 1))
+        [ "$p" -gt 65535 ] && break
+    done
+    die "在 $1 起始的 $max_tries 个端口内未找到可用端口"
+}
+
+_port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk 'NR>1{print $4}' | grep -qE "[:.]${port}\$"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | awk 'NR>2{print $4}' | grep -qE "[:.]${port}\$"
+    else
+        # 兜底：尝试连一下
+        (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+    fi
+}
+
+# ---------- HTTP 探活 ----------
+# wait_ready <url> <timeout_sec>
+wait_ready() {
+    local url="$1" timeout="${2:-60}" i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1; i=$((i + 1))
+    done
+    return 1
+}
+
+# ---------- bind mount 列表构建 ----------
+# build_binds <runtime> <data_dir>
+# 输出：docker/podman -> "-v a:b -v c:d ..."；apptainer -> "a:b,c:d,..."；conda -> ""
+build_binds() {
+    local rt="$1" d="$2"
+    local pairs=(
+        "$d/config:$d/config"
+        "$d/data:$d/data"
+        "$d/references:$d/references"
+        "$d/annotations:$d/annotations"
+        "$d/results:$d/results"
+        "$d/logs:$d/logs"
+        "$d/renv:$d/renv"
+        "$d/.snakemake:$d/.snakemake"
+    )
+    # 容器内使用固定路径 /app/*
+    local container_pairs=(
+        "$d/config:/app/config"
+        "$d/data:/app/data"
+        "$d/references:/app/workflow/resources"
+        "$d/annotations:/app/workflow/anno"
+        "$d/results:/app/result"
+        "$d/logs:/app/logs"
+        "$d/renv:/app/renv"
+        "$d/.snakemake:/app/.snakemake"
+    )
+    case "$rt" in
+        docker|podman)
+            local out=""
+            for p in "${container_pairs[@]}"; do out="$out -v $p"; done
+            echo "$out"
+            ;;
+        apptainer)
+            local IFS=,
+            echo "${container_pairs[*]}"
+            ;;
+        conda)
+            echo ""
+            ;;
+        *)
+            die "build_binds: 未知运行时 '$rt'"
+            ;;
+    esac
+}
+
+# ---------- 访问信息打印 ----------
+# print_access_info <bind> <port> <data_dir> <runtime>
+print_access_info() {
+    local bind="$1" port="$2" data="$3" rt="$4"
+    local host_ip=""
+    if command -v hostname >/dev/null 2>&1; then
+        host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        [ -z "$host_ip" ] && host_ip=$(hostname -i 2>/dev/null | awk '{print $1}')
+    fi
+
+    cat <<EOF
+
+============================================================
+ ChIPseq Pipeline 已启动  (runtime: $rt)
+------------------------------------------------------------
+ 本机访问:    http://localhost:${port}
+EOF
+    if [ "$bind" = "0.0.0.0" ] && [ -n "$host_ip" ]; then
+        echo " 局域网访问:  http://${host_ip}:${port}"
+    fi
+    cat <<EOF
+ SSH 隧道:    在本地机器执行:
+                ssh -L ${port}:localhost:${port} \$USER@<服务器地址>
+              然后浏览器打开 http://localhost:${port}
+ 数据目录:    ${data}
+ 容器/进程:   ${CHIPSEQ_CONTAINER_NAME}
+------------------------------------------------------------
+ chipseq-app-logs    查看实时日志
+ chipseq-app-status  查看运行状态
+ chipseq-app-stop    停止服务
+ chipseq-app-update  升级到最新版本
+============================================================
+
+EOF
+}
+
+# ---------- 浏览器打开 ----------
+# maybe_open_browser <bind> <port>
+maybe_open_browser() {
+    local port="$2"
+    [ "${NO_BROWSER:-0}" = "1" ] && return 0
+    # 无 X11/Wayland -> 静默跳过
+    [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && return 0
+    command -v xdg-open >/dev/null 2>&1 || return 0
+    (xdg-open "http://localhost:${port}" >/dev/null 2>&1 &) || true
+}
+
+# ---------- usage ----------
+usage() {
+    cat <<EOF
+用法: chipseq-app [选项]
+
+选项:
+  --public           绑定到 0.0.0.0，允许局域网访问（默认仅 127.0.0.1）
+  --port PORT        指定宿主端口（默认 ${CHIPSEQ_DEFAULT_PORT}，冲突时自动 +1）
+  --runtime NAME     强制指定运行时 (apptainer|podman|docker|conda)
+  --no-browser       即使有桌面也不自动打开浏览器
+  --pull             启动前强制拉取最新镜像/环境
+  -h, --help         显示本帮助
+
+环境变量:
+  CHIPSEQ_IMAGE      覆盖 OCI 镜像名（docker/podman/apptainer）
+  CHIPSEQ_SIF_URI    覆盖 .sif 下载地址（apptainer）
+  CHIPSEQ_ENV_URL    覆盖 conda-pack tarball 地址（conda）
+  CHIPSEQ_PORT       覆盖端口
+  CHIPSEQ_BIND       覆盖绑定地址（127.0.0.1 或 0.0.0.0）
+  CHIPSEQ_DATA       覆盖数据目录（默认 ~/.chipseq-pipeline）
+  CHIPSEQ_CONDA_ENV  覆盖 conda 环境解压路径（默认 ~/.local/chipseq-env）
+  NO_COLOR           设置后禁用彩色输出
+EOF
+}
+
+# ---------- 磁盘空间检查 ----------
+# check_disk_space <path> <required_gb>
+check_disk_space() {
+    local path="$1" need_gb="${2:-6}"
+    command -v df >/dev/null 2>&1 || return 0
+    local avail_kb avail_gb
+    avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2{print $4}')
+    [ -z "$avail_kb" ] && return 0
+    avail_gb=$((avail_kb / 1024 / 1024))
+    if [ "$avail_gb" -lt "$need_gb" ]; then
+        warn "$path 可用空间 ${avail_gb}G，可能不足以容纳 ${need_gb}G 的镜像/环境。"
+        warn "如空间不足，可设 CHIPSEQ_DATA=/scratch/\$USER/chipseq-pipeline 换到大容量存储。"
+    fi
+}

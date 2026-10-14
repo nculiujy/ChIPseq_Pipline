@@ -1,0 +1,207 @@
+# ChIPseq Pipeline — 物种注释目录
+#
+# 每个物种提供多个下载源；用户可在 UI 里选择或直接改 URL。
+# 所有 URL 指向公共资源（Ensembl / EnsemblGenomes / NCBI / UCSC / SGD），
+# 无需认证；如网络受限，可先手动下载到本地再用「自定义源」填入 file:// 路径。
+#
+# 字段说明：
+#   display_name        UI 显示名
+#   genome_size_mb      基因组大小（MB），用于估算下载时间和磁盘
+#   default_txdb_pkg    Bioconductor TxDb 包名；null 表示用 GFF 文件路径
+#   default_orgdb_pkg   Bioconductor OrgDb 包名；"" 表示无（GSEA 会跳过）
+#   recommended_source  UI 默认选中的源 id
+#   sources.<id>:
+#     label             UI 显示名
+#     fasta.url         基因组 FASTA（推荐 .gz，worker 会自动解压）
+#     fasta.filename    保存文件名（含 .gz）
+#     fasta.size_mb     估算大小
+#     fasta.sha256      可选，校验值（null 跳过）
+#     gff.url           GFF3/GTF（可 .gz，makeTxDbFromGFF 支持 gz）
+#     gff.filename      保存文件名
+#     gff.size_mb       估算大小
+#     gff.sha256        可选
+
+version: 1
+
+species:
+
+  # ==================== 拟南芥 ====================
+  TAIR10:
+    display_name: "拟南芥 Arabidopsis thaliana (TAIR10)"
+    genome_size_mb: 119
+    default_txdb_pkg: "TxDb.Athaliana.BioMart.plantsmart28"
+    default_orgdb_pkg: "org.At.tair.db"
+    recommended_source: "Ensembl_Plants_61"
+    sources:
+      Ensembl_Plants_61:
+        label: "Ensembl Plants Release 61 (2024)"
+        fasta:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/arabidopsis_thaliana/dna/Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
+          filename: "Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
+          size_mb: 40
+        gff:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/arabidopsis_thaliana/Arabidopsis_thaliana.TAIR10.61.gff3.gz"
+          filename: "Arabidopsis_thaliana.TAIR10.61.gff3.gz"
+          size_mb: 20
+      NCBI_RefSeq:
+        label: "NCBI RefSeq GCF_000001735.4"
+        fasta:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1/GCF_000001735.4_TAIR10.1_genomic.fna.gz"
+          filename: "GCF_000001735.4_TAIR10.1_genomic.fna.gz"
+          size_mb: 40
+        gff:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1/GCF_000001735.4_TAIR10.1_genomic.gff.gz"
+          filename: "GCF_000001735.4_TAIR10.1_genomic.gff.gz"
+          size_mb: 25
+
+  # ==================== 人类 ====================
+  GRCh38:
+    display_name: "人类 Homo sapiens (GRCh38/hg38)"
+    genome_size_mb: 3100
+    default_txdb_pkg: "TxDb.Hsapiens.UCSC.hg38.knownGene"
+    default_orgdb_pkg: "org.Hs.eg.db"
+    recommended_source: "Ensembl_110"
+    sources:
+      Ensembl_110:
+        label: "Ensembl Release 110 (2023)"
+        fasta:
+          url: "https://ftp.ensembl.org/pub/release-110/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+          filename: "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+          size_mb: 830
+        gff:
+          url: "https://ftp.ensembl.org/pub/release-110/gtf/homo_sapiens/Homo_sapiens.GRCh38.110.gtf.gz"
+          filename: "Homo_sapiens.GRCh38.110.gtf.gz"
+          size_mb: 50
+      UCSC_hg38:
+        label: "UCSC hg38 (BigZips)"
+        fasta:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz"
+          filename: "hg38.fa.gz"
+          size_mb: 950
+        gff:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/genes/hg38.ncbiRefSeq.gff3.gz"
+          filename: "hg38.ncbiRefSeq.gff3.gz"
+          size_mb: 60
+
+  # ==================== 小鼠 ====================
+  GRCm39:
+    display_name: "小鼠 Mus musculus (GRCm39/mm39)"
+    genome_size_mb: 2700
+    default_txdb_pkg: null
+    default_orgdb_pkg: "org.Mm.eg.db"
+    recommended_source: "Ensembl_110"
+    sources:
+      Ensembl_110:
+        label: "Ensembl Release 110 (2023)"
+        fasta:
+          url: "https://ftp.ensembl.org/pub/release-110/fasta/mus_musculus/dna/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
+          filename: "Mus_musculus.GRCm39.dna.primary_assembly.fa.gz"
+          size_mb: 700
+        gff:
+          url: "https://ftp.ensembl.org/pub/release-110/gtf/mus_musculus/Mus_musculus.GRCm39.110.gtf.gz"
+          filename: "Mus_musculus.GRCm39.110.gtf.gz"
+          size_mb: 45
+      UCSC_mm39:
+        label: "UCSC mm39"
+        fasta:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm39/bigZips/mm39.fa.gz"
+          filename: "mm39.fa.gz"
+          size_mb: 800
+        gff:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm39/bigZips/genes/mm39.ncbiRefSeq.gff3.gz"
+          filename: "mm39.ncbiRefSeq.gff3.gz"
+          size_mb: 55
+
+  mm10:
+    display_name: "小鼠 Mus musculus (mm10, 旧版)"
+    genome_size_mb: 2700
+    default_txdb_pkg: "TxDb.Mmusculus.UCSC.mm10.knownGene"
+    default_orgdb_pkg: "org.Mm.eg.db"
+    recommended_source: "UCSC_mm10"
+    sources:
+      UCSC_mm10:
+        label: "UCSC mm10"
+        fasta:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.fa.gz"
+          filename: "mm10.fa.gz"
+          size_mb: 800
+        gff:
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/genes/mm10.ncbiRefSeq.gff3.gz"
+          filename: "mm10.ncbiRefSeq.gff3.gz"
+          size_mb: 50
+
+  # ==================== 大豆 ====================
+  Glycine_max_v4:
+    display_name: "大豆 Glycine max (v4.0)"
+    genome_size_mb: 1025
+    default_txdb_pkg: null          # 无 Bioconductor 官方包，用 GFF 文件
+    default_orgdb_pkg: ""           # 无官方 OrgDb；GSEA 会跳过
+    recommended_source: "Ensembl_Plants_61"
+    sources:
+      Ensembl_Plants_61:
+        label: "Ensembl Plants Release 61 (2024)"
+        fasta:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/glycine_max/dna/Glycine_max.Glycine_max_v4.0.dna.toplevel.fa.gz"
+          filename: "Glycine_max.Glycine_max_v4.0.dna.toplevel.fa.gz"
+          size_mb: 300
+        gff:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/glycine_max/Glycine_max.Glycine_max_v4.0.61.gff3.gz"
+          filename: "Glycine_max.Glycine_max_v4.0.61.gff3.gz"
+          size_mb: 40
+
+  # ==================== 玉米 ====================
+  Zea_mays_B73v5:
+    display_name: "玉米 Zea mays (B73 RefGen_v5)"
+    genome_size_mb: 2100
+    default_txdb_pkg: null
+    default_orgdb_pkg: ""
+    recommended_source: "Ensembl_Plants_61"
+    sources:
+      Ensembl_Plants_61:
+        label: "Ensembl Plants Release 61 (2024)"
+        fasta:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/zea_mays/dna/Zea_mays.Zm-B73-REFERENCE-NAM-5.0.dna.toplevel.fa.gz"
+          filename: "Zea_mays.Zm-B73-REFERENCE-NAM-5.0.dna.toplevel.fa.gz"
+          size_mb: 650
+        gff:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/zea_mays/Zea_mays.Zm-B73-REFERENCE-NAM-5.0.61.gff3.gz"
+          filename: "Zea_mays.Zm-B73-REFERENCE-NAM-5.0.61.gff3.gz"
+          size_mb: 60
+
+  # ==================== 水稻 ====================
+  Oryza_sativa_japonica:
+    display_name: "水稻 Oryza sativa Japonica (IRGSP-1.0)"
+    genome_size_mb: 380
+    default_txdb_pkg: null
+    default_orgdb_pkg: ""
+    recommended_source: "Ensembl_Plants_61"
+    sources:
+      Ensembl_Plants_61:
+        label: "Ensembl Plants Release 61 (2024)"
+        fasta:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/oryza_sativa/dna/Oryza_sativa.IRGSP-1.0.dna.toplevel.fa.gz"
+          filename: "Oryza_sativa.IRGSP-1.0.dna.toplevel.fa.gz"
+          size_mb: 120
+        gff:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/oryza_sativa/Oryza_sativa.IRGSP-1.0.61.gff3.gz"
+          filename: "Oryza_sativa.IRGSP-1.0.61.gff3.gz"
+          size_mb: 25
+
+  # ==================== 酵母 ====================
+  R64-1-1:
+    display_name: "酿酒酵母 Saccharomyces cerevisiae (R64-1-1/sacCer3)"
+    genome_size_mb: 12
+    default_txdb_pkg: "TxDb.Scerevisiae.UCSC.sacCer3.sgdGene"
+    default_orgdb_pkg: "org.Sc.sgd.db"
+    recommended_source: "Ensembl_110"
+    sources:
+      Ensembl_110:
+        label: "Ensembl Release 110 (2023)"
+        fasta:
+          url: "https://ftp.ensembl.org/pub/release-110/fasta/saccharomyces_cerevisiae/dna/Saccharomyces_cerevisiae.R64-1-1.dna.toplevel.fa.gz"
+          filename: "Saccharomyces_cerevisiae.R64-1-1.dna.toplevel.fa.gz"
+          size_mb: 4
+        gff:
+          url: "https://ftp.ensembl.org/pub/release-110/gff3/saccharomyces_cerevisiae/Saccharomyces_cerevisiae.R64-1-1.110.gff3.gz"
+          filename: "Saccharomyces_cerevisiae.R64-1-1.110.gff3.gz"
+          size_mb: 3

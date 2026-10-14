@@ -33,6 +33,7 @@ dependencies:
   - bioconductor-biocgenerics=0.52.0=r44hdfd78af_3
   - bioconductor-biocparallel=1.40.0=r44he5774e6_1
   - bioconductor-biostrings=2.74.0=r44h3df3fcb_1
+  - bioconductor-chipseeker=1.42.0=r44hdfd78af_0
   - bioconductor-data-packages=20260207=hdfd78af_0
   - bioconductor-genomeinfodb=1.42.0=r44hdfd78af_2
   - bioconductor-genomeinfodbdata=1.2.13=r44hdfd78af_0
@@ -44,6 +45,7 @@ dependencies:
   - bioconductor-ucsc.utils=1.2.0=r44h9ee0642_1
   - bioconductor-xvector=0.46.0=r44h15a9599_2
   - bioconductor-zlibbioc=1.52.0=r44h3df3fcb_2
+  - bedtools=2.31.1=h13024bc_3
   - blas=2.305=openblas
   - blas-devel=3.11.0=5_h1ea3ea9_openblas
   - boost=1.85.0=he8689d4_4
@@ -321,16 +323,19 @@ dependencies:
   - r-futile.logger=1.4.9=r44hc72bb7e_0
   - r-futile.options=1.0.1=r44hc72bb7e_1006
   - r-httr=1.4.8=r44hc72bb7e_0
+  - r-igraph
   - r-jsonlite=2.0.0=r44h54b55ab_1
   - r-lambda.r=1.2.4=r44hc72bb7e_5
   - r-mime=0.13=r44h54b55ab_1
   - r-openssl=2.3.5=r44h68c19f5_0
+  - r-optparse=1.8.2=r44hc72bb7e_1
   - r-r6=2.6.1=r44hc72bb7e_1
   - r-rcpp=1.1.1=r44h3697838_0
   - r-snow=0.4_4=r44hc72bb7e_4
   - r-snowfall=1.84_6.3=r44hc72bb7e_2
   - r-spp=1.16.0=r44he56ddfa_12
   - r-sys=3.4.3=r44h54b55ab_1
+  - r-xml
   - readline=8.3=h853b02a_0
   - referencing=0.36.2=pyh29332c3_0
   - requests=2.32.5=pyhd8ed1ab_0

@@ -110,7 +110,14 @@ def get_gff_files(species, bowtie2_folder):
 # ============================================================
 # Tab 布局
 # ============================================================
-tab1, tab2, tab3, tab4 = st.tabs(["🔧 全局参数", "🧬 项目管理", "📋 样本配对表", "🔬 GSEA 参数"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🔧 全局参数",
+    "🧬 项目管理",
+    "📋 样本配对表",
+    "📍 ChIP 注释",
+    "🔬 GSEA 参数",
+    "🧬 Motif 参数",
+])
 
 # ============================================================
 # Tab 1: 全局参数
@@ -153,6 +160,7 @@ with tab1:
         genome_options = {
             "自动（根据项目物种）": "auto",
             "拟南芥 (1.2e8)": "1.2e8",
+            "大豆 (1.0e9)": "1.0e9",
             "人类 (hs)": "hs",
             "小鼠 (mm)": "mm",
             "自定义": "custom"
@@ -161,7 +169,7 @@ with tab1:
         if current_genome in genome_options.values():
             genome_idx = list(genome_options.values()).index(current_genome)
         else:
-            genome_idx = 4  # 自定义
+            genome_idx = list(genome_options.keys()).index("自定义")
         
         genome_select = st.selectbox(
             "MACS2 基因组大小",
@@ -190,12 +198,56 @@ with tab1:
         )
         bin_size = st.number_input("Bin 大小 (bp)", min_value=1, max_value=500, value=dt.get("bin_size", 10))
         missing_zero = st.checkbox("缺失数据当作0", value=dt.get("missing_data_as_zero", True))
+        per_group = st.checkbox(
+            "按组拆分绘图 (--perGroup)",
+            value=dt.get("plot", {}).get("per_group", True),
+            help="勾选时热图/profile 按 group 分面展示（推荐多组比较时使用）；取消则所有样本合并在一张图中",
+        )
+        input_mode_options = ["none", "include_input", "log2_ratio"]
+        input_mode_labels = {
+            "none": "仅 IP 信号（默认）",
+            "include_input": "IP + Input 并排展示",
+            "log2_ratio": "IP/Input 比值 (bamCompare)",
+        }
+        current_input_mode = dt.get("input_mode", "none")
+        # 向后兼容旧配置
+        if current_input_mode == "none" and dt.get("subtract_input", False):
+            current_input_mode = "log2_ratio"
+        input_mode = st.selectbox(
+            "Input 对照模式",
+            input_mode_options,
+            index=input_mode_options.index(current_input_mode) if current_input_mode in input_mode_options else 0,
+            format_func=lambda x: input_mode_labels.get(x, x),
+            help=(
+                "• **仅 IP 信号**: 只展示 IP 样本的绝对信号热图\n"
+                "• **IP + Input 并排**: IP 和 Input 的 bigwig 同时展示在热图中，直接视觉对比\n"
+                "• **IP/Input 比值**: 用 bamCompare 计算 IP 与 Input 的比值，展示扣除背景后的富集信号"
+            ),
+        )
+        if input_mode == "log2_ratio":
+            subtract_op_options = ["log2", "ratio", "subtract", "mean", "reciprocal_ratio"]
+            subtract_operation = st.selectbox(
+                "比值运算方式",
+                subtract_op_options,
+                index=subtract_op_options.index(dt.get("subtract_input_operation", "log2")),
+                help="log2: log2(IP/Input)（推荐）；ratio: IP/Input；subtract: IP - Input",
+            )
+        else:
+            subtract_operation = dt.get("subtract_input_operation", "log2")
 
     with col2:
         bed_source = st.selectbox(
             "BED 文件来源",
-            ["macs2_peaks", "union_peaks", "custom", "genes"],
-            index=["macs2_peaks", "union_peaks", "custom", "genes"].index(dt.get("bed_source", "union_peaks")),
+            ["macs2_peaks", "union_peaks", "consensus_peaks", "custom", "genes"],
+            index=["macs2_peaks", "union_peaks", "consensus_peaks", "custom", "genes"].index(dt.get("bed_source", "union_peaks"))
+                if dt.get("bed_source", "union_peaks") in ["macs2_peaks", "union_peaks", "consensus_peaks", "custom", "genes"] else 1,
+            help=(
+                "决定 computeMatrix 使用哪些基因组区域：\n"
+                "- **macs2_peaks**: 单组用 consensus peaks，多组取涉及组 peaks 的并集\n"
+                "- **union_peaks**: 合并涉及组所有样本的 macs2 peaks 为并集区域\n"
+                "- **consensus_peaks**: 直接使用各组的 consensus peaks（单组直接用，多组合并）\n"
+                "- **custom / genes**: 使用自定义 BED 或 GTF 注释文件"
+            ),
         )
 
         # ---- 热图配色选择（含软色调分组 + 色带预览）----
@@ -323,7 +375,8 @@ with tab1:
 
     # 保存按钮
     if st.button("💾 保存全局配置", type="primary", key="save_global"):
-        new_config = copy.deepcopy(config)
+        # 重新读取最新 config，避免覆盖其他 Tab 的修改
+        new_config = load_config()
         new_config["picard_dir"] = picard_dir
         new_config["threads"] = int(threads)
         new_config["normalization_method"] = norm_method
@@ -335,38 +388,43 @@ with tab1:
         if peak_type == "broad" and broad_cutoff is not None:
             new_config["macs2_broad_cutoff"] = broad_cutoff
         else:
-            new_config["macs2_broad_cutoff"] = config.get("macs2_broad_cutoff", 0.1)
+            new_config["macs2_broad_cutoff"] = new_config.get("macs2_broad_cutoff", 0.1)
 
-        # DeepTools
-        new_config["deeptools"] = dt.copy() if dt else {}
-        new_config["deeptools"]["matrix_mode"] = matrix_mode
-        new_config["deeptools"]["bin_size"] = int(bin_size)
-        new_config["deeptools"]["missing_data_as_zero"] = missing_zero
-        new_config["deeptools"]["bed_source"] = bed_source
-        if "plot" not in new_config["deeptools"]:
-            new_config["deeptools"]["plot"] = {}
-        new_config["deeptools"]["plot"]["color_map"] = color_map
+        # DeepTools — 保留已有的 comparisons 等子字段
+        existing_dt = new_config.get("deeptools", {})
+        existing_dt["matrix_mode"] = matrix_mode
+        existing_dt["bin_size"] = int(bin_size)
+        existing_dt["missing_data_as_zero"] = missing_zero
+        existing_dt["bed_source"] = bed_source
+        existing_dt["subtract_input"] = (input_mode == "log2_ratio")
+        existing_dt["input_mode"] = input_mode
+        existing_dt["subtract_input_operation"] = subtract_operation
+        if "plot" not in existing_dt:
+            existing_dt["plot"] = {}
+        existing_dt["plot"]["color_map"] = color_map
+        existing_dt["plot"]["per_group"] = per_group
 
         # 保存 BED/GFF 路径
         if bed_source == "custom" and dt_file_path:
-            new_config["deeptools"]["custom_bed"] = dt_file_path
+            existing_dt["custom_bed"] = dt_file_path
         elif bed_source == "genes" and dt_file_path:
-            new_config["deeptools"]["gtf_file"] = dt_file_path
+            existing_dt["gtf_file"] = dt_file_path
 
         if matrix_mode == "reference-point":
-            new_config["deeptools"]["reference_point"] = {
+            existing_dt["reference_point"] = {
                 "point": ref_point,
                 "upstream": int(rp_upstream),
                 "downstream": int(rp_downstream),
             }
         else:
-            new_config["deeptools"]["scale_regions"] = {
+            existing_dt["scale_regions"] = {
                 "region_length": int(sr_length),
                 "upstream": int(sr_upstream),
                 "downstream": int(sr_downstream),
                 "unscaled_5prime": 0,
                 "unscaled_3prime": 0,
             }
+        new_config["deeptools"] = existing_dt
 
         save_config(new_config)
         st.success("✅ 全局配置已保存！")
@@ -449,8 +507,16 @@ with tab2:
                     )
 
             with col2:
-                st.text_input("TxDb", value=proj.get("txdb", ""), key=f"txdb_{i}")
-                st.text_input("OrgDb", value=proj.get("orgdb", ""), key=f"orgdb_{i}")
+                st.text_input(
+                    "TxDb（R 包名或本地 GFF3/GTF 路径）",
+                    value=proj.get("txdb", ""), key=f"txdb_{i}",
+                    help="填 Bioconductor TxDb 包名，或直接填 GFF3/GTF 文件路径（脚本自动识别）",
+                )
+                st.text_input(
+                    "OrgDb（R 包名，可留空）",
+                    value=proj.get("orgdb", ""), key=f"orgdb_{i}",
+                    help="基因符号注释与富集分析用；大豆等无官方 OrgDb 的物种可留空（注释仍可用，GO/KEGG 富集将跳过）",
+                )
 
                 st.markdown("**模块开关：**")
                 modules = proj.get("modules", {})
@@ -459,30 +525,38 @@ with tab2:
                 m3 = st.checkbox("3_ChIPseq", value=modules.get("3_ChIPseq", False), key=f"m3_{i}")
                 m4 = st.checkbox("4_analyse", value=modules.get("4_analyse", False), key=f"m4_{i}")
                 m5 = st.checkbox("5_gsea", value=modules.get("5_gsea", False), key=f"m5_{i}")
+                m6 = st.checkbox("6_motif", value=modules.get("6_motif", False), key=f"m6_{i}")
 
             btn_col1, btn_col2 = st.columns([3, 1])
             with btn_col1:
                 if st.button(f"💾 保存项目", key=f"save_proj_{i}"):
-                    projects[i]["species"] = selected_species
-                    projects[i]["experiment"] = st.session_state[f"exp_{i}"]
-                    projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
-                    projects[i]["index_dir"] = final_index_dir
-                    projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
-                    projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
-                    projects[i]["modules"] = {
-                        "1_download": m1,
-                        "2_QC": m2,
-                        "3_ChIPseq": m3,
-                        "4_analyse": m4,
-                        "5_gsea": m5,
-                    }
-                    config["projects"] = projects
-                    save_config(config)
-                    st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+                    # 重新读取最新 config 以避免被其他 Tab 的旧缓存覆盖
+                    fresh_config = load_config()
+                    fresh_projects = fresh_config.get("projects", [])
+                    if i < len(fresh_projects):
+                        fresh_projects[i]["species"] = selected_species
+                        fresh_projects[i]["experiment"] = st.session_state[f"exp_{i}"]
+                        fresh_projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
+                        fresh_projects[i]["index_dir"] = final_index_dir
+                        fresh_projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
+                        fresh_projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
+                        fresh_projects[i]["modules"] = {
+                            "1_download": m1,
+                            "2_QC": m2,
+                            "3_ChIPseq": m3,
+                            "4_analyse": m4,
+                            "5_gsea": m5,
+                            "6_motif": m6,
+                        }
+                        fresh_config["projects"] = fresh_projects
+                        save_config(fresh_config)
+                        st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+                        st.rerun()
             with btn_col2:
                 if st.button(f"🗑️ 删除", key=f"del_proj_{i}", type="secondary"):
-                    config["projects"].pop(i)
-                    save_config(config)
+                    fresh_config = load_config()
+                    fresh_config["projects"].pop(i)
+                    save_config(fresh_config)
                     st.success(f"✅ 项目 {proj['species']}/{proj['experiment']} 已删除")
                     st.rerun()
 
@@ -492,7 +566,7 @@ with tab2:
     # 新项目：物种选择
     available_species_new = get_species_dirs()
     if not available_species_new:
-        available_species_new = ["TAIR10", "homo", "mouse"]
+        available_species_new = ["TAIR10", "Glycine_max_v4", "homo", "mouse"]
 
     new_species = st.selectbox("物种", available_species_new, key="new_sp")
 
@@ -521,8 +595,14 @@ with tab2:
             new_rawdata = st.text_input("原始数据目录")
             st.caption(f"📄 Bowtie2 索引: `{new_index_value}`")
         with col2:
-            new_txdb = st.text_input("TxDb 包名")
-            new_orgdb = st.text_input("OrgDb 包名")
+            new_txdb = st.text_input(
+                "TxDb（R 包名或本地 GFF3/GTF 路径）",
+                help="填 Bioconductor TxDb 包名，或直接填 GFF3/GTF 文件路径（脚本自动识别）",
+            )
+            new_orgdb = st.text_input(
+                "OrgDb（R 包名，可留空）",
+                help="基因符号注释与富集分析用；大豆等无官方 OrgDb 的物种可留空（注释仍可用，GO/KEGG 富集将跳过）",
+            )
 
         submitted = st.form_submit_button("➕ 添加项目")
         if submitted and new_experiment:
@@ -539,10 +619,15 @@ with tab2:
                     "3_ChIPseq": False,
                     "4_analyse": False,
                     "5_gsea": False,
+                    "6_motif": False,
                 },
             }
-            config["projects"].append(new_proj)
-            save_config(config)
+            # 重新读取最新 config，避免覆盖其他 Tab 的修改
+            fresh_config = load_config()
+            if "projects" not in fresh_config:
+                fresh_config["projects"] = []
+            fresh_config["projects"].append(new_proj)
+            save_config(fresh_config)
             st.success(f"✅ 项目 {new_species}/{new_experiment} 已添加！")
             st.rerun()
 
@@ -599,6 +684,7 @@ with tab3:
         st.markdown("---")
         st.markdown("#### Consensus Peaks 参数")
         st.caption("当同一 group 有多个重复时，取重叠 peaks 作为 consensus")
+        st.caption("✅ Consensus peaks 将自动进行 ChIPseeker 注释（饼图 + CSV），结果在「结果预览」→「Peak Annotation」→「🔗 Consensus」中查看")
 
         config_for_tab3 = load_config()
         consensus_cfg = config_for_tab3.get("consensus_peaks", {})
@@ -625,8 +711,9 @@ with tab3:
         st.markdown("#### 🔬 DeepTools 组间比较 (Comparisons)")
         st.info(
             "**比较逻辑：** Peakcalling 使用 IP vs Input 配对，而 DeepTools 比较的是 **IP 之间**。\n\n"
-            "在此配置哪些 group 之间需要做热图/profile 对比。每个比较项包含 2 个或更多 group，"
-            "deeptools 会将这些 group 的 IP bigwig 放在一起做 computeMatrix + plotHeatmap。"
+            "在此配置哪些 group 需要做热图/profile 对比：\n"
+            "- **单组 (1 group)**：展示该组所有重复的信号分布热图\n"
+            "- **双组/多组 (≥2 groups)**：将多组 IP bigwig 放在一起做 computeMatrix + plotHeatmap 对比"
         )
 
         # 使用 session_state 管理 comparisons 列表（跨 rerun 持久化）
@@ -682,24 +769,25 @@ with tab3:
                 )
             with new_comp_col2:
                 new_comp_groups = st.multiselect(
-                    "选择要比较的 group（≥2组）",
+                    "选择 group（≥1组）",
                     available_groups,
                     key="new_comp_groups",
-                    help="选择 2 个或更多 group，它们的 IP bigwig 将一起出现在热图中进行对比",
+                    help="选择 1 个 group 可查看该组重复信号分布；选择 ≥2 个 group 则做组间对比",
                 )
 
             if st.button("➕ 添加比较", key="add_comparison"):
-                if new_comp_name and len(new_comp_groups) >= 2:
+                if new_comp_name and len(new_comp_groups) >= 1:
                     st.session_state.comparisons_list.append({
                         "name": new_comp_name,
                         "groups": new_comp_groups,
                     })
-                    st.success(f"✅ 已添加比较: {new_comp_name} ({' vs '.join(new_comp_groups)})")
+                    label = ' vs '.join(new_comp_groups) if len(new_comp_groups) > 1 else new_comp_groups[0]
+                    st.success(f"✅ 已添加比较: {new_comp_name} ({label})")
                     st.rerun()
                 elif not new_comp_name:
                     st.error("❌ 请输入比较名称")
                 else:
-                    st.error("❌ 请至少选择 2 个 group")
+                    st.error("❌ 请至少选择 1 个 group")
 
         # ---- 统一保存按钮 ----
         st.markdown("---")
@@ -707,20 +795,23 @@ with tab3:
             # 1. 保存 metadata.csv
             save_metadata(edited_df)
 
-            # 2. 保存 consensus_peaks 参数到 config.yaml
-            config_for_tab3["consensus_peaks"] = {
+            # 2. 重新读取最新 config，避免覆盖其他 Tab 的修改
+            fresh_cfg = load_config()
+
+            # 3. 保存 consensus_peaks 参数到 config.yaml
+            fresh_cfg["consensus_peaks"] = {
                 "min_overlap": int(consensus_min),
                 "min_fraction": float(consensus_frac),
             }
 
-            # 3. 保存 comparisons 到 config.yaml（从 session_state 读取）
-            if "deeptools" not in config_for_tab3:
-                config_for_tab3["deeptools"] = {}
-            config_for_tab3["deeptools"]["comparisons"] = (
+            # 4. 保存 comparisons 到 config.yaml（从 session_state 读取）
+            if "deeptools" not in fresh_cfg:
+                fresh_cfg["deeptools"] = {}
+            fresh_cfg["deeptools"]["comparisons"] = (
                 st.session_state.get("comparisons_list", []) if available_groups else []
             )
 
-            save_config(config_for_tab3)
+            save_config(fresh_cfg)
             st.success("✅ 样本配对表、Consensus 参数、Comparisons 已全部保存！")
     else:
         st.warning("未找到 metadata.csv 文件")
@@ -730,9 +821,306 @@ with tab3:
             st.rerun()
 
 # ============================================================
-# Tab 4: GSEA 参数
+# Tab 4: ChIP 注释（ChIPseeker）
 # ============================================================
 with tab4:
+    config = load_config()
+    cs = config.get("chipseeker", {}) or {}
+
+    # 兼容读取：同时接受 ChIPseeker 官方 camelCase（UI 保存时使用的命名）
+    # 与旧版 snake_case（历史 config），按 keys 顺序优先匹配。
+    def _cs_get(keys, default=None):
+        for k in keys:
+            if k in cs and cs[k] is not None:
+                return cs[k]
+        return default
+
+    # tssRegion 支持两种写法：
+    #   1) camelCase 一维数组: tssRegion: [-3000, 3000]
+    #   2) snake_case 嵌套:    tss_region: {upstream: -3000, downstream: 3000}
+    _tss_raw = _cs_get(["tssRegion", "tss_region"], None)
+    if isinstance(_tss_raw, dict) and "upstream" in _tss_raw:
+        tss_region_cfg = {"upstream": _tss_raw.get("upstream", -3000),
+                          "downstream": _tss_raw.get("downstream", 3000)}
+    elif isinstance(_tss_raw, (list, tuple)) and len(_tss_raw) >= 2:
+        tss_region_cfg = {"upstream": _tss_raw[0], "downstream": _tss_raw[1]}
+    else:
+        tss_region_cfg = {"upstream": -3000, "downstream": 3000}
+
+    st.subheader("📍 ChIPseeker Peak 注释参数")
+
+    st.markdown("#### 分析逻辑")
+    st.info(
+        "**基于 ChIPseeker 的 Peak 注释与可视化：**\n\n"
+        "1. 读取 MACS2 peaks（或重复组 consensus peaks）\n"
+        "2. 使用 TxDb 定义基因结构，将每个 peak 归类到 "
+        "Promoter / 5'UTR / 3'UTR / Exon / Intron / Downstream / Intergenic\n"
+        "3. 使用 OrgDb（可选）将 geneId 映射为 gene symbol\n"
+        "4. 输出注释表 + 饼图 / 柱状图 / TSS 距离分布 / TSS 平均信号曲线 等可视化\n\n"
+        "🔗 TxDb / OrgDb 在「项目管理」中为每个项目单独配置；本 Tab 配置**注释规则与可视化输出**。"
+    )
+
+    # 当前项目的注释库快览（仅展示，不可修改）
+    _projects_for_hint = config.get("projects", []) or []
+    if _projects_for_hint:
+        _hint_lines = []
+        for _p in _projects_for_hint:
+            _hint_lines.append(
+                f"  • `{_p.get('species','')}/{_p.get('experiment','')}` — "
+                f"TxDb: `{_p.get('txdb','') or '未配置'}` | OrgDb: `{_p.get('orgdb','') or '未配置'}`"
+            )
+        st.caption("当前项目注释库：\n" + "\n".join(_hint_lines))
+
+    # ---- 1. Promoter 区域定义 ----
+    st.markdown("---")
+    st.markdown("#### 1️⃣ Promoter 区域定义 (tssRegion)")
+    st.caption("以 TSS 为中心的区间被归类为 Promoter；ChIPseeker 默认 -3000 ~ +3000")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        tss_upstream = st.number_input(
+            "TSS 上游 (bp)",
+            min_value=-50000, max_value=0, step=500,
+            value=int(tss_region_cfg.get("upstream", -3000)),
+            key="cs_tss_upstream",
+            help="负值表示 TSS 上游，默认 -3000。拟南芥启动子常用 -1000 ~ -3000",
+        )
+    with col2:
+        tss_downstream = st.number_input(
+            "TSS 下游 (bp)",
+            min_value=0, max_value=50000, step=500,
+            value=int(tss_region_cfg.get("downstream", 3000)),
+            key="cs_tss_downstream",
+            help="正值表示 TSS 下游，默认 +3000",
+        )
+    with col3:
+        flank_distance = st.number_input(
+            "Flank Distance (Downstream 定义, bp)",
+            min_value=0, max_value=50000, step=500,
+            value=int(_cs_get(["flankDistance", "flank_distance"], 3000)),
+            key="cs_flank_distance",
+            help="基因 TES 下游 N bp 内的 peak 归类为 Downstream（而非 Intergenic）",
+        )
+
+    # ---- 2. 注释优先级 ----
+    st.markdown("---")
+    st.markdown("#### 2️⃣ Genomic Annotation Priority")
+    st.caption("当一个 peak 同时落在多个 feature（如 Exon 与 Intron）时，按此优先级归类。ChIPseeker 默认: Promoter > 5UTR > 3UTR > Exon > Intron > Downstream > Intergenic")
+
+    DEFAULT_PRIORITY = ["Promoter", "5UTR", "3UTR", "Exon", "Intron", "Downstream", "Intergenic"]
+    current_priority = _cs_get(["genomicAnnotationPriority", "annotation_priority"], DEFAULT_PRIORITY) or DEFAULT_PRIORITY
+    # 过滤非法项，保留合法项的相对顺序
+    current_priority = [x for x in current_priority if x in DEFAULT_PRIORITY]
+    if not current_priority:
+        current_priority = DEFAULT_PRIORITY
+
+    annotation_priority = st.multiselect(
+        "注释优先级（选择项顺序 = 优先度，高 → 低）",
+        DEFAULT_PRIORITY,
+        default=current_priority,
+        key="cs_annotation_priority",
+        help="列表中越靠前的类别优先级越高。若未选中某类别，该类别的 peak 将被归到下游低优先项或 Intergenic",
+    )
+    if not annotation_priority:
+        st.warning("⚠️ 至少选择一个类别，否则保存时将回退到默认优先级")
+        annotation_priority = DEFAULT_PRIORITY
+    st.caption(f"当前优先级: {' > '.join(annotation_priority)}")
+
+    # 关键提示：5'UTR / 3'UTR 独立分类的可见性依赖 priority 顺序
+    st.info(
+        "💡 **想看到独立的 5'UTR / 3'UTR 分类？** 把 `5UTR` / `3UTR` 拖到 `Promoter` 前面。\n\n"
+        "ChIPseeker 按此列表顺序“先到先得”：Promoter 区域（TSS ±3kb）与 5'UTR 高度重叠，"
+        "若 Promoter 在前，大量 5'UTR peak 会被优先归为 Promoter，导致饼图里 5'UTR 计数为 0 或很少。\n\n"
+        "推荐顺序（想突出 UTR）：`5UTR > 3UTR > Promoter > Exon > Intron > Downstream > Intergenic`"
+    )
+
+    # ---- 3. 注释粒度 ----
+    st.markdown("---")
+    st.markdown("#### 3️⃣ 注释粒度")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        level_options = ["gene", "transcript"]
+        _level_cur = cs.get("level", "gene")
+        level = st.selectbox(
+            "Level（注释级别）",
+            level_options,
+            index=level_options.index(_level_cur) if _level_cur in level_options else 0,
+            key="cs_level",
+            help="gene: 每个 peak 只关联一个基因（默认）；transcript: 保留所有转录本层面的注释",
+        )
+    with col2:
+        add_flank = st.checkbox(
+            "addFlankGeneInfo",
+            value=bool(cs.get("add_flank_gene_info", False)),
+            key="cs_add_flank",
+            help="为落在基因附近但未直接命中的 peak 额外附加 flank 基因信息（ChIPseeker v1.42+ 支持）",
+        )
+    with col3:
+        verbose = st.checkbox(
+            "Verbose（打印进度）",
+            value=bool(cs.get("verbose", True)),
+            key="cs_verbose",
+            help="运行时打印每个染色体的注释进度到日志",
+        )
+
+    # ---- 4. ChIPseeker 高级 options ----
+    st.markdown("---")
+    st.markdown("#### 4️⃣ 高级选项 (options 与 annotatePeak 参数)")
+    st.caption(
+        "仅列出 ChIPseeker v1.42 确实支持的选项："
+        "`ignore_1st_exon` / `ignore_1st_intron` / `ignore_downstream` / `ignore_promoter_subcategory` / `downstreamDistance` 与 `annotatePeak(ignoreOverlap=...)`。"
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ign_exon = st.checkbox(
+            "ignore_1st_exon",
+            value=bool(cs.get("ignore_1st_exon", True)),
+            key="cs_ign_exon",
+            help="忽略第一个外显子，使其仅归类为 Promoter（推荐）",
+        )
+        ign_intron = st.checkbox(
+            "ignore_1st_intron",
+            value=bool(cs.get("ignore_1st_intron", True)),
+            key="cs_ign_intron",
+            help="忽略第一个内含子（推荐）",
+        )
+    with col2:
+        ign_down = st.checkbox(
+            "ignore_downstream",
+            value=bool(cs.get("ignore_downstream", False)),
+            key="cs_ign_down",
+            help="完全跳过 Downstream 分类，基因下游的 peak 将归为 Intergenic",
+        )
+        ign_promo_sub = st.checkbox(
+            "ignore_promoter_subcategory",
+            value=bool(cs.get("ignore_promoter_subcategory", False)),
+            key="cs_ign_promo_sub",
+            help="不细分 Promoter 子类别（如 Promoter (1-2kb)），统一归为 Promoter",
+        )
+    with col3:
+        downstream_distance = st.number_input(
+            "downstreamDistance (bp)",
+            min_value=0, max_value=50000, step=500,
+            value=int(cs.get("downstream_distance", 3000)),
+            key="cs_downstream_distance",
+            help="ChIPseeker 全局下游距离（options 级），影响 Downstream 分类的判定范围",
+        )
+        ignore_overlap = st.checkbox(
+            "ignoreOverlap",
+            value=bool(_cs_get(["ignoreOverlap", "ignore_overlap"], False)),
+            key="cs_ignore_overlap",
+            help="annotatePeak() 参数：开启后忽略与 feature 仅部分重叠的 peak（严格模式）",
+        )
+
+    # ---- 5. 可视化输出 ----
+    st.markdown("---")
+    st.markdown("#### 5️⃣ 输出可视化")
+    st.caption("所有输出位于 `result/<species>/<experiment>/4_analyse/annoChIPPeaks/<pair>/`；结果预览页会自动扫描")
+    outputs_cfg = cs.get("outputs", {}) or {}
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        out_pie = st.checkbox(
+            "饼图 (plotAnnoPie) 🔒",
+            value=True,
+            disabled=True,
+            key="cs_out_pie",
+            help="【必需】Snakemake 规则与结果预览页硬性依赖此产物，不可关闭",
+        )
+        out_bar = st.checkbox(
+            "柱状图 (plotAnnoBar)",
+            value=bool(outputs_cfg.get("bar_chart", True)),
+            key="cs_out_bar",
+            help="各注释类别计数柱状图",
+        )
+        out_dist = st.checkbox(
+            "TSS 距离分布 (plotDistToTSS)",
+            value=bool(outputs_cfg.get("dist_to_tss", True)),
+            key="cs_out_dist",
+            help="peak 到最近 TSS 的距离分布直方图 + 密度曲线",
+        )
+    with col2:
+        out_avg = st.checkbox(
+            "TSS 平均信号曲线 (plotAvgProf)",
+            value=bool(outputs_cfg.get("avg_profile", True)),
+            key="cs_out_avg",
+            help="peak 在 TSS ±tssRegion 上的平均密度曲线",
+        )
+        out_cov = st.checkbox(
+            "染色体覆盖图 (covplot)",
+            value=bool(outputs_cfg.get("covplot", False)),
+            key="cs_out_cov",
+            help="peaks 在各染色体上的位置覆盖图（大数据量时较慢）",
+        )
+        out_promoter_csv = st.checkbox(
+            "Promoter peaks CSV",
+            value=bool(outputs_cfg.get("promoter_csv", True)),
+            key="cs_out_promoter_csv",
+            help="将落在 Promoter 区域的 peak 单独导出为 CSV",
+        )
+    with col3:
+        out_anno_csv = st.checkbox(
+            "完整注释表 CSV 🔒",
+            value=True,
+            disabled=True,
+            key="cs_out_anno_csv",
+            help="【必需】GSEA 模块与结果预览页硬性依赖此产物，不可关闭",
+        )
+        out_venn = st.checkbox(
+            "多样本 Venn 图 (vennpie)",
+            value=bool(outputs_cfg.get("venn", False)),
+            key="cs_out_venn",
+            help="仅当同一项目有 ≥ 2 个 peak 文件时，绘制注释基因 Venn 图（需后续实现）",
+        )
+        st.caption("")
+
+    # ---- 6. 当前配置预览 ----
+    st.markdown("---")
+    st.markdown("#### 🔍 保存前预览")
+    _preview = {
+        "tssRegion": [int(tss_upstream), int(tss_downstream)],
+        "flankDistance": int(flank_distance),
+        "level": level,
+        "add_flank_gene_info": bool(add_flank),
+        "genomicAnnotationPriority": annotation_priority,
+        "ignore_1st_exon": bool(ign_exon),
+        "ignore_1st_intron": bool(ign_intron),
+        "ignore_downstream": bool(ign_down),
+        "ignore_promoter_subcategory": bool(ign_promo_sub),
+        "downstream_distance": int(downstream_distance),
+        "ignoreOverlap": bool(ignore_overlap),
+        "verbose": bool(verbose),
+        "outputs": {
+            "anno_csv": bool(out_anno_csv),
+            "pie_chart": bool(out_pie),
+            "bar_chart": bool(out_bar),
+            "dist_to_tss": bool(out_dist),
+            "avg_profile": bool(out_avg),
+            "covplot": bool(out_cov),
+            "promoter_csv": bool(out_promoter_csv),
+            "venn": bool(out_venn),
+        },
+    }
+    with st.expander("📄 config.yaml 中的 `chipseeker:` 节内容", expanded=False):
+        st.code(yaml.dump({"chipseeker": _preview}, allow_unicode=True, sort_keys=False), language="yaml")
+
+    # ---- 7. 保存按钮 ----
+    if st.button("💾 保存 ChIP 注释参数", type="primary", key="save_chipseeker"):
+        fresh_cfg = load_config()
+        fresh_cfg["chipseeker"] = _preview
+        save_config(fresh_cfg)
+        st.success("✅ ChIPseeker 注释参数已保存到 `config/config.yaml`！")
+        st.caption(
+            f"tssRegion: [{tss_upstream}, {tss_downstream}] | flankDistance: {flank_distance} | "
+            f"level: {level} | priority: {' > '.join(annotation_priority)}"
+        )
+        st.info(
+            "💡 提示：修改后需重跑模块 4（annoChIPPeaks / anno_consensus）才能生效。\n"
+            "若已完成的注释结果使用了 `ancient()` 包装的 config，Snakemake 不会自动重跑，需手动删除对应的输出文件或使用 `--forceall`。"
+        )
+
+# ============================================================
+# Tab 5: GSEA 参数
+# ============================================================
+with tab5:
     config = load_config()
     gsea = config.get("gsea", {})
 
@@ -843,7 +1231,9 @@ with tab4:
 
     st.markdown("---")
     if st.button("💾 保存 GSEA 参数", type="primary", key="save_gsea"):
-        config["gsea"] = {
+        # 重新读取最新 config，避免覆盖其他 Tab 的修改
+        fresh_cfg = load_config()
+        fresh_cfg["gsea"] = {
             "run_go":         run_go,
             "run_kegg":       run_kegg,
             "go_types":       go_types_selected,
@@ -854,10 +1244,126 @@ with tab4:
             "top_n":          int(top_n),
             "promoter_only":  promoter_only,
         }
-        save_config(config)
+        save_config(fresh_cfg)
         st.success("✅ GSEA 参数已保存到 config/config.yaml！")
         st.caption(
             f"GO 类型: {', '.join(go_types_selected)} | "
             f"p < {pvalue_cutoff} | q < {qvalue_cutoff} | "
             f"基因集大小: {min_gs_size}–{max_gs_size} | Top {top_n}"
         )
+
+# ============================================================
+# Tab 6: Motif 参数
+# ============================================================
+with tab6:
+    config = load_config()
+    motif_cfg = config.get("motif", {})
+
+    st.subheader("🧬 模块6：MEME-ChIP Motif 富集分析参数")
+
+    st.markdown("#### 分析逻辑")
+    st.info(
+        "**基于 Peaks 的 Motif 发现与富集分析：**\n\n"
+        "1. 从 consensus peaks（或单样本 peaks）中心提取 ±flank_size bp 的基因组序列\n"
+        "2. 调用 MEME-ChIP 进行从头 motif 发现 (MEME/STREME)\n"
+        "3. 与已知 motif 数据库比对 (TOMTOM)\n"
+        "4. 分析 motif 在 peaks 中的位置富集 (CentriMo)\n\n"
+        "⚠️ 需要先运行模块4（含 consensus peaks 步骤）才能执行 Motif 分析\n\n"
+        "💡 首次运行时会自动下载 MEME motif 数据库（~200MB），后续复用"
+    )
+
+    st.markdown("---")
+    st.markdown("#### 基本设置")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        use_consensus = st.checkbox(
+            "使用 Consensus Peaks",
+            value=motif_cfg.get("use_consensus_peaks", True),
+            help="勾选：对每个重复组的 consensus peaks 做 motif 分析；取消：对每个样本对独立分析",
+        )
+        flank_size = st.slider(
+            "序列窗口大小 (±bp)",
+            min_value=50, max_value=500, step=50,
+            value=int(motif_cfg.get("flank_size", 100)),
+            help="从 peak 中心向两侧扩展的 bp 数。总提取长度 = 2 × flank_size",
+        )
+        max_peaks = st.number_input(
+            "最大 Peaks 数量",
+            min_value=100, max_value=10000, step=100,
+            value=int(motif_cfg.get("max_peaks", 1000)),
+            help="对 peaks 数量做上限截断，避免 MEME 运行过久。推荐 500-2000",
+        )
+
+    with col2:
+        genome_fasta = st.text_input(
+            "基因组 FASTA 路径（留空自动推断）",
+            value=motif_cfg.get("genome_fasta", ""),
+            help="留空时从项目配置的 index_dir 推断 .fa 文件路径",
+        )
+        meme_db = st.text_input(
+            "Motif 数据库路径（留空自动下载）",
+            value=motif_cfg.get("meme_db", ""),
+            help="指定 .meme 格式的 motif 数据库文件。留空则根据物种自动选择默认数据库（首次运行时自动下载）",
+        )
+        st.caption("📥 数据库下载地址: https://meme-suite.org/meme/doc/download.html")
+
+    st.markdown("---")
+    st.markdown("#### MEME 参数")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        meme_nmotifs = st.number_input(
+            "发现 Motif 数量",
+            min_value=1, max_value=20,
+            value=int(motif_cfg.get("meme_nmotifs", 5)),
+            help="MEME 从头发现的 motif 数量上限",
+        )
+    with col2:
+        meme_minw = st.number_input(
+            "最小 Motif 宽度",
+            min_value=4, max_value=30,
+            value=int(motif_cfg.get("meme_minw", 6)),
+        )
+    with col3:
+        meme_maxw = st.number_input(
+            "最大 Motif 宽度",
+            min_value=6, max_value=50,
+            value=int(motif_cfg.get("meme_maxw", 15)),
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        meme_mod_options = ["zoops", "oops", "anr"]
+        meme_mod = st.selectbox(
+            "MEME 模型",
+            meme_mod_options,
+            index=meme_mod_options.index(motif_cfg.get("meme_mod", "zoops")),
+            help="zoops: 每条序列 0 或 1 个 motif（推荐）；oops: 每条恰好 1 个；anr: 任意数量",
+        )
+    with col2:
+        streme_pvt = st.number_input(
+            "STREME p-value 阈值",
+            min_value=0.001, max_value=1.0,
+            value=float(motif_cfg.get("streme_pvt", 0.05)),
+            step=0.01, format="%.3f",
+            help="STREME 快速 motif 发现的显著性阈值",
+        )
+
+    st.markdown("---")
+    if st.button("💾 保存 Motif 参数", type="primary", key="save_motif"):
+        fresh_cfg = load_config()
+        fresh_cfg["motif"] = {
+            "use_consensus_peaks": use_consensus,
+            "flank_size":    int(flank_size),
+            "max_peaks":     int(max_peaks),
+            "genome_fasta":  genome_fasta,
+            "meme_db":       meme_db,
+            "meme_nmotifs":  int(meme_nmotifs),
+            "meme_minw":     int(meme_minw),
+            "meme_maxw":     int(meme_maxw),
+            "meme_mod":      meme_mod,
+            "streme_pvt":    float(streme_pvt),
+        }
+        save_config(fresh_cfg)
+        st.success("✅ Motif 参数已保存到 config/config.yaml！")

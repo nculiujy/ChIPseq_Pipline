@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--bamdir", required=True, help="Directory containing BAM files (for bigwig)")
     parser.add_argument("--outdir", required=True, help="Output directory for consensus peaks")
     parser.add_argument("--min_overlap", type=int, default=2, help="Minimum number of replicates a peak must appear in (default: 2)")
+    parser.add_argument("--min_fraction", type=float, default=0.5, help="Minimum reciprocal overlap fraction to consider two peaks as overlapping (default: 0.5)")
     parser.add_argument("--threads", type=int, default=8, help="Number of threads")
     parser.add_argument("--norm", default="BPM", help="Normalization method for bamCoverage")
 
@@ -74,12 +75,24 @@ def main():
             control = row["Input"].strip()
             pair_name = f"{treat}_vs_{control}"
 
-            # peak 文件路径
-            peak_file = os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks_tab.bed")
-            if os.path.exists(peak_file) and os.path.getsize(peak_file) > 0:
+            # peak 文件路径 - 尝试多种命名格式
+            peak_candidates = [
+                os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks_tab.bed"),
+                os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks.narrowPeak"),
+                os.path.join(args.peakdir, pair_name, f"{pair_name}_peaks.broadPeak"),
+            ]
+            peak_file = None
+            for candidate in peak_candidates:
+                if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                    peak_file = candidate
+                    break
+
+            if peak_file:
                 peak_files.append(peak_file)
             else:
-                print(f"  [WARNING] Peak file not found or empty: {peak_file}")
+                print(f"  [WARNING] Peak file not found for {pair_name}, tried:")
+                for c in peak_candidates:
+                    print(f"    - {c}")
 
             # BAM → BigWig (用于相关性分析)
             treat_bam = os.path.join(args.bamdir, treat, "accepted_hits.sorted.unique.bam")
@@ -103,37 +116,85 @@ def main():
             continue
 
         # ============================================================
-        # Step 1: bedtools multiinter — 多个 BED 文件的交集分析
+        # Step 1: 找在 ≥ min_overlap 个重复中都出现的 peaks
+        # 策略：用 bedtools intersect 找有重叠的 peaks，保留原始坐标并 merge
+        # 这样保留的是完整的 peak 区域，而不是 multiinter 的碎片
         # ============================================================
         group_outdir = os.path.join(args.outdir, f"group_{group_name}")
         os.makedirs(group_outdir, exist_ok=True)
 
-        # 先对每个 peak 文件排序（bedtools 要求输入排序）
+        # 先对每个 peak 文件排序
         sorted_peaks = []
         for i, pf in enumerate(peak_files):
             sorted_file = os.path.join(group_outdir, f"sorted_{i}.bed")
-            # 只取前3列 (chr, start, end) 确保格式兼容
             run_cmd(f"cut -f1-3 {pf} | sort -k1,1 -k2,2n > {sorted_file}")
             sorted_peaks.append(sorted_file)
 
-        # multiinter 分析
-        multiinter_out = os.path.join(group_outdir, "multiinter.bed")
-        peak_list = " ".join(sorted_peaks)
-        run_cmd(f"bedtools multiinter -i {peak_list} > {multiinter_out}")
-
-        # ============================================================
-        # Step 2: 过滤 — 保留 ≥ min_overlap 个重复覆盖的区域
-        # ============================================================
-        # multiinter 输出格式: chr start end num list ...
-        # 第4列是覆盖的文件数
-        consensus_raw = os.path.join(group_outdir, "consensus_raw.bed")
-        run_cmd(
-            f"awk '$4 >= {args.min_overlap} {{print $1\"\\t\"$2\"\\t\"$3}}' {multiinter_out} > {consensus_raw}"
-        )
-
-        # 合并相邻/重叠区域
         consensus_bed = os.path.join(args.outdir, f"consensus_{group_name}.bed")
-        run_cmd(f"bedtools merge -i {consensus_raw} > {consensus_bed}")
+
+        if len(sorted_peaks) == 2 and args.min_overlap <= 2:
+            # 两个重复：找互相有重叠的 peaks，然后 merge 为共识区域
+            # 使用 -f 参数要求至少 min_fraction 的重叠比例（避免 1bp 碰瓷也算重叠）
+            min_frac = args.min_fraction
+            # A 中与 B 有 ≥min_fraction 重叠的 peaks（保留 A 的原始坐标）
+            intersect_a = os.path.join(group_outdir, "intersect_a.bed")
+            run_cmd(
+                f"bedtools intersect -a {sorted_peaks[0]} -b {sorted_peaks[1]} "
+                f"-f {min_frac} -wa | sort -k1,1 -k2,2n > {intersect_a}"
+            )
+            # B 中与 A 有 ≥min_fraction 重叠的 peaks（保留 B 的原始坐标）
+            intersect_b = os.path.join(group_outdir, "intersect_b.bed")
+            run_cmd(
+                f"bedtools intersect -a {sorted_peaks[1]} -b {sorted_peaks[0]} "
+                f"-f {min_frac} -wa | sort -k1,1 -k2,2n > {intersect_b}"
+            )
+            # 合并两个方向的 peaks，然后 bedtools merge 把重叠区域合并为单一 consensus peak
+            run_cmd(
+                f"cat {intersect_a} {intersect_b} | sort -k1,1 -k2,2n | "
+                f"bedtools merge -i - > {consensus_bed}"
+            )
+            # 统计 merge 前后差异
+            with open(intersect_a) as f:
+                n_a = sum(1 for _ in f)
+            with open(intersect_b) as f:
+                n_b = sum(1 for _ in f)
+            print(f"  [DEBUG] A∩B={n_a}, B∩A={n_b}, 合并前总={n_a+n_b}")
+        else:
+            # 多个重复：对每个 peak 计算在几个文件中出现（有任何碱基重叠就算）
+            # 先合并所有 peaks 为候选区域
+            all_peaks_merged = os.path.join(group_outdir, "all_peaks_merged.bed")
+            run_cmd(
+                f"cat {' '.join(sorted_peaks)} | sort -k1,1 -k2,2n | "
+                f"bedtools merge -i - > {all_peaks_merged}"
+            )
+
+            # 对每个候选区域，统计在几个原始文件中有重叠
+            candidates = []
+            with open(all_peaks_merged) as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    candidates.append(parts[:3])
+
+            hit_counts = [0] * len(candidates)
+            for sp in sorted_peaks:
+                tmp_out = os.path.join(group_outdir, "tmp_intersect.bed")
+                run_cmd(
+                    f"bedtools intersect -a {all_peaks_merged} -b {sp} "
+                    f"-c > {tmp_out}",
+                    allow_fail=True
+                )
+                with open(tmp_out) as f:
+                    for idx, line in enumerate(f):
+                        parts = line.strip().split("\t")
+                        count = int(parts[-1])
+                        if count > 0:
+                            hit_counts[idx] += 1
+
+            # 过滤：保留 >= min_overlap 个文件命中的区域
+            with open(consensus_bed, "w") as fout:
+                for idx, cand in enumerate(candidates):
+                    if hit_counts[idx] >= args.min_overlap:
+                        fout.write("\t".join(cand) + "\n")
 
         # 统计
         with open(consensus_bed) as f:
