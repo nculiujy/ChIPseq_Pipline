@@ -8,11 +8,11 @@
 #   - 基于 CentOS 7 兼容 glibc 2.17，产物 conda-pack 后可覆盖 CentOS7+/Ubuntu16+/RHEL7+
 #   - 自带 mamba，能并发解算 environment.yml
 
-FROM condaforge/miniforge3:24.9.0
+FROM docker.io/condaforge/miniforge3:25.11.0-0
 
 LABEL org.opencontainers.image.title="ChIPseq Pipeline" \
       org.opencontainers.image.description="Snakemake + Streamlit + R/Bioconductor ChIP-seq 分析流水线" \
-      org.opencontainers.image.source="https://github.com/chipseq-pipeline/ChIPseq_Pipline" \
+      org.opencontainers.image.source="https://github.com/nculiujy/ChIPseq_Pipline" \
       org.opencontainers.image.licenses="MIT"
 
 # ---------- 系统层依赖 ----------
@@ -34,6 +34,8 @@ ENV LANG=en_US.UTF-8 \
 
 # ---------- Conda 环境 ----------
 # 只拷 environment.yml 以最大化利用构建缓存
+# 先写 condarc：channel 名用官方（避免多源解算爆炸），URL 走清华镜像加速下载
+RUN printf 'channels:\n  - conda-forge\n  - bioconda\n  - defaults\ndefault_channels:\n  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main\n  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r\ncustom_channels:\n  conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n  bioconda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n' > /root/.condarc
 COPY environment.yml /tmp/environment.yml
 RUN mamba env create -f /tmp/environment.yml -n ChIPseq_Pipline \
  && mamba clean -afy \
