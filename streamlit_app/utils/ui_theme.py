@@ -180,21 +180,21 @@ code, pre, [data-testid="stCode"] { font-family: var(--ux-mono) !important; }
 .ux-section-title { font-size: .8rem; font-weight: 700;
   letter-spacing: .05em; color: var(--ux-subtle); margin: .2rem 0 .6rem 0; }
 
-/* ---------- 日志控制台 ---------- */
-.ux-console { background: #0F1720; border: 1px solid #1E2A36; border-radius: var(--ux-radius);
+/* ---------- 日志控制台（白底深字，保证可读） ---------- */
+.ux-console { background: #FFFFFF; border: 1px solid var(--ux-border); border-radius: var(--ux-radius);
   box-shadow: var(--ux-shadow-sm); overflow: hidden; }
 .ux-console-bar { display: flex; align-items: center; gap: .4rem; padding: .45rem .8rem;
-  background: #16212C; border-bottom: 1px solid #1E2A36; }
-.ux-console-bar span.t { font-family: var(--ux-mono); font-size: .74rem; color: #8FA3B5; font-weight: 500; }
+  background: #F1F4F8; border-bottom: 1px solid var(--ux-border); }
+.ux-console-bar span.t { font-family: var(--ux-mono); font-size: .74rem; color: #5A6B7B; font-weight: 500; }
 .ux-console-dotc { width: 10px; height: 10px; border-radius: 50%; }
 .ux-console pre { margin: 0; padding: .85rem 1rem; max-height: 380px; overflow: auto;
   font-family: var(--ux-mono) !important; font-size: .78rem; line-height: 1.55;
-  color: #D6E2EC; background: transparent !important; border: none !important; white-space: pre-wrap; word-break: break-word; }
+  color: #1F2933 !important; background: #FFFFFF !important; border: none !important; white-space: pre-wrap; word-break: break-word; }
 /* Streamlit 会把 <pre> 当代码块做语法高亮，真实文字落在 pre>code>span；
-   强制这些后代浅色透明，否则深字压深底“看起来为空”。只作用于 pre 内，不影响标题栏圆点。 */
+   强制深色文字 + 透明底，否则被注入的深色字压白底看不清。只作用于 pre 内，不影响标题栏圆点。 */
 .ux-console pre code, .ux-console pre code span, .ux-console pre span,
 .ux-console pre .codehilite, .ux-console pre [class*="token"] {
-  color: #D6E2EC !important; background: transparent !important;
+  color: #1F2933 !important; background: transparent !important;
   font-family: var(--ux-mono) !important; white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- 原生组件：控制台化 ---------- */
