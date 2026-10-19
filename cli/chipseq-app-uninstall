@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# ChIPseq Pipeline — 卸载 bootstrap.sh 安装的环境
+#
+# 默认删除（conda 模式安装足迹，保留用户数据）：
+#   - 启动器环境  ~/.local/chipseq-launch
+#   - 分析环境    ~/.local/chipseq-env
+#   - CLI 命令    ~/.local/bin/chipseq-app*
+#   - 后端副本    ~/.local/share/chipseq-pipeline/
+#   保留：数据目录 ~/.chipseq-pipeline（参考基因组 / 结果 / 配置）
+#
+# 选项：
+#   --data   连数据目录 ~/.chipseq-pipeline 一起删（含参考基因组/结果，不可逆！）
+#   --all    = 默认全部 + 数据目录（彻底清空）
+#   -y/--yes 跳过交互确认
+#   -h       用法
+#
+# 环境变量（覆盖默认 prefix，与 conda.sh 对齐）：
+#   CHIPSEQ_LAUNCH_ENV  启动器 prefix（默认 ~/.local/chipseq-launch）
+#   CHIPSEQ_CONDA_ENV   分析 prefix  （默认 ~/.local/chipseq-env）
+#   CHIPSEQ_DATA        数据目录     （默认 ~/.chipseq-pipeline）
+#   PREFIX              安装前缀     （默认 ~/.local）
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "@@LIB@@"
+
+_install_root="${PREFIX:-$HOME/.local}"
+BIN_DIR="$_install_root/bin"
+SHARE_DIR="$_install_root/share/chipseq-pipeline"
+LAUNCH_ENV="${CHIPSEQ_LAUNCH_ENV:-$HOME/.local/chipseq-launch}"
+ANALYSIS_ENV="${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}"
+DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+
+usage() {
+    cat <<EOF
+用法: chipseq-app-uninstall [选项]
+
+卸载 bootstrap.sh 安装的 conda 环境。默认删除 启动器 + 分析环境 + CLI + 后端副本，
+**保留**数据目录（参考基因组/结果/配置）。执行前会列出将要删除的内容并请求确认。
+
+选项:
+  --data        连数据目录一起删：$DATA_DIR（含参考基因组/结果，不可逆！）
+  --all         默认全部 + 数据目录（彻底清空本机所有 chipseq 安装痕迹）
+  -y, --yes     跳过交互确认
+  -h, --help    显示本帮助
+EOF
+}
+
+RM_DATA=0
+ASSUME_YES=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --data)      RM_DATA=1 ;;
+        --all)       RM_DATA=1 ;;
+        -y|--yes)    ASSUME_YES=1 ;;
+        -h|--help)   usage; exit 0 ;;
+        *)           die "未知选项 '$1'（-h 看用法）" ;;
+    esac
+    shift
+done
+
+# 安全校验：绝不删空串 / 根 / 家目录本身
+_is_safe_target() {
+    local p="$1"
+    [ -n "$p" ] || return 1
+    case "$p" in
+        /|"$HOME"|/home|/root|/usr|/etc|/var) return 1 ;;
+    esac
+    # 必须是某个具体子目录（末段非空、非 "."/".."）
+    local base="${p##*/}"
+    [ -n "$base" ] && [ "$base" != "." ] && [ "$base" != ".." ] || return 1
+    return 0
+}
+
+# 存在才计入待删列表
+_targets=()
+for t in "$LAUNCH_ENV" "$ANALYSIS_ENV" "$BIN_DIR/chipseq-app"* "$SHARE_DIR"; do
+    if [ -e "$t" ]; then _targets+=("$t"); fi
+done
+if [ "$RM_DATA" = 1 ] && [ -e "$DATA_DIR" ]; then _targets+=("$DATA_DIR"); fi
+
+log "==== ChIPseq Pipeline 卸载 ===="
+log "启动器 : $LAUNCH_ENV"
+log "分析环境: $ANALYSIS_ENV"
+log "CLI 目录: $BIN_DIR/chipseq-app*"
+log "后端副本: $SHARE_DIR"
+if [ "$RM_DATA" = 1 ]; then
+    warn "数据目录: $DATA_DIR  ← 也将删除（参考基因组/结果/配置，不可逆！）"
+else
+    log "数据目录: $DATA_DIR  ← 保留（如需删除加 --data）"
+fi
+
+if [ "${#_targets[@]}" -eq 0 ]; then
+    ok "没有检测到已安装的组件，无需卸载。"
+    exit 0
+fi
+
+echo
+log "将要删除以下 ${#_targets[@]} 项："
+for t in "${_targets[@]}"; do
+    sz=""
+    if command -v du >/dev/null 2>&1; then sz="  ($(du -sh "$t" 2>/dev/null | awk '{print $1}'))"; fi
+    printf '  - %s%s\n' "$t" "$sz"
+done
+echo
+
+if [ "$ASSUME_YES" != 1 ]; then
+    ans="n"
+    printf '确认卸载？输入 yes 继续，其它任意键取消: '
+    read -r ans || ans="n"
+    [ "$ans" = "yes" ] || { log "已取消，未做任何改动。"; exit 0; }
+fi
+
+# 先优雅停止正在运行的服务（best-effort；此时后端脚本尚在）
+if command -v chipseq-app-stop >/dev/null 2>&1; then
+    chipseq-app-stop >/dev/null 2>&1 || true
+fi
+[ -f "$DATA_DIR/streamlit.pid" ] && kill -TERM "$(cat "$DATA_DIR/streamlit.pid")" 2>/dev/null || true
+
+_rm_env() {
+    local p="$1"
+    _is_safe_target "$p" || { warn "跳过不安全路径: '$p'"; return 0; }
+    [ -e "$p" ] || return 0
+    local c=""
+    if command -v conda >/dev/null 2>&1; then c=conda; fi
+    if [ -z "$c" ] && command -v mamba >/dev/null 2>&1; then c=mamba; fi
+    if [ -n "$c" ] && [ -d "$p/conda-meta" ]; then
+        log "移除 conda 环境: $p（$c env remove）"
+        "$c" env remove -p "$p" -y >/dev/null 2>&1 || rm -rf "$p"
+    else
+        log "删除目录: $p"
+        rm -rf "$p"
+    fi
+}
+
+# 1) 两个 prefix 环境（存在才动）
+_rm_env "$LAUNCH_ENV"
+_rm_env "$ANALYSIS_ENV"
+
+# 2) 数据目录（仅 --data/--all）
+if [ "$RM_DATA" = 1 ]; then
+    _is_safe_target "$DATA_DIR" && { log "删除数据目录: $DATA_DIR"; rm -rf "$DATA_DIR"; } \
+        || warn "跳过不安全的数据目录路径: '$DATA_DIR'"
+fi
+
+# 3) 后端副本
+if _is_safe_target "$SHARE_DIR" && [ -e "$SHARE_DIR" ]; then
+    log "删除后端副本: $SHARE_DIR"; rm -rf "$SHARE_DIR"
+fi
+
+# 4) CLI 命令（自删放最后；短脚本已在 bash 缓冲内）
+log "删除 CLI 命令: $BIN_DIR/chipseq-app*"
+rm -f "$BIN_DIR"/chipseq-app* 2>/dev/null || true
+
+echo
+ok "卸载完成。$( [ "$RM_DATA" = 1 ] && echo '含数据目录已清除。' || echo "数据目录 $DATA_DIR 已保留（参考基因组/结果/配置未动）。" )"
+log "重新安装：cd <仓库目录> && CHIPSEQ_RUNTIME=conda ./bootstrap.sh"
+if [ "$RM_DATA" = 0 ]; then log "如需连数据一起清空：chipseq-app-uninstall --data"; fi
+log "注意：本条命令自身（chipseq-app-uninstall）也已随之移除，需从仓库 cli/ 重新 bootstrap 才会再出现。"
