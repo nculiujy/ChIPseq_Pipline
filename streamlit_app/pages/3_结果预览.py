@@ -10,8 +10,18 @@ from pathlib import Path
 from datetime import datetime
 from PIL import Image
 
-st.set_page_config(page_title="结果预览", page_icon="📊", layout="wide")
-st.title("📊 结果预览")
+import sys
+
+# 让 streamlit_app/utils 可导入（控制台主题）
+_APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
+
+st.set_page_config(page_title="结果预览", layout="wide")
+inject_theme()
+render_sidebar("preview")
+page_header("结果预览", "浏览分析产出：比对统计、Peak 注释、热图、富集与 Motif")
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
@@ -50,7 +60,7 @@ if selected_proj:
         st.warning(f"结果目录不存在: `result/{species}/{experiment}/`")
         st.stop()
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 比对率统计", "🔬 Peak Annotation", "📈 DeepTools Heatmap", "🧬 富集分析 (GO/KEGG)", "🧬 Motif Analysis", "📁 所有输出文件"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["比对率统计", "Peak Annotation", "DeepTools Heatmap", "富集分析 (GO/KEGG)", "Motif Analysis", "所有输出文件"])
 
     # ============================================================
     # Tab 1: 比对率统计
@@ -136,18 +146,18 @@ if selected_proj:
                     st.markdown("---")
                     csv_data = df_align.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        "⬇️ 下载比对率统计表",
+                        "下载比对率统计表",
                         data=csv_data,
                         file_name=f"{species}_{experiment}_alignment_stats.csv",
                         mime="text/csv"
                     )
                 else:
-                    st.warning("⚠️ 日志中未找到比对率信息（可能任务未完成或已中断）")
+                    st.warning("日志中未找到比对率信息（可能任务未完成或已中断）")
             
             except Exception as e:
                 st.error(f"解析日志文件失败: {e}")
         else:
-            st.info(f"📌 日志文件不存在: `logs/{species}/{experiment}/3_1_ChIPseq.log`")
+            st.info(f"日志文件不存在: `logs/{species}/{experiment}/3_1_ChIPseq.log`")
             st.caption("运行 3_ChIPseq 模块后会生成该日志")
 
     # ============================================================
@@ -166,12 +176,12 @@ if selected_proj:
             if all_dirs:
                 anno_type = st.radio(
                     "注释类型",
-                    ["🧪 单样本 Peak Annotation", "🔗 Consensus Peak Annotation"],
+                    ["单样本 Peak Annotation", "Consensus Peak Annotation"],
                     horizontal=True,
                     key="anno_type_radio",
                 )
 
-                if anno_type == "🧪 单样本 Peak Annotation":
+                if anno_type == "单样本 Peak Annotation":
                     if sample_dirs:
                         selected_pair = st.selectbox("选择 IP vs INPUT 对", sample_dirs, key="sample_pair_select")
                     else:
@@ -196,16 +206,16 @@ if selected_proj:
 
                     # 查找图表文件
                     with col1:
-                        st.markdown("**📊 Peak 注释可视化**")
+                        st.markdown("**Peak 注释可视化**")
                         
                         # PDF 文件
                         pdf_files = [f for f in os.listdir(pair_dir) if f.endswith(".pdf")]
                         for pdf in pdf_files:
                             pdf_path = os.path.join(pair_dir, pdf)
-                            st.caption(f"📄 {pdf}")
+                            st.caption(f"{pdf}")
                             
                             # 尝试预览 PDF
-                            with st.expander("🔍 预览 PDF", expanded=True):
+                            with st.expander("预览 PDF", expanded=True):
                                 pdf_images = pdf_to_images(pdf_path)
                                 if pdf_images:
                                     for idx, img in enumerate(pdf_images[:3]):  # 最多显示前3页
@@ -213,12 +223,12 @@ if selected_proj:
                                     if len(pdf_images) > 3:
                                         st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
                                 else:
-                                    st.info("💡 安装 `pdf2image` 和 `poppler-utils` 可预览 PDF 文件")
+                                    st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF 文件")
                             
                             # 下载按钮
                             with open(pdf_path, "rb") as f:
                                 st.download_button(
-                                    f"⬇️ 下载 {pdf}",
+                                    f"下载 {pdf}",
                                     data=f.read(),
                                     file_name=pdf,
                                     mime="application/pdf",
@@ -230,7 +240,7 @@ if selected_proj:
                         if image_files:
                             for img_file in image_files:
                                 img_path = os.path.join(pair_dir, img_file)
-                                st.caption(f"🖼️ {img_file}")
+                                st.caption(f"{img_file}")
                                 try:
                                     img = Image.open(img_path)
                                     st.image(img, use_container_width=True)
@@ -242,7 +252,7 @@ if selected_proj:
 
                     # 查找 CSV 数据
                     with col2:
-                        st.markdown("**📋 Peak 注释数据**")
+                        st.markdown("**Peak 注释数据**")
                         csv_files = [f for f in os.listdir(pair_dir) if f.endswith(".csv")]
                         if csv_files:
                             for csv_file in csv_files:
@@ -254,7 +264,7 @@ if selected_proj:
 
                                     # 下载完整数据
                                     st.download_button(
-                                        f"⬇️ 下载完整 CSV",
+                                        f"下载完整 CSV",
                                         data=df.to_csv(index=False),
                                         file_name=csv_file,
                                         mime="text/csv",
@@ -266,9 +276,9 @@ if selected_proj:
                             st.info("暂无 CSV 数据")
 
                     # Consensus 对比汇总（仅在 Consensus 模式且有多个组时显示）
-                    if anno_type == "🔗 Consensus Peak Annotation" and len(consensus_dirs) > 1:
+                    if anno_type == "Consensus Peak Annotation" and len(consensus_dirs) > 1:
                         st.markdown("---")
-                        st.markdown("**📊 各重复组 Consensus 注释分布对比**")
+                        st.markdown("**各重复组 Consensus 注释分布对比**")
 
                         comparison_data = []
                         for cp in consensus_dirs:
@@ -294,9 +304,9 @@ if selected_proj:
                             st.info("暂无可对比的注释数据")
 
                 # 合并结果（单样本模式下显示）
-                if anno_type == "🧪 单样本 Peak Annotation":
+                if anno_type == "单样本 Peak Annotation":
                     st.markdown("---")
-                    st.markdown("**📊 所有样本汇总**")
+                    st.markdown("**所有样本汇总**")
                     all_csv_path = os.path.join(anno_dir, "all_peaks_annotation.csv")
                     if os.path.exists(all_csv_path):
                         try:
@@ -330,7 +340,7 @@ if selected_proj:
 
                 for img_file in image_files:
                     img_path = os.path.join(deeptools_dir, img_file)
-                    st.markdown(f"---\n**📊 {img_file}**")
+                    st.markdown(f"---\n**{img_file}**")
 
                     if img_file.endswith((".png", ".jpg", ".jpeg")):
                         try:
@@ -347,7 +357,7 @@ if selected_proj:
                             st.error(f"无法加载 SVG: {e}")
                     elif img_file.endswith(".pdf"):
                         # PDF 预览
-                        with st.expander("🔍 预览 PDF", expanded=False):
+                        with st.expander("预览 PDF", expanded=False):
                             pdf_images = pdf_to_images(img_path)
                             if pdf_images:
                                 for idx, pimg in enumerate(pdf_images[:3]):
@@ -355,12 +365,12 @@ if selected_proj:
                                 if len(pdf_images) > 3:
                                     st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
                             else:
-                                st.info("💡 安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
+                                st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
                         
                         # 下载按钮
                         with open(img_path, "rb") as f:
                             st.download_button(
-                                f"⬇️ 下载 {os.path.basename(img_file)}",
+                                f"下载 {os.path.basename(img_file)}",
                                 data=f.read(),
                                 file_name=os.path.basename(img_file),
                                 mime="application/pdf",
@@ -369,7 +379,7 @@ if selected_proj:
 
                 # 查找 matrix 文件信息
                 st.markdown("---")
-                st.markdown("**📁 Matrix 文件**")
+                st.markdown("**Matrix 文件**")
                 matrix_files = []
                 for root, dirs, files in os.walk(deeptools_dir):
                     for f in files:
@@ -422,7 +432,7 @@ if selected_proj:
                         gsea_csvs.append(f)
 
                 if gsea_plots:
-                    st.markdown(f"### 📊 富集分析图表 ({selected_gsea_group})")
+                    st.markdown(f"### 富集分析图表 ({selected_gsea_group})")
                     st.caption(f"共 {len(gsea_plots)} 个图表文件")
 
                     # 将图表分为三类：GO综合图、GO分类图、KEGG图
@@ -434,31 +444,31 @@ if selected_proj:
                     def show_plot_file(plot_file, group_dir, key_prefix, expanded=False):
                         plot_path = os.path.join(group_dir, plot_file)
                         if plot_file.endswith((".png", ".jpg", ".jpeg")):
-                            with st.expander(f"🖼️ {plot_file}", expanded=expanded):
+                            with st.expander(f"{plot_file}", expanded=expanded):
                                 try:
                                     img = Image.open(plot_path)
                                     st.image(img, use_container_width=True)
                                 except Exception as e:
                                     st.error(f"无法加载图片: {e}")
                         elif plot_file.endswith(".pdf"):
-                            with st.expander(f"📄 {plot_file}", expanded=expanded):
+                            with st.expander(f"{plot_file}", expanded=expanded):
                                 pdf_images = pdf_to_images(plot_path)
                                 if pdf_images:
                                     for idx, pimg in enumerate(pdf_images[:3]):
                                         st.image(pimg, caption=f"第 {idx+1} 页", use_container_width=True)
                                 else:
-                                    st.info("💡 安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
+                                    st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
 
                                 with open(plot_path, "rb") as f:
                                     st.download_button(
-                                        f"⬇️ 下载 {plot_file}",
+                                        f"下载 {plot_file}",
                                         data=f.read(),
                                         file_name=plot_file,
                                         mime="application/pdf",
                                         key=f"{key_prefix}_{plot_file}",
                                     )
                         elif plot_file.endswith(".svg"):
-                            with st.expander(f"🖼️ {plot_file}", expanded=expanded):
+                            with st.expander(f"{plot_file}", expanded=expanded):
                                 try:
                                     with open(plot_path, "r", encoding="utf-8") as svgf:
                                         svg_content = svgf.read()
@@ -468,19 +478,19 @@ if selected_proj:
 
                     # ---- 区域 1: GO 综合图 ----
                     if combined_plots:
-                        st.markdown("#### 🎯 GO 综合图 (BP + MF + CC)")
+                        st.markdown("#### GO 综合图 (BP + MF + CC)")
                         for plot_file in combined_plots:
                             show_plot_file(plot_file, gsea_group_dir, "gsea_combined", expanded=True)
 
                     # ---- 区域 2: GO 分类图 ----
                     if go_plots:
-                        st.markdown("#### 📈 GO 分类图 (BP / MF / CC)")
+                        st.markdown("#### GO 分类图 (BP / MF / CC)")
                         for plot_file in go_plots:
                             show_plot_file(plot_file, gsea_group_dir, "gsea_go", expanded=False)
 
                     # ---- 区域 3: KEGG 通路图 ----
                     if kegg_plots:
-                        st.markdown("#### 🧬 KEGG 通路富集")
+                        st.markdown("#### KEGG 通路富集")
                         for plot_file in kegg_plots:
                             show_plot_file(plot_file, gsea_group_dir, "gsea_kegg", expanded=True)
 
@@ -493,7 +503,7 @@ if selected_proj:
                 # 显示 CSV 数据
                 if gsea_csvs:
                     st.markdown("---")
-                    st.markdown("#### 📋 富集分析数据表")
+                    st.markdown("#### 富集分析数据表")
                     selected_csv = st.selectbox(
                         "选择数据文件",
                         gsea_csvs,
@@ -507,7 +517,7 @@ if selected_proj:
                             st.caption(f"共 {len(df_gsea)} 行，显示前 100 行")
 
                             st.download_button(
-                                f"⬇️ 下载 {selected_csv}",
+                                f"下载 {selected_csv}",
                                 data=df_gsea.to_csv(index=False),
                                 file_name=selected_csv,
                                 mime="text/csv",
@@ -547,10 +557,10 @@ if selected_proj:
                     # HTML 报告
                     report_html = os.path.join(meme_out_dir, "meme-chip.html")
                     if os.path.exists(report_html):
-                        st.markdown("#### 📄 MEME-ChIP 完整报告")
+                        st.markdown("#### MEME-ChIP 完整报告")
                         with open(report_html, "rb") as f:
                             st.download_button(
-                                "⬇️ 下载 meme-chip.html 报告",
+                                "下载 meme-chip.html 报告",
                                 data=f.read(),
                                 file_name=f"meme-chip_{selected_motif_group}.html",
                                 mime="text/html",
@@ -561,7 +571,7 @@ if selected_proj:
                     st.markdown("---")
 
                     # 展示发现的 motif logos (PNG) + PDF 下载
-                    st.markdown("#### 🎯 发现的 Motifs")
+                    st.markdown("#### 发现的 Motifs")
 
                     # 检查是否有 PDF logos
                     pdf_logo_dir = os.path.join(meme_out_dir, "logos_pdf")
@@ -572,12 +582,12 @@ if selected_proj:
                             if f.endswith(".pdf") or f.endswith(".eps")
                         ])
                     if pdf_files:
-                        st.markdown("**📄 PDF/EPS 矢量图（发表质量）：**")
+                        st.markdown("**PDF/EPS 矢量图（发表质量）：**")
                         for pdf_name in pdf_files:
                             pdf_path = os.path.join(pdf_logo_dir, pdf_name)
                             with open(pdf_path, "rb") as f:
                                 st.download_button(
-                                    f"⬇️ {pdf_name}",
+                                    f"{pdf_name}",
                                     data=f.read(),
                                     file_name=pdf_name,
                                     mime="application/pdf" if pdf_name.endswith(".pdf") else "application/postscript",
@@ -610,7 +620,7 @@ if selected_proj:
 
                     # 展示 TOMTOM 匹配结果
                     st.markdown("---")
-                    st.markdown("#### 🔍 已知 Motif 匹配 (TOMTOM)")
+                    st.markdown("#### 已知 Motif 匹配 (TOMTOM)")
                     tomtom_tsv = os.path.join(meme_out_dir, "tomtom_out", "tomtom.tsv")
                     if os.path.exists(tomtom_tsv):
                         try:
@@ -624,7 +634,7 @@ if selected_proj:
 
                     # 所有输出文件列表
                     st.markdown("---")
-                    st.markdown("#### 📁 Motif 输出文件")
+                    st.markdown("#### Motif 输出文件")
                     motif_files = []
                     for root, dirs, files in os.walk(meme_out_dir):
                         for f in files:
@@ -672,7 +682,7 @@ if selected_proj:
                 df_files = df_files.sort_values("路径")
 
                 # 过滤器
-                filter_text = st.text_input("🔍 过滤文件路径", placeholder="输入关键词，例如: .pdf, deeptools, peak")
+                filter_text = st.text_input("过滤文件路径", placeholder="输入关键词，例如: .pdf, deeptools, peak")
                 if filter_text:
                     df_files = df_files[df_files["路径"].str.contains(filter_text, case=False)]
 

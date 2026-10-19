@@ -9,8 +9,12 @@
 #   - 参考基因组/结果/日志都写到仓库内相应路径
 
 : "${DATA_DIR:=$HOME/.chipseq-pipeline}"
+# 分析环境 prefix（全部生信工具 + R），由浏览器「环境配置」页(B)构建
 : "${CHIPSEQ_CONDA_ENV:=$HOME/.local/chipseq-env}"
-: "${CHIPSEQ_ENV_URL:=https://github.com/chipseq-pipeline/ChIPseq_Pipline/releases/latest/download/chipseq-env-1.0.0.tar.gz}"
+# 精简启动器 prefix（仅 python + streamlit + pyyaml），由 bootstrap.sh(A)秒级创建
+: "${CHIPSEQ_LAUNCH_ENV:=$HOME/.local/chipseq-launch}"
+# 离线分析环境包下载地址（供 provision_analysis_* 兼底；可用环境变量覆盖）
+: "${CHIPSEQ_ENV_URL:=https://github.com/nculiujy/ChIPseq_Pipline/releases/latest/download/chipseq-env-1.0.0.tar.gz}"
 
 _pid_file() { echo "$DATA_DIR/streamlit.pid"; }
 _out_log()  { echo "$DATA_DIR/logs/streamlit.out"; }
@@ -24,66 +28,100 @@ _repo_dir() {
     echo "$d"
 }
 
-# ---------- 安装 ----------
-runtime_install() {
-    local env_root="$CHIPSEQ_CONDA_ENV"
+# ---------- 安装（A：只装精简启动器，让 B 能跑）----------
+# 选择 conda/mamba 作为环境创建器
+_installer() {
+    if command -v mamba >/dev/null 2>&1; then echo mamba; else echo conda; fi
+}
 
-    # 已就绪？
-    if [ -x "$env_root/bin/streamlit" ] && [ -x "$env_root/bin/python" ]; then
-        ok "conda-pack 环境已就绪: $env_root"
-        return 0
+runtime_install() {
+    # A 的职责：确保有 conda/mamba → 建精简启动器 → 写 analysis_env 标记。
+    # 不再下载 4GB 分析环境（那是 B【浏览器「环境配置」页】的事）。
+    local launcher="$CHIPSEQ_LAUNCH_ENV"
+
+    command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1 \
+        || die "未检测到 conda/mamba。请先安装 Miniforge（https://github.com/conda-forge/miniforge）后重跑 bootstrap.sh"
+
+    if [ -x "$launcher/bin/streamlit" ]; then
+        ok "启动器环境已就绪: $launcher"
+    else
+        log "创建精简启动器环境（python=3.11 + streamlit + pyyaml）: $launcher"
+        check_disk_space "$(dirname "$launcher")" 1
+        local inst; inst=$(_installer)
+        "$inst" create -p "$launcher" -y python=3.11 streamlit pyyaml \
+            || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 streamlit pyyaml）"
     fi
 
-    command -v curl >/dev/null 2>&1 || die "缺少 curl"
-    command -v tar  >/dev/null 2>&1 || die "缺少 tar"
+    # 写 analysis_env 标记（供 Streamlit 侧 env_paths.analysis_prefix() 读取）
+    mkdir -p "$DATA_DIR"
+    echo "$CHIPSEQ_CONDA_ENV" > "$DATA_DIR/analysis_env"
 
-    # 探测本地 tarball（离线场景）
+    if [ -x "$CHIPSEQ_CONDA_ENV/bin/snakemake" ]; then
+        ok "分析环境已就绪: $CHIPSEQ_CONDA_ENV"
+    else
+        warn "分析环境尚未构建（$CHIPSEQ_CONDA_ENV）。"
+        warn "启动后请到浏览器【环境配置】页完成阶段③～⑦（离线包优先、缺则在线 create）。"
+    fi
+}
+
+# ---------- 分析环境构建（命令行兼底；主路由为浏览器【环境配置】页）----------
+# 优先本地离线包：chipseq-env*.tar.gz 解压 + conda-unpack
+provision_analysis_offline() {
+    local env_root="$CHIPSEQ_CONDA_ENV"
+    command -v tar >/dev/null 2>&1 || die "缺少 tar"
     local local_tar=""
-    for f in ./chipseq-env-*.tar.gz ./chipseq-env.tar.gz; do
+    for f in ./chipseq-env-*.tar.gz ./chipseq-env.tar.gz "$DATA_DIR"/chipseq-env-*.tar.gz; do
         [ -f "$f" ] && { local_tar="$f"; break; }
     done
-
-    check_disk_space "$(dirname "$env_root")" 8
-
-    mkdir -p "$env_root"
-    local tmp; tmp=$(mktemp -d)
-    # shellcheck disable=SC2064
-    trap "rm -rf '$tmp'" RETURN
-
-    if [ -n "$local_tar" ]; then
-        log "使用本地环境包: $local_tar"
-        cp "$local_tar" "$tmp/env.tar.gz"
-    else
-        log "下载预打包 conda 环境 (约 4 GB) ..."
-        log "  URL: $CHIPSEQ_ENV_URL"
-        curl -fL --retry 3 --progress-bar -o "$tmp/env.tar.gz" "$CHIPSEQ_ENV_URL" \
-            || die "下载失败。可手动下载 tarball 放到当前目录（chipseq-env-*.tar.gz）后重跑 bootstrap.sh"
+    if [ -z "$local_tar" ]; then
+        command -v curl >/dev/null 2>&1 || die "缺少 curl 且本地无 chipseq-env*.tar.gz"
+        log "下载分析环境包: $CHIPSEQ_ENV_URL"
+        local_tar="$DATA_DIR/chipseq-env.tar.gz"
+        curl -fL --retry 3 --progress-bar -o "$local_tar" "$CHIPSEQ_ENV_URL" \
+            || die "下载失败；可手动下载 tarball 放到仓库目录后重跑"
     fi
-
-    log "解压到 $env_root ..."
-    tar -xzf "$tmp/env.tar.gz" -C "$env_root" || die "解压失败"
-
-    # conda-pack 产物需要跑一次 conda-unpack 修正前缀路径
+    log "离线解压分析环境: $local_tar → $env_root"
+    check_disk_space "$(dirname "$env_root")" 8
+    mkdir -p "$env_root"
+    tar -xzf "$local_tar" -C "$env_root" || die "解压失败"
     if [ -x "$env_root/bin/conda-unpack" ]; then
         log "运行 conda-unpack 修正路径 ..."
-        ( source "$env_root/bin/activate" && "$env_root/bin/conda-unpack" ) \
-            || warn "conda-unpack 失败（可能已运行过），继续"
+        ( source "$env_root/bin/activate" && "$env_root/bin/conda-unpack" ) || warn "conda-unpack 失败（可能已运行过），继续"
     fi
+    [ -x "$env_root/bin/snakemake" ] || warn "解压后未找到 snakemake，环境包可能不完整"
+    echo "$env_root" > "$DATA_DIR/analysis_env"
+    ok "分析环境就绪: $env_root"
+}
 
-    [ -x "$env_root/bin/streamlit" ] || die "解压后未找到 streamlit，环境包可能损坏"
-    ok "conda 环境就绪: $env_root"
+# 在线构建：conda env create/update -p <prefix> -f environment.yml
+provision_analysis_online() {
+    local env_root="$CHIPSEQ_CONDA_ENV"
+    local repo; repo=$(_repo_dir 2>/dev/null || echo ".")
+    local yml="$repo/environment.yml"
+    [ -f "$yml" ] || die "未找到 environment.yml: $yml"
+    command -v conda >/dev/null 2>&1 || die "未检测到 conda"
+    log "在线构建分析环境: conda env create -p $env_root -f $yml"
+    check_disk_space "$(dirname "$env_root")" 8
+    if [ -d "$env_root/conda-meta" ]; then
+        conda env update -p "$env_root" -f "$yml" || die "conda env update 失败"
+    else
+        conda env create -p "$env_root" -f "$yml" || die "conda env create 失败"
+    fi
+    echo "$env_root" > "$DATA_DIR/analysis_env"
+    ok "分析环境就绪: $env_root"
 }
 
 # ---------- 启动 ----------
 # runtime_run <binds_str(ignored)> <port> <bind_addr>
 runtime_run() {
     local _binds="$1" port="$2" bind_addr="${3:-127.0.0.1}"
-    local env_root="$CHIPSEQ_CONDA_ENV"
+    local launcher="$CHIPSEQ_LAUNCH_ENV"
+    local analysis="$CHIPSEQ_CONDA_ENV"
     local repo; repo=$(_repo_dir)
     local pid; pid=$(_pid_file)
     local outlog; outlog=$(_out_log)
 
-    [ -x "$env_root/bin/streamlit" ] || die "conda 环境未安装，请先跑 bootstrap.sh"
+    [ -x "$launcher/bin/streamlit" ] || die "启动器环境未安装，请先跑 bootstrap.sh"
 
     if [ -f "$pid" ] && kill -0 "$(cat "$pid")" 2>/dev/null; then
         log "Streamlit 已在运行 (PID $(cat "$pid"))"
@@ -94,14 +132,21 @@ runtime_run() {
     mkdir -p "$(dirname "$outlog")"
     mkdir -p "$repo/logs" "$repo/result"
 
-    log "启动 Streamlit (repo=$repo, port=$port, bind=$bind_addr) ..."
+    # 幂等写 analysis_env 标记（env_paths.analysis_prefix() 依赖）
+    echo "$analysis" > "$DATA_DIR/analysis_env"
+
+    log "启动 Streamlit (launcher=$launcher, analysis=$analysis, port=$port, bind=$bind_addr) ..."
 
     # shellcheck disable=SC2086
     (
         cd "$repo" || exit 1
-        # 激活 conda-pack 环境（设置 PATH、CONDA_PREFIX 等）
+        # 激活启动器环境（含 streamlit）
         # shellcheck disable=SC1091
-        source "$env_root/bin/activate"
+        source "$launcher/bin/activate"
+        # 把分析环境 bin 前置到 PATH，并用标记/环境变量告知 Streamlit 子进程
+        export PATH="$analysis/bin:$PATH"
+        export CHIPSEQ_CONDA_ENV="$analysis"
+        export CHIPSEQ_DATA="$DATA_DIR"
         # 后台运行；用 setsid 让它脱离终端
         setsid nohup streamlit run streamlit_app/app.py \
             --server.address="$bind_addr" \
@@ -148,38 +193,54 @@ runtime_logs_head() {
 
 # ---------- 状态 ----------
 runtime_status() {
-    local env_root="$CHIPSEQ_CONDA_ENV"
+    local launcher="$CHIPSEQ_LAUNCH_ENV" analysis="$CHIPSEQ_CONDA_ENV"
     local pid; pid=$(_pid_file)
     local repo; repo=$(_repo_dir 2>/dev/null || echo "?")
-    echo "运行时:      conda-pack"
-    echo "环境路径:    $env_root"
-    [ -d "$env_root" ] && echo "环境大小:    $(du -sh "$env_root" 2>/dev/null | awk '{print $1}')"
+    echo "运行时:      conda（launcher + analysis 双 prefix）"
+    echo "启动器环境:  $launcher"
+    [ -x "$launcher/bin/streamlit" ] && echo "  状态:      就绪" || echo "  状态:      未安装（请跑 bootstrap.sh）"
+    [ -d "$launcher" ] && echo "  大小:      $(du -sh "$launcher" 2>/dev/null | awk '{print $1}')"
+    echo "分析环境:    $analysis"
+    if [ -x "$analysis/bin/snakemake" ]; then
+        echo "  状态:      就绪"
+    else
+        echo "  状态:      未构建 → 请到浏览器【环境配置】页补全（或运行 provision_analysis_online）"
+    fi
+    [ -d "$analysis" ] && echo "  大小:      $(du -sh "$analysis" 2>/dev/null | awk '{print $1}')"
     echo "仓库路径:    $repo"
     if [ -f "$pid" ] && kill -0 "$(cat "$pid")" 2>/dev/null; then
-        echo "状态:        运行中 (PID $(cat "$pid"))"
+        echo "进程:        运行中 (PID $(cat "$pid"))"
         ps -o pid,ppid,etime,pcpu,pmem,cmd -p "$(cat "$pid")" 2>/dev/null || true
     else
-        echo "状态:        未运行"
+        echo "进程:        未运行"
     fi
 }
 
 # ---------- shell ----------
 runtime_shell() {
-    local env_root="$CHIPSEQ_CONDA_ENV"
+    local launcher="$CHIPSEQ_LAUNCH_ENV" analysis="$CHIPSEQ_CONDA_ENV"
     local repo; repo=$(_repo_dir)
-    [ -x "$env_root/bin/bash" ] || [ -x "$env_root/bin/activate" ] \
-        || die "conda 环境未安装"
+    [ -x "$launcher/bin/activate" ] || die "启动器环境未安装"
     cd "$repo" || die "无法进入仓库目录 $repo"
     # shellcheck disable=SC1091
-    source "$env_root/bin/activate"
+    source "$launcher/bin/activate"
+    export PATH="$analysis/bin:$PATH"
+    export CHIPSEQ_CONDA_ENV="$analysis"
+    export CHIPSEQ_DATA="$DATA_DIR"
     exec "${SHELL:-/bin/bash}"
 }
 
 # ---------- 升级 ----------
+# 默认只重建启动器（秒级）；传 all 同时重建分析环境。
 runtime_update() {
-    local env_root="$CHIPSEQ_CONDA_ENV"
     runtime_stop || true
-    log "删除旧环境: $env_root"
-    rm -rf "$env_root"
+    local launcher="$CHIPSEQ_LAUNCH_ENV"
+    log "更新启动器环境: $launcher"
+    rm -rf "$launcher"
     runtime_install
+    if [ "${1:-}" = "all" ]; then
+        log "同时重建分析环境: $CHIPSEQ_CONDA_ENV"
+        rm -rf "$CHIPSEQ_CONDA_ENV"
+        provision_analysis_online || provision_analysis_offline
+    fi
 }

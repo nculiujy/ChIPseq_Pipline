@@ -56,7 +56,7 @@ echo "$RUNTIME" > "$DATA_DIR/runtime"
 # conda 后端需要仓库路径（不用 bind mount）
 echo "$HERE" > "$DATA_DIR/repo_path"
 
-# ---------- 3. 后端安装（拉镜像 / 下载 conda-pack） ----------
+# ---------- 3. 后端安装（容器：拉镜像；conda：建精简启动器） ----------
 BACKEND="$HERE/runtime/${RUNTIME}.sh"
 [ -f "$BACKEND" ] || die "找不到后端脚本 $BACKEND"
 # shellcheck disable=SC1090
@@ -65,7 +65,11 @@ source "$BACKEND"
 if [ "${SKIP_INSTALL:-0}" = "1" ]; then
     warn "SKIP_INSTALL=1，跳过镜像/环境下载"
 else
-    log "开始安装运行时依赖（可能几个 GB，请耐心等待）..."
+    if [ "$RUNTIME" = "conda" ]; then
+        log "conda 模式：仅创建秒级启动器（完整分析环境稍后在浏览器【环境配置】页构建）"
+    else
+        log "开始安装运行时依赖（可能几个 GB，请耐心等待）..."
+    fi
     runtime_install
 fi
 
@@ -102,6 +106,9 @@ cat <<EOF
       远程服务器访问（无桌面）:
         本地机器执行: ssh -L 8501:localhost:8501 \$USER@<服务器地址>
         浏览器打开:   http://localhost:8501
+
+   5) （仅 conda 模式）启动后打开浏览器【环境配置】页，
+      一键构建完整分析环境（离线包优先、缺则在线 create）。
 ============================================================
 
 EOF

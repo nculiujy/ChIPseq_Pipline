@@ -31,6 +31,7 @@ bioc_pkgs <- c(
   "ChIPseeker",        # 1.42.x
   "rtracklayer",       # 1.66.x
   "GenomicFeatures",   # 1.58.x
+  "txdbmaker",         # >=3.21: makeTxDbFromGFF 从 GenomicFeatures 拆分至此
   "GenomicRanges",     # 1.58.x
   "clusterProfiler"    # 4.14.x
 )

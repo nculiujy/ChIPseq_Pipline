@@ -198,11 +198,12 @@ usage() {
 环境变量:
   CHIPSEQ_IMAGE      覆盖 OCI 镜像名（docker/podman/apptainer）
   CHIPSEQ_SIF_URI    覆盖 .sif 下载地址（apptainer）
-  CHIPSEQ_ENV_URL    覆盖 conda-pack tarball 地址（conda）
+  CHIPSEQ_ENV_URL    覆盖分析环境 conda-pack tarball 地址（conda，供 provision_analysis_* 兜底）
   CHIPSEQ_PORT       覆盖端口
   CHIPSEQ_BIND       覆盖绑定地址（127.0.0.1 或 0.0.0.0）
   CHIPSEQ_DATA       覆盖数据目录（默认 ~/.chipseq-pipeline）
-  CHIPSEQ_CONDA_ENV  覆盖 conda 环境解压路径（默认 ~/.local/chipseq-env）
+  CHIPSEQ_CONDA_ENV  覆盖分析环境 prefix（默认 ~/.local/chipseq-env）
+  CHIPSEQ_LAUNCH_ENV 覆盖启动器环境 prefix（默认 ~/.local/chipseq-launch）
   NO_COLOR           设置后禁用彩色输出
 EOF
 }
