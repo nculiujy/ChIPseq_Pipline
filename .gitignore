@@ -96,3 +96,6 @@ chipseq-pipeline-image.tar.zst
 
 # 用户数据目录（默认在 ~/.chipseq-pipeline，仅防误建到仓库内）
 .chipseq-pipeline/
+
+# 本地文档集合（收拢，不上传 GitHub）
+_local_docs/
