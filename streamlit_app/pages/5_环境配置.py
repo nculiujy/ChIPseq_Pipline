@@ -31,6 +31,7 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from utils import env_setup_manager as em  # noqa: E402
+from utils import env_paths  # noqa: E402
 from utils.ui_theme import (  # noqa: E402
     inject_theme,
     page_header,
@@ -85,13 +86,17 @@ _TXT = {
 # ---------------------------------------------------------------------------
 def render_header() -> None:
     prereqs = em.check_prereqs()
+    container = env_paths.uses_container_runtime()
+    prefix = env_paths.analysis_prefix()
     c1, c2, c3, c4 = st.columns([1.4, 1.1, 1.1, 1.6])
     with c1:
-        st.metric("conda 环境名", st.session_state.get("env_name", "ChIPseq_Pipline"))
+        st.metric("分析环境 prefix", prefix.split("/")[-1])
+        st.caption(f"完整路径：`{prefix}`")
         st.caption(f"environment.yml：{'✅ 存在' if ENVIRONMENT_YML.is_file() else '❌ 缺失'}")
     with c2:
         st.metric("install_R_packages.R", "✅" if INSTALL_R.is_file() else "❌")
-        st.caption(f"环境 bin：`{em.conda_env_bin().split('/')[-1]}`")
+        ab = env_paths.analysis_bin()
+        st.caption(f"分析 bin：{'✅ 已建' if os.path.isdir(ab) else '⚠ 未建'}")
     with c3:
         st.metric("状态/日志目录", ".setup_tasks/")
         st.caption(str(ENV_DIR.relative_to(BASE_DIR)))
@@ -104,8 +109,10 @@ def render_header() -> None:
                      right_html=pill("可用" if val else "缺失", "ok" if val else "warn"))
             for name, val in prereqs.items()
         ])
-        if "conda" not in have:
-            st.error("未检测到 conda：③ 环境安装阶段无法执行。请先在 shell 里初始化 conda。")
+        if "conda" not in have and not container:
+            st.error("未检测到 conda：③ 在线环境安装阶段无法执行（离线包解压不需 conda）。")
+    if container:
+        st.info("当前为容器模式（apptainer/podman/docker）：环境由镜像提供，本页仅用于⑤工具校验与⑥运行时自检，不会触发环境构建。")
 
 
 with st.container(border=True):
@@ -115,21 +122,46 @@ with st.container(border=True):
 # 配置参数区
 # ---------------------------------------------------------------------------
 section_title("配置参数")
-env_name = st.text_input(
-    "conda 环境名",
-    value=st.session_state.get("env_name", "ChIPseq_Pipline"),
-    help="③ 环境安装将创建/更新此名的 conda 环境（在用户目录内，不需管理员权限）",
-    key="env_name_input",
+_container_mode = env_paths.uses_container_runtime()
+_prefix_default = env_paths.analysis_prefix()
+
+_c0, _c0b = st.columns([3, 1])
+with _c0:
+    analysis_prefix_in = st.text_input(
+        "分析环境 prefix（③ 将创建/更新到此目录，用户目录内、需绝对路径）",
+        value=_prefix_default,
+        key="analysis_prefix_input",
+        disabled=_container_mode,
+        help="来自 ~/.chipseq-pipeline/analysis_env 标记或 $CHIPSEQ_CONDA_ENV 默认值；容器模式下锁定",
+    )
+with _c0b:
+    source_label = st.selectbox(
+        "环境来源",
+        options=["自动（离线优先）", "强制离线（需 tar）", "强制在线（create/update）"],
+        index=0 if not _container_mode else 2,
+        disabled=_container_mode,
+        key="env_source",
+        help="auto=有本地 tar 先解压、缺则在线；offline=必须本地/下载 tar；online=只走 conda create/update",
+    )
+_source_map = {"自动（离线优先）": "auto", "强制离线（需 tar）": "offline", "强制在线（create/update）": "online"}
+source_val = _source_map.get(source_label, "auto")
+
+_tar_default = em.find_offline_tar(BASE_DIR) or ""
+offline_tar_in = st.text_input(
+    "本地 conda-pack 离线包路径（chipseq-env*.tar.gz，留空则自动搜索/回落在线）",
+    value=_tar_default,
+    key="offline_tar_input",
+    disabled=_container_mode or source_val == "online",
 )
-st.session_state["env_name"] = env_name
 
 _c1, _c2 = st.columns([3, 1])
 with _c1:
     st.markdown("**要执行的阶段**（默认跳过 ② conda-lock，需另装 conda-lock 工具）")
+    _defaults = ["selfcheck", "verify_tools"] if _container_mode else list(em.DEFAULT_STEPS)
     selected_stages = st.multiselect(
         "选择配置阶段",
         options=_STAGE_ORDER,
-        default=[s for s in em.DEFAULT_STEPS],
+        default=_defaults,
         format_func=lambda s: em.STAGE_LABELS.get(s, s),
         key="stage_pick",
     )
@@ -165,9 +197,12 @@ if st.button(
         task_id=em.new_task_id(),
         project_root=str(BASE_DIR),
         env_dir=str(ENV_DIR),
-        conda_env=env_name.strip() or "ChIPseq_Pipline",
+        conda_env="ChIPseq_Pipline",
         environment_yml=str(ENVIRONMENT_YML),
         install_r_script=str(INSTALL_R),
+        analysis_prefix=(analysis_prefix_in or "").strip() or env_paths.analysis_prefix(),
+        offline_tar=(offline_tar_in or "").strip(),
+        source=source_val,
         steps=list(selected_stages),
         prune=prune,
         threads=int(threads),

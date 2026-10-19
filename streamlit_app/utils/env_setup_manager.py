@@ -27,22 +27,28 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+from utils import env_paths
+
+
 # ---------- 阶段定义（与 env_setup_worker.py 保持一致）----------
 # key -> 中文标签，用于 UI 的 stepper 展示
 STAGE_LABELS: Dict[str, str] = {
     "precheck":     "① 安装前自检（架构 / glibc / 磁盘 / 写权限）",
     "conda_lock":   "② 依赖锁定（conda-lock 生成 conda-lock.yml）",
-    "conda_env":    "③ 环境安装（conda env create / update）",
+    "conda_env":    "③ 环境安装（离线 tar 优先，缺则在线 conda create/update 到分析 prefix）",
     "r_packages":   "④ R 包补齐（install_R_packages.R）",
     "verify_tools": "⑤ 核心工具校验（bowtie2 / samtools / macs2 …）",
     "selfcheck":    "⑥ 运行时自检（txdbmaker / R 库 / picard / ldd）",
+    "finalize":     "⑦ 收尾（写 analysis_env 标记 / ldd 抽查缺失库）",
 }
 
 # 一次配置的完整阶段顺序（done 为终止标记，不参与展示）
-STAGES: List[str] = ["precheck", "conda_lock", "conda_env", "r_packages", "verify_tools", "selfcheck", "done"]
+STAGES: List[str] = ["precheck", "conda_lock", "conda_env", "r_packages",
+                     "verify_tools", "selfcheck", "finalize", "done"]
 
 # 默认执行的步骤（conda_lock 需要额外工具，默认不勾选）
-DEFAULT_STEPS: List[str] = ["precheck", "conda_env", "r_packages", "verify_tools", "selfcheck"]
+DEFAULT_STEPS: List[str] = ["precheck", "conda_env", "r_packages",
+                            "verify_tools", "selfcheck", "finalize"]
 
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
@@ -51,6 +57,12 @@ STATUS_ERROR = "error"
 STATUS_CANCELLED = "cancelled"
 STATUS_SKIPPED = "skipped"
 
+# 离线分析环境 tar 的下载兜底 URL（指向真实仓库 release）；与 runtime/conda.sh 同步
+CHIPSEQ_ENV_URL = os.environ.get(
+    "CHIPSEQ_ENV_URL",
+    "https://github.com/nculiujy/ChIPseq_Pipline/releases/latest/download/chipseq-env-1.0.0.tar.gz",
+)
+
 
 @dataclass
 class SetupSpec:
@@ -58,9 +70,12 @@ class SetupSpec:
     task_id: str
     project_root: str                 # 项目根绝对路径
     env_dir: str                      # workflow/env 绝对路径
-    conda_env: str                    # conda 环境名，如 ChIPseq_Pipline
+    conda_env: str                    # 启动器/展示用环境名（开发态回落到 sys.prefix）
     environment_yml: str              # environment.yml 绝对路径
     install_r_script: str             # install_R_packages.R 绝对路径
+    analysis_prefix: str = ""         # 分析环境 prefix（空则 worker 内取 env_paths.analysis_prefix()）
+    offline_tar: str = ""             # 本地/仓库 conda-pack tar 绝对路径（可空）
+    source: str = "auto"              # 环境来源：auto(离线优先) / offline(必须 tar) / online(create/update)
     steps: List[str] = field(default_factory=lambda: list(DEFAULT_STEPS))
     prune: bool = False               # conda env update 是否 --prune
     threads: int = 4                  # 传给底层工具的线程上限
@@ -109,6 +124,8 @@ def start_task(spec: SetupSpec) -> Dict[str, Any]:
         "task_id": spec.task_id,
         "kind": "env_setup",
         "conda_env": spec.conda_env,
+        "analysis_prefix": spec.analysis_prefix or env_paths.analysis_prefix(),
+        "source": spec.source,
         "status": STATUS_PENDING,
         "stage": None,
         "stage_index": 0,
@@ -134,7 +151,7 @@ def start_task(spec: SetupSpec) -> Dict[str, Any]:
         return initial_state
 
     worker_env = dict(os.environ)
-    worker_env["PATH"] = _tool_search_path()
+    worker_env["PATH"] = env_paths.tool_search_path()
     with open(log_file, "ab", buffering=0) as logf:
         logf.write(
             f"\n==== env task {spec.task_id} started at {time.strftime('%F %T')} ====\n".encode()
@@ -240,19 +257,27 @@ def tail_log(env_dir: str | Path, task_id: str, n_lines: int = 60) -> str:
 
 # ---------- 依赖 / 路径辅助（UI 页顶部展示用）----------
 def conda_env_bin() -> str:
-    return os.path.join(sys.prefix, "bin")
+    return env_paths.analysis_bin()
 
 
 def _tool_search_path() -> str:
-    b = conda_env_bin()
-    cur = os.environ.get("PATH", "")
-    parts = [b] + [p for p in cur.split(os.pathsep) if p and p != b]
-    return os.pathsep.join(parts)
+    return env_paths.tool_search_path()
 
 
 def resolved_tool_path(cmd: str) -> Optional[str]:
-    import shutil
-    return shutil.which(cmd, path=_tool_search_path())
+    return env_paths.resolved_tool_path(cmd)
+
+
+def find_offline_tar(project_root: str | Path) -> Optional[str]:
+    """在常见位置搜索 conda-pack 离线包（供 UI 预填 spec.offline_tar）。"""
+    import glob
+    candidates: List[str] = []
+    for base in (str(project_root), str(env_paths.data_dir()), os.path.expanduser("~")):
+        candidates += glob.glob(os.path.join(base, "chipseq-env*.tar.gz"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
 
 
 def check_prereqs() -> Dict[str, Optional[str]]:

@@ -23,7 +23,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-STAGES = ["precheck", "conda_lock", "conda_env", "r_packages", "verify_tools", "selfcheck", "done"]
+# 与启动器/分析环境解耦层共用同一套路径逻辑（worker 与 manager 同目录）
+try:  # 作为包导入时（from utils import ...）
+    from utils import env_paths
+except ImportError:  # 作为脚本直接执行时，同目录导入
+    import env_paths  # type: ignore
+
+STAGES = ["precheck", "conda_lock", "conda_env", "r_packages", "verify_tools",
+          "selfcheck", "finalize", "done"]
 
 VERIFY_TOOLS = ["bowtie2", "bowtie2-build", "samtools", "macs2", "snakemake",
                 "deeptools", "picard", "fastqc", "trim_galore", "bedtools"]
@@ -174,41 +181,126 @@ def stage_conda_lock(spec: Dict[str, Any]) -> str:
     return f"生成 {os.path.basename(out)}"
 
 
-def _conda_env_exists(name: str) -> bool:
-    try:
-        r = subprocess.run(["conda", "env", "list"], capture_output=True, text=True, timeout=30)
-        for line in (r.stdout or "").splitlines():
-            parts = line.split()
-            if parts and parts[0] == name:
-                return True
-    except Exception:  # noqa: BLE001
-        pass
-    return False
+def _target_prefix(spec: Dict[str, Any]) -> str:
+    return spec.get("analysis_prefix") or env_paths.analysis_prefix()
 
 
-def stage_conda_env(spec: Dict[str, Any]) -> str:
-    _log("=== ③ 环境安装（conda env）===")
-    env = spec["conda_env"]
-    yml = spec["environment_yml"]
+def _prefix_ready(prefix: str) -> bool:
+    """prefix 是否已是一个 conda 环境（含 conda-meta 且 bin/python 存在）。"""
+    return os.path.isdir(os.path.join(prefix, "conda-meta")) and \
+        os.path.exists(os.path.join(prefix, "bin", "python"))
+
+
+def _find_offline_tar(spec: Dict[str, Any]) -> Optional[str]:
+    """定位 conda-pack 离线包：显式 offline_tar 优先，否则在常见目录 glob。"""
+    t = spec.get("offline_tar")
+    if t and os.path.isfile(t):
+        return os.path.abspath(t)
+    import glob
+    bases = [spec.get("project_root"), str(env_paths.data_dir()), os.path.expanduser("~")]
+    for base in bases:
+        if not base:
+            continue
+        for c in sorted(glob.glob(os.path.join(base, "chipseq-env*.tar.gz"))):
+            if os.path.isfile(c):
+                return c
+    return None
+
+
+# 离线包下载兜底 URL（仅“强制离线”且本地无 tar 时使用）；与 conda.sh / manager 保持同步
+_ENV_URL = os.environ.get(
+    "CHIPSEQ_ENV_URL",
+    "https://github.com/nculiujy/ChIPseq_Pipline/releases/latest/download/chipseq-env-1.0.0.tar.gz",
+)
+
+
+def _download_offline_tar(spec: Dict[str, Any]) -> str:
+    """强制离线且本地无包时，从 release 下载 tar 到数据目录（dry-run 不实际下载）。"""
+    dest_dir = str(env_paths.data_dir())
+    dest = os.path.join(dest_dir, "chipseq-env.tar.gz")
     dry = spec.get("dry_run", False)
+    _log(f"  » 强制离线且本地无包：将从 {_ENV_URL} 下载到 {dest}")
+    if not dry:
+        os.makedirs(dest_dir, exist_ok=True)
+    rc = _run(["curl", "-fL", "--retry", "3", "-o", dest, _ENV_URL], dry_run=dry)
+    if rc != 0:
+        raise RuntimeError("离线包下载失败（可手动下载 chipseq-env*.tar.gz 放到仓库目录后重试）")
+    return dest
+
+
+def _install_offline(spec: Dict[str, Any], prefix: str, tar: str) -> str:
+    """离线：解压 conda-pack tar 到 prefix + conda-unpack 修正路径。"""
+    dry = spec.get("dry_run", False)
+    _log(f"  来源：离线包 {tar}")
+    _log(f"  目标 prefix：{prefix}")
+    if not dry:
+        os.makedirs(prefix, exist_ok=True)
+    rc = _run(["tar", "-xzf", tar, "-C", prefix], cwd=spec["project_root"], dry_run=dry)
+    if rc != 0:
+        raise RuntimeError(f"解压离线包失败（返回码 {rc}）")
+    unpack = os.path.join(prefix, "bin", "conda-unpack")
+    if dry:
+        _run([unpack], dry_run=True)
+    elif os.path.exists(unpack):
+        _log("  运行 conda-unpack 修正前缀路径 ...")
+        rc = _run([unpack], dry_run=False)
+        if rc != 0:
+            _log("  ⚠ conda-unpack 非零返回（可能已运行过），继续")
+    return "离线包已解压并 conda-unpack"
+
+
+def _install_online(spec: Dict[str, Any], prefix: str) -> str:
+    """在线：conda env create/update -p <prefix> -f environment.yml。"""
+    dry = spec.get("dry_run", False)
+    yml = spec["environment_yml"]
     if not _which("conda"):
-        raise RuntimeError("未找到 conda 命令")
+        raise RuntimeError("未找到 conda 命令（在线建环境必需）")
     if not os.path.isfile(yml):
         raise RuntimeError(f"未找到 environment.yml：{yml}")
-
-    if _conda_env_exists(env) or dry:
-        cmd = ["conda", "env", "update", "-n", env, "-f", yml]
+    _log(f"  来源：在线求解 {yml}")
+    _log(f"  目标 prefix：{prefix}")
+    if _prefix_ready(prefix) or dry:
+        cmd = ["conda", "env", "update", "-p", prefix, "-f", yml]
         if spec.get("prune"):
             cmd.append("--prune")
         action = "update"
     else:
-        cmd = ["conda", "env", "create", "-n", env, "-f", yml]
+        cmd = ["conda", "env", "create", "-p", prefix, "-f", yml]
         action = "create"
-    _log(f"  环境 {env} {'已存在' if action == 'update' else '不存在'} → 执行 env {action}")
+    _log(f"  分析环境 {'已存在' if action == 'update' else '不存在'} → 执行 env {action}")
     rc = _run(cmd, cwd=spec["project_root"], dry_run=dry)
     if rc != 0:
         raise RuntimeError(f"conda env {action} 失败（返回码 {rc}）")
-    return f"env {action} 完成"
+    return f"env {action} 完成（在线）"
+
+
+def stage_conda_env(spec: Dict[str, Any]) -> str:
+    _log("=== ③ 环境安装（分析环境 prefix：离线优先 / 在线兜底）===")
+    prefix = _target_prefix(spec)
+    source = (spec.get("source") or "auto").lower()
+    dry = spec.get("dry_run", False)
+    tar = _find_offline_tar(spec)
+
+    if source == "offline":
+        if not tar:
+            _log("  » 未找到本地离线包，回落到 release 地址下载")
+            tar = _download_offline_tar(spec)
+        return _install_offline(spec, prefix, tar)
+    if source == "online":
+        return _install_online(spec, prefix)
+    # auto：离线优先，缺则在线
+    if tar:
+        return _install_offline(spec, prefix, tar)
+    _log("  » 未找到本地离线包 → 回落在线 conda create/update")
+    return _install_online(spec, prefix)
+
+
+def _bin(spec: Dict[str, Any], tool: str) -> Optional[str]:
+    """解析工具路径：优先分析 prefix/bin，再回落 env_paths（当前环境 + PATH）。"""
+    p = os.path.join(_target_prefix(spec), "bin", tool)
+    if os.path.exists(p):
+        return p
+    return env_paths.resolved_tool_path(tool)
 
 
 def stage_r_packages(spec: Dict[str, Any]) -> str:
@@ -218,8 +310,13 @@ def stage_r_packages(spec: Dict[str, Any]) -> str:
     if not os.path.isfile(script):
         _log(f"  » 未找到 {script}，跳过")
         return "跳过：install_R_packages.R 不存在"
-    cmd = ["conda", "run", "-n", spec["conda_env"], "Rscript", script]
-    rc = _run(cmd, cwd=spec["project_root"], dry_run=dry)
+    rs = _bin(spec, "Rscript")
+    if not rs:
+        if dry:
+            rs = os.path.join(_target_prefix(spec), "bin", "Rscript")
+        else:
+            raise RuntimeError("找不到 Rscript（分析环境未就绪，请先完成 ③）")
+    rc = _run([rs, script], cwd=spec["project_root"], dry_run=dry)
     if rc != 0:
         raise RuntimeError(f"R 包安装失败（返回码 {rc}）")
     return "R 包安装完成"
@@ -235,12 +332,10 @@ def stage_verify_tools(spec: Dict[str, Any]) -> str:
     found: Dict[str, Optional[str]] = {}
     missing: List[str] = []
     for tool in VERIFY_TOOLS:
-        r = subprocess.run(["conda", "run", "-n", spec["conda_env"], "which", tool],
-                           capture_output=True, text=True)
-        ok = r.returncode == 0 and r.stdout.strip()
-        found[tool] = r.stdout.strip().splitlines()[-1] if ok else None
-        _log(f"  {'✓' if ok else '✗'} {tool}" + (f" → {found[tool]}" if ok else " — 未找到"))
-        if not ok:
+        p = _bin(spec, tool)
+        found[tool] = p
+        _log(f"  {'✓' if p else '✗'} {tool}" + (f" → {p}" if p else " — 未找到"))
+        if not p:
             missing.append(tool)
     _STATE.setdefault("result", {})["verify_tools"] = found
     if missing:
@@ -257,11 +352,13 @@ def stage_selfcheck(spec: Dict[str, Any]) -> str:
         _STATE.setdefault("result", {})["selfcheck"] = {"dry_run": "true"}
         return "dry-run 跳过"
 
-    env = spec["conda_env"]
+    rs = _bin(spec, "Rscript")
+    if not rs:
+        raise RuntimeError("找不到 Rscript（分析环境未就绪）")
 
     def _r(expr: str) -> str:
         # --vanilla 跳过 .Rprofile（避免 renv 启动横幅污染取值），只取最后一行非空输出
-        r = subprocess.run(["conda", "run", "-n", env, "Rscript", "--vanilla", "-e", expr],
+        r = subprocess.run([rs, "--vanilla", "-e", expr],
                            capture_output=True, text=True)
         lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
         return lines[-1] if lines else ""
@@ -287,15 +384,59 @@ def stage_selfcheck(spec: Dict[str, Any]) -> str:
     _log(f"  ChIPseeker：{cs}")
 
     # picard：命令是否在 PATH
-    r = subprocess.run(["conda", "run", "-n", env, "which", "picard"],
-                       capture_output=True, text=True)
-    info["picard"] = r.stdout.strip().splitlines()[-1] if r.returncode == 0 else "未找到（走 jar 或需安装）"
+    pic = _bin(spec, "picard")
+    info["picard"] = pic or "未找到（走 jar 或需安装）"
     _log(f"  picard：{info['picard']}")
 
     _STATE.setdefault("result", {})["selfcheck"] = info
     if tx != "TRUE":
         _log("  ⚠ txdbmaker 未就绪：新版 GenomicFeatures 下 makeTxDbFromGFF 会报 defunct")
     return "版本快照已采集"
+
+
+def stage_finalize(spec: Dict[str, Any]) -> str:
+    _log("=== ⑦ 收尾（写 analysis_env 标记 / ldd 抽查）===")
+    dry = spec.get("dry_run", False)
+    prefix = _target_prefix(spec)
+    info: Dict[str, str] = {}
+
+    # 1) 写/校验 analysis_env 标记（供 launcher 启动的分析工具定向读取）
+    if dry:
+        _run(["(write)", f"{env_paths.data_dir() / 'analysis_env'}", "=>", prefix], dry_run=True)
+        info["marker"] = f"(dry-run) 将写 {prefix}"
+    else:
+        written = env_paths.write_analysis_prefix_marker(prefix)
+        _log(f"  ✓ analysis_env 标记：{written}")
+        info["marker"] = written
+
+    # 2) ldd 抽查：对 prefix/bin 下代表性 ELF 二进制跑 ldd，收集 "not found"
+    if dry:
+        _log("  (dry-run：跳过 ldd 抽查)")
+        info["ldd"] = "dry-run"
+        _STATE.setdefault("result", {})["finalize"] = info
+        return "dry-run 跳过"
+
+    probe_bins = ["snakemake", "samtools", "bowtie2", "python"]
+    missing_libs: Dict[str, List[str]] = {}
+    for b in probe_bins:
+        bp = os.path.join(prefix, "bin", b)
+        if not os.path.exists(bp):
+            continue
+        try:
+            r = subprocess.run(["ldd", bp], capture_output=True, text=True, timeout=20)
+        except Exception:  # noqa: BLE001
+            continue
+        nf = [ln.strip() for ln in (r.stdout or "").splitlines() if "not found" in ln]
+        if nf:
+            missing_libs[b] = nf
+            _log(f"  ⚠ {b} 缺失动态库：" + "; ".join(nf))
+    if not missing_libs:
+        _log("  ✓ ldd 抽查未发现缺失库")
+    info["ldd"] = "ok" if not missing_libs else f"{len(missing_libs)} 个二进制缺库"
+    _STATE.setdefault("result", {})["finalize"] = info
+    if missing_libs:
+        raise RuntimeError("ldd 发现缺失动态库：" + ", ".join(missing_libs))
+    return "标记已写入，ldd 抽查通过"
 
 
 STAGE_FUNCS = {
@@ -305,6 +446,7 @@ STAGE_FUNCS = {
     "r_packages": stage_r_packages,
     "verify_tools": stage_verify_tools,
     "selfcheck": stage_selfcheck,
+    "finalize": stage_finalize,
 }
 
 
@@ -339,7 +481,8 @@ def main() -> int:
     steps = [s for s in STAGES if s in (spec.get("steps") or []) and s in STAGE_FUNCS]
     total = len(steps)
     _log(f"[worker] 计划执行 {total} 个阶段：{', '.join(steps)}")
-    _log(f"[worker] conda_env={spec.get('conda_env')} dry_run={spec.get('dry_run')}")
+    _log(f"[worker] analysis_prefix={spec.get('analysis_prefix') or env_paths.analysis_prefix()} "
+         f"source={spec.get('source', 'auto')} dry_run={spec.get('dry_run')}")
 
     for i, key in enumerate(steps):
         if _CANCELLED:

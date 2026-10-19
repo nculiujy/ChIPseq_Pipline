@@ -32,6 +32,7 @@ from utils.ui_theme import (  # noqa: E402
     render_issues,
 )
 from utils import runtime as rt  # noqa: E402
+from utils import env_paths  # noqa: E402
 
 st.set_page_config(page_title="运行管理", layout="wide")
 inject_theme()
@@ -91,6 +92,7 @@ def run_snakemake_dryrun(targets):
             text=True,
             cwd=BASE_DIR,
             timeout=60,
+            env=env_paths.routed_env(),
         )
         return result.stdout + result.stderr
     except subprocess.TimeoutExpired:
@@ -677,6 +679,7 @@ def _start_snakemake(cmd):
                     stdout=lf,
                     stderr=subprocess.STDOUT,
                     cwd=BASE_DIR,
+                    env=env_paths.routed_env(),
                 )
             st.session_state.snakemake_pid = proc.pid
             st.success(
@@ -691,7 +694,17 @@ def _start_snakemake(cmd):
             st.info("可再次点击上方“运行所选项目管线”按钮重试（若之前有残留锁，先执行：snakemake --unlock）。")
 
 
-_disable_launch = st.session_state.snakemake_running or _sel_blocked
+# —— 分析环境就绪性早失败校验（launcher/analysis 解耦后，工具可能尚未构建）——
+_snakemake_bin = env_paths.resolved_tool_path("snakemake")
+_analysis_ready = _snakemake_bin is not None
+if not _analysis_ready:
+    st.error(
+        "分析环境未就绪：在分析环境/当前环境中找不到 `snakemake`。\n\n"
+        "请先到侧栏【环境配置】页完成阶段③～⑦构建分析环境（若为 conda 启动器模式）；\n"
+        "或确认已激活含工具的 conda 环境。"
+    )
+
+_disable_launch = st.session_state.snakemake_running or _sel_blocked or not _analysis_ready
 
 # ——待确认状态：dry-run 预览已完成，等待用户核对后确认启动——
 if st.session_state.get("pending_launch"):

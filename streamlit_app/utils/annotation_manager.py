@@ -446,30 +446,31 @@ def apply_to_config(
 
 
 # ---------- 依赖自检 ----------
+# 工具定向统一委托 env_paths（launcher/analysis 双 prefix 解耦）：
+#   <analysis_prefix>/bin : sys.prefix/bin : 系统 PATH
+# 开发态（分析 prefix 不存在）自动回落 sys.prefix/bin，保持向后兼容。
+from utils import env_paths as _env_paths  # noqa: E402
+
+
 def conda_env_bin() -> str:
-    """当前运行 Streamlit/worker 的 Python 环境 bin 目录（即 ChIPseq_Pipline 环境）。"""
-    return os.path.join(sys.prefix, "bin")
+    """分析环境 bin；不存在时回落到当前 Python 环境 bin（供 UI 展示）。"""
+    ab = _env_paths.analysis_bin()
+    return ab if os.path.isdir(ab) else os.path.join(sys.prefix, "bin")
 
 
 def tool_search_path() -> str:
-    """命令搜索路径：优先本 conda 环境的 bin，再叠加系统 PATH。
-
-    这样即使 Streamlit 是在 base shell 下启动、进程 PATH 不含 env/bin，
-    也能正确解析 bowtie2-build / samtools / macs2 等环境内工具。"""
-    b = conda_env_bin()
-    cur = os.environ.get("PATH", "")
-    parts = [b] + [p for p in cur.split(os.pathsep) if p and p != b]
-    return os.pathsep.join(parts)
+    """命令搜索路径：优先分析环境 bin，再叠加当前环境 bin 与系统 PATH。"""
+    return _env_paths.tool_search_path()
 
 
 def resolved_tool_path(cmd: str) -> Optional[str]:
-    """在 conda 环境 bin + 系统 PATH 中查找命令，返回绝对路径或 None。"""
-    return shutil.which(cmd, path=tool_search_path())
+    """在分析环境 bin + 当前环境 bin + 系统 PATH 中查找命令，返回绝对路径或 None。"""
+    return _env_paths.resolved_tool_path(cmd)
 
 
 def check_dependencies() -> Dict[str, bool]:
-    """检查 worker 依赖的外部命令是否可用（在本 conda 环境 bin + PATH 中查找）。"""
+    """检查 worker 依赖的外部命令是否可用（在 tool_search_path() 中查找）。"""
     deps: Dict[str, bool] = {}
     for cmd in ("curl", "bowtie2", "bowtie2-build", "samtools", "gunzip"):
-        deps[cmd] = resolved_tool_path(cmd) is not None
+        deps[cmd] = _env_paths.resolved_tool_path(cmd) is not None
     return deps
