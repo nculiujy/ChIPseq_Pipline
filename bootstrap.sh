@@ -11,6 +11,9 @@
 #   CHIPSEQ_SIF_URI    Apptainer .sif 下载地址
 #   CHIPSEQ_ENV_URL    conda-pack tarball 地址
 #   SKIP_INSTALL       1 = 只探测不下载镜像/环境
+#
+# 容器后端（apptainer/podman/docker）若命中未发布的占位镜像地址且无本地/已加载镜像，
+# 会自动降级为 conda 后端（除非显式 CHIPSEQ_RUNTIME 强制指定，那样改为报错给出可执行指引）。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,6 +52,41 @@ DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
 log "数据目录: $DATA_DIR"
 mkdir -p "$DATA_DIR"
 check_disk_space "$DATA_DIR" 6
+
+# ---------- 2.5 容器后端占位镜像预检：不可达则自动降级 conda ----------
+# 仓库默认的镜像/SIF 地址指向从未发布的 chipseq-pipeline/ 命名空间，直接拉会 403/404。
+# 若既没自定义地址、也没有本地/已加载的镜像，则自动改用 conda 后端（秒级启动器、开箱即用）。
+case "$RUNTIME" in
+    podman|docker|apptainer)
+        _placeholder=1
+        if [ -n "${CHIPSEQ_IMAGE:-}" ]; then _placeholder=0; fi
+        if [ "$RUNTIME" = "apptainer" ] && [ -n "${CHIPSEQ_SIF_URI:-}" ]; then _placeholder=0; fi
+
+        _offline=0
+        if [ -f "$HERE/chipseq-pipeline-image.tar" ] || [ -f "$HERE/chipseq-pipeline-image.tar.zst" ] \
+           || [ -f "$HERE/chipseq-pipeline.sif" ] || [ -f "$DATA_DIR/chipseq-pipeline.sif" ]; then
+            _offline=1
+        fi
+        case "$RUNTIME" in
+            podman|docker)
+                if "$RUNTIME" image inspect "$CHIPSEQ_DEFAULT_IMAGE" >/dev/null 2>&1; then _offline=1; fi
+                ;;
+        esac
+
+        if [ "$_placeholder" = 1 ] && [ "$_offline" = 0 ]; then
+            warn "默认容器镜像地址（chipseq-pipeline/ 命名空间）从未发布，直接拉取会返回 403/404。"
+            if [ -n "${CHIPSEQ_RUNTIME:-}" ]; then
+                # 用户显式指定了容器后端：不擅自切换，给出可执行指引
+                die "请三选一后重跑：1) 设 CHIPSEQ_IMAGE=<真实镜像>（apptainer 亦可设 CHIPSEQ_SIF_URI）；2) 把离线包 chipseq-pipeline-image.tar.zst 或 chipseq-pipeline.sif 放到 $HERE；3) 改用 conda：CHIPSEQ_RUNTIME=conda ./bootstrap.sh"
+            elif command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1; then
+                warn "自动降级到 conda 后端（秒级建启动器，完整分析环境稍后在浏览器「环境配置」页构建）。"
+                RUNTIME=conda
+            else
+                die "容器镜像不可达，且本机未安装 conda/mamba。请安装 miniforge 后重跑，或提供上面的离线包/自定义镜像。"
+            fi
+        fi
+        ;;
+esac
 
 init_data_dir "$DATA_DIR" "$HERE/assets"
 echo "$RUNTIME" > "$DATA_DIR/runtime"

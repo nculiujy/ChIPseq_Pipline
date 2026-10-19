@@ -77,7 +77,7 @@ CHIPSEQ_RUNTIME=conda ./bootstrap.sh
 2. 完整分析环境留到第 5 步在浏览器「环境配置」页一键构建
 3. 把 6 个命令装到你的 `~/.local/bin/` 下
 
-> 想走容器模式（需自备真实镜像，见上方说明）就直接 `./bootstrap.sh`，它会自动探测 Apptainer / Podman / Docker；机器上没有任何容器时也会回落到 conda。
+> 想走容器模式（需自备真实镜像，见上方说明）就直接 `./bootstrap.sh`，它会自动探测 Apptainer / Podman / Docker。若本机没有容器、或默认镜像地址不可达（占位 namespace 会 403），**会自动降级到 conda**，无需手动加环境变量。
 
 安装脚本会打印详细进度。**中间不需要输入密码，不会碰系统文件**。
 
