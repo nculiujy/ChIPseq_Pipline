@@ -145,6 +145,10 @@ def start_task(spec: TaskSpec) -> Dict[str, Any]:
 
     # 启动 subprocess（脱离父进程，即使 Streamlit 重跑也不中断）
     # spec 通过 stdin JSON 传递，避免命令行过长和转义问题
+    # 把本 conda 环境的 bin 前置到 PATH，保证 worker 里 shutil.which / subprocess
+    # 能解析 bowtie2-build、samtools、curl 等环境内工具（即使启动 shell 是 base）
+    worker_env = dict(os.environ)
+    worker_env["PATH"] = tool_search_path()
     with open(log_file, "ab", buffering=0) as logf:
         logf.write(
             f"\n==== task {spec.task_id} started at {time.strftime('%F %T')} ====\n".encode()
@@ -156,6 +160,7 @@ def start_task(spec: TaskSpec) -> Dict[str, Any]:
             stderr=logf,
             start_new_session=True,   # setsid，脱离父进程组
             close_fds=True,
+            env=worker_env,
         )
         proc.stdin.write(json.dumps(asdict(spec), ensure_ascii=False).encode("utf-8"))
         proc.stdin.close()
@@ -441,9 +446,30 @@ def apply_to_config(
 
 
 # ---------- 依赖自检 ----------
+def conda_env_bin() -> str:
+    """当前运行 Streamlit/worker 的 Python 环境 bin 目录（即 ChIPseq_Pipline 环境）。"""
+    return os.path.join(sys.prefix, "bin")
+
+
+def tool_search_path() -> str:
+    """命令搜索路径：优先本 conda 环境的 bin，再叠加系统 PATH。
+
+    这样即使 Streamlit 是在 base shell 下启动、进程 PATH 不含 env/bin，
+    也能正确解析 bowtie2-build / samtools / macs2 等环境内工具。"""
+    b = conda_env_bin()
+    cur = os.environ.get("PATH", "")
+    parts = [b] + [p for p in cur.split(os.pathsep) if p and p != b]
+    return os.pathsep.join(parts)
+
+
+def resolved_tool_path(cmd: str) -> Optional[str]:
+    """在 conda 环境 bin + 系统 PATH 中查找命令，返回绝对路径或 None。"""
+    return shutil.which(cmd, path=tool_search_path())
+
+
 def check_dependencies() -> Dict[str, bool]:
-    """检查 worker 依赖的外部命令是否可用。"""
-    deps = {}
-    for cmd in ("curl", "bowtie2-build", "samtools", "gunzip"):
-        deps[cmd] = shutil.which(cmd) is not None
+    """检查 worker 依赖的外部命令是否可用（在本 conda 环境 bin + PATH 中查找）。"""
+    deps: Dict[str, bool] = {}
+    for cmd in ("curl", "bowtie2", "bowtie2-build", "samtools", "gunzip"):
+        deps[cmd] = resolved_tool_path(cmd) is not None
     return deps

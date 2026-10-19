@@ -25,10 +25,12 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from utils import annotation_manager as am  # noqa: E402
+from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
 
-st.set_page_config(page_title="物种注释", page_icon="🧬", layout="wide")
-st.title("🧬 物种注释下载与配置")
-st.caption("从公共数据库下载基因组 FASTA + GFF/GTF，本地构建 bowtie2 索引，一键写入 config.yaml")
+st.set_page_config(page_title="物种注释", layout="wide")
+inject_theme()
+render_sidebar("annotation")
+page_header("物种注释", "从公共数据库下载基因组 FASTA + GFF/GTF，本地构建 bowtie2 索引，一键写入 config.yaml")
 
 # ---------- 路径 ----------
 BASE_DIR = _APP_DIR.parent                                   # 项目根
@@ -64,8 +66,9 @@ def render_header() -> None:
 
     missing = [k for k, v in deps.items() if not v]
     with c4:
+        st.caption(f"依赖检测环境 bin：`{am.conda_env_bin()}`")
         if missing:
-            st.error(f"缺少命令: {', '.join(missing)}（请检查 conda 环境）")
+            st.error(f"缺少命令: {', '.join(missing)}（未在上述环境 bin 及 PATH 中找到）")
         else:
             st.success("依赖齐全: " + " · ".join(deps.keys()))
 
@@ -82,14 +85,14 @@ def shutil_disk_free(path: Path) -> float:
 def species_badge(status: am.SpeciesStatus) -> tuple[str, str]:
     """返回 (emoji+文本, streamlit 颜色类型)。"""
     if not status.exists:
-        return ("⚪ 未配置", "secondary")
+        return ("未配置", "secondary")
     if status.complete:
-        return ("🟢 完整", "success")
+        return ("完整", "success")
     if status.missing == ["gff"]:
-        return ("🟡 缺 GFF", "warning")
+        return ("缺 GFF", "warning")
     if status.missing and "bt2_index" not in status.missing:
-        return ("🟡 部分", "warning")
-    return ("🔴 不完整", "error")
+        return ("部分", "warning")
+    return ("不完整", "error")
 
 
 def render_catalog_tab() -> None:
@@ -166,7 +169,7 @@ def render_catalog_tab() -> None:
                 label = "重新下载并覆盖"
                 confirm = st.checkbox("我确认要覆盖已有索引", key=f"ovr_{sid}")
             else:
-                label = "🚀 开始下载并构建索引"
+                label = "开始下载并构建索引"
                 confirm = True
 
             if st.button(label, key=f"go_{sid}", type="primary", disabled=not confirm):
@@ -174,7 +177,7 @@ def render_catalog_tab() -> None:
                 try:
                     st_info = am.start_task(spec)
                     st.session_state["active_task"] = st_info["task_id"]
-                    st.toast(f"任务已启动: {sid}", icon="✅")
+                    st.toast(f"任务已启动: {sid}", icon="")
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(f"启动失败: {e}")
@@ -208,7 +211,7 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
     scope 区分不同 tab（cat=物种 catalog / exist=已配置），避免同物种在两处同时出现时 key 冲突。
     """
     key_prefix = f"apply_{scope}_{sid}"
-    if st.button(f"📝 应用到 config.yaml ({sid})", key=f"{key_prefix}_btn"):
+    if st.button(f"应用到 config.yaml ({sid})", key=f"{key_prefix}_btn"):
         st.session_state[f"{key_prefix}_open"] = True
 
     if st.session_state.get(f"{key_prefix}_open"):
@@ -289,7 +292,7 @@ def render_custom_tab() -> None:
         with pkg_c2:
             orgdb_pkg = st.text_input("orgdb 包名（如 org.Hs.eg.db；留空则 GSEA 跳过）", key="cus_orgdb_pkg")
 
-        submitted = st.form_submit_button("🚀 启动下载并构建", type="primary")
+        submitted = st.form_submit_button("启动下载并构建", type="primary")
 
         if submitted:
             if not sid or not fasta_url or not gff_url:
@@ -316,7 +319,7 @@ def render_custom_tab() -> None:
                 try:
                     st_info = am.start_task(spec)
                     st.session_state["active_task"] = st_info["task_id"]
-                    st.toast(f"任务已启动: {sid}", icon="✅")
+                    st.toast(f"任务已启动: {sid}", icon="")
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(f"启动失败: {e}")
@@ -335,7 +338,7 @@ def render_tasks_tab() -> None:
     active_id = st.session_state.get("active_task")
     running = [t for t in tasks if t.get("status") in ("pending", "running")]
     if running:
-        st.markdown("#### 🔄 运行中")
+        st.markdown("#### 运行中")
         for t in running:
             _render_task_progress(t, auto_refresh=True)
         st.caption("页面每 1 秒自动刷新；可以切到其他标签页，任务在后台继续")
@@ -343,7 +346,7 @@ def render_tasks_tab() -> None:
         time.sleep(1.0)
         st.rerun()
 
-    st.markdown("#### 📜 历史")
+    st.markdown("#### 历史")
     for t in tasks:
         if t.get("status") in ("pending", "running"):
             continue
@@ -375,9 +378,9 @@ def _render_task_progress(t: dict, auto_refresh: bool = False) -> None:  # noqa:
         c4.metric("ETA", f"{eta}s" if eta else "-")
 
     c1, c2 = st.columns([1, 5])
-    if c1.button("⏹ 取消任务", key=f"cancel_{tid}"):
+    if c1.button("取消任务", key=f"cancel_{tid}"):
         ok = am.cancel_task(ANNO_DIR, tid)
-        st.toast("已取消" if ok else "任务已结束", icon="⏹")
+        st.toast("已取消" if ok else "任务已结束", icon="")
         time.sleep(0.5)
         st.rerun()
     if c2.toggle("显示日志尾部", key=f"logtog_{tid}", value=False):
@@ -389,7 +392,7 @@ def _render_task_history(t: dict) -> None:
     tid = t["task_id"]
     sid = t.get("species_id", "?")
     status = t.get("status", "?")
-    icon = {"done": "✅", "error": "❌", "cancelled": "⏹"}.get(status, "❓")
+    icon = {"done": "", "error": "", "cancelled": ""}.get(status, "")
     finished = t.get("finished_at")
     started = t.get("started_at") or 0
     dur = int((finished or time.time()) - started)
@@ -404,11 +407,11 @@ def _render_task_history(t: dict) -> None:
             st.caption(f"目标目录: `{t['target_dir']}`")
 
         c1, c2, c3 = st.columns([1, 1, 3])
-        if c1.button("🗑 清除记录", key=f"clr_{tid}"):
+        if c1.button("清除记录", key=f"clr_{tid}"):
             am.clear_task(ANNO_DIR, tid)
             st.rerun()
         if status == "done" and sid in SPECIES_DB:
-            if c2.button("📝 应用到 config", key=f"apply2_{tid}"):
+            if c2.button("应用到 config", key=f"apply2_{tid}"):
                 # 触发 catalog tab 里对应物种的 apply 表单展开
                 st.session_state[f"apply_cat_{sid}_open"] = True
                 st.rerun()
@@ -468,14 +471,14 @@ if active_id:
             stage_total = t.get("stage_total", len(am.STAGES))
             overall = (stage_idx + float(t.get("progress") or 0.0)) / max(1, stage_total)
             st.progress(min(1.0, overall),
-                        text=f"🔄 {t.get('species_id')} · {t.get('stage')} · {overall*100:.1f}% · {t.get('message', '')[:80]}")
+                        text=f"{t.get('species_id')} · {t.get('stage')} · {overall*100:.1f}% · {t.get('message', '')[:80]}")
         st.divider()
 
 tab_cat, tab_custom, tab_tasks, tab_existing = st.tabs([
-    f"📚 物种 catalog ({len(SPECIES_DB)})",
-    "🛠 自定义物种",
-    f"📊 任务面板",
-    f"📂 已配置",
+    f"物种 catalog ({len(SPECIES_DB)})",
+    "自定义物种",
+    f"任务面板",
+    f"已配置",
 ])
 
 with tab_cat:

@@ -265,7 +265,12 @@ if (!is.null(orgdb_name) && nzchar(as.character(orgdb_name))) {
 # 判断 txdb 是文件路径还是 Bioconductor 包名
 if (file.exists(txdb_name)) {
   cat("Loading TxDb from GFF/GTF file:", txdb_name, "\n")
-  txdb <- makeTxDbFromGFF(txdb_name)
+  # GenomicFeatures >= 1.61.1 将 makeTxDbFromGFF 迁移到 txdbmaker 包
+  if (requireNamespace("txdbmaker", quietly = TRUE)) {
+    txdb <- txdbmaker::makeTxDbFromGFF(txdb_name)
+  } else {
+    txdb <- GenomicFeatures::makeTxDbFromGFF(txdb_name)
+  }
 } else {
   library(txdb_name, character.only = TRUE)
   txdb <- get(txdb_name)

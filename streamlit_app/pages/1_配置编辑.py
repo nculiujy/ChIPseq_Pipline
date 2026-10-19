@@ -5,13 +5,36 @@
 import streamlit as st
 import os
 import re
+import html as _html
 import glob
 import yaml
 import pandas as pd
 import copy
+from datetime import datetime
 
-st.set_page_config(page_title="配置编辑", page_icon="⚙️", layout="wide")
-st.title("⚙️ 配置编辑")
+import sys
+
+# 让 streamlit_app/utils 可导入（控制台主题）
+_APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+from utils.ui_theme import (  # noqa: E402
+    inject_theme,
+    page_header,
+    render_sidebar,
+    section_title,
+    steps_bar,
+    render_issues,
+    code_html,
+    list_row,
+    render_html_list,
+)
+from utils import runtime as rt  # noqa: E402
+
+st.set_page_config(page_title="配置编辑", layout="wide")
+inject_theme()
+render_sidebar("config")
+page_header("配置编辑", "可视化编辑 config.yaml 与 metadata.csv")
 
 # 路径定义
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -28,6 +51,8 @@ def load_config():
 def save_config(config_data):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    # 记录“刚刚保存”时刻：校验面板据此显示“保存后需重新校验”
+    st.session_state["cfg_last_saved_ts"] = datetime.now().timestamp()
 
 
 def load_metadata():
@@ -108,15 +133,109 @@ def get_gff_files(species, bowtie2_folder):
 
 
 # ============================================================
+# 工作流配置进度 + 全局校验入口
+# ============================================================
+_cfg = load_config()
+_issues = rt.config_issues(_cfg)
+_nerr = sum(1 for i in _issues if i["level"] == "error")
+_nwarn = sum(1 for i in _issues if i["level"] == "warn")
+_projs = _cfg.get("projects", []) or []
+
+
+def _match(iss, needles):
+    f = ((iss.get("field") or "") + " " + (iss.get("msg") or "")).lower()
+    return any(n in f for n in needles)
+
+
+def _step_status(needles, base="done"):
+    if any(i["level"] == "error" and _match(i, needles) for i in _issues):
+        return "err"
+    if any(i["level"] == "warn" and _match(i, needles) for i in _issues):
+        return "todo"
+    return base
+
+
+# ——校验结果关联配置版本与保存态（前移计算，供步骤条复用）——
+try:
+    _cfg_mtime_ts = os.path.getmtime(CONFIG_PATH)
+    _cfg_mtime_txt = datetime.fromtimestamp(_cfg_mtime_ts).strftime("%Y-%m-%d %H:%M:%S")
+except Exception:  # noqa: BLE001
+    _cfg_mtime_ts, _cfg_mtime_txt = 0.0, "未知"
+_validate_key = "cfg_validate_" + str(round(_cfg_mtime_ts, 2))
+_validated = bool(st.session_state.get("cfg_validate_ts")) and \
+    st.session_state.get("cfg_validate_for") == _validate_key
+if _validated:
+    _validated_at = st.session_state["cfg_validate_ts"]
+else:
+    _validated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+_saved_ts = st.session_state.get("cfg_last_saved_ts", 0)
+_just_saved_pending = bool(_saved_ts) and _saved_ts >= _cfg_mtime_ts - 1 and not _validated
+
+# 步骤状态：done/err/todo/dirty（dirty=刚保存还没重新校验）
+_step_last = "err" if _nerr else ("dirty" if _just_saved_pending else "done")
+_steps = [
+    {"label": "项目与样本", "status": ("err" if not _projs else _step_status(["projects", "metadata"]))},
+    {"label": "ChIP 注释", "status": _step_status(["index_dir", "anno", "物种"])},
+    {"label": "基础分析参数", "status": "done" if _cfg.get("deeptools") else "todo"},
+    {"label": "GSEA 与 Motif", "status": _step_status(["gsea", "motif", "txdb", "orgdb"])},
+    {"label": "校验并保存", "status": _step_last},
+]
+# 当前步骤唯一强调态：第一个有问题的环节
+_current_step = next((i for i, s in enumerate(_steps) if s["status"] != "done"), len(_steps) - 1)
+for _i, _s in enumerate(_steps):
+    _s["current"] = _i == _current_step
+
+section_title("工作流配置进度")
+steps_bar(_steps)
+st.caption("分工说明：步骤条只反映各工作流环节的完成度/问题状态（已完成 · 有问题 · 需重校验）；具体修改仍请在下方对应 Tab 内完成并保存。")
+
+with st.container(border=True):
+    _sumc, _btnc = st.columns([3, 1])
+    with _sumc:
+        if _nerr:
+            st.markdown(f"**全局校验：** 🔴 {_nerr} 个错误 · 🟡 {_nwarn} 个警告（建议修正后再运行）")
+        elif _nwarn:
+            st.markdown(f"**全局校验：** 🟡 {_nwarn} 个警告（无阻断性错误）")
+        else:
+            st.markdown("**全局校验：** ✅ 通过，未发现配置问题")
+        _proj_names = "、".join(f"{p.get('species')}/{p.get('experiment')}" for p in _projs) or "无项目"
+        st.caption(f"校验时间：{_validated_at} · 配置版本：修改于 {_cfg_mtime_txt}")
+        st.markdown(
+            '<div class="ux-metric-label">覆盖项目：' + _html.escape(_proj_names)
+            + " · 文件：" + code_html(os.path.relpath(CONFIG_PATH, BASE_DIR)) + "</div>",
+            unsafe_allow_html=True,
+        )
+    with _btnc:
+        st.write("")
+        if st.button("🔍 重新校验", key="validate_cfg", type="primary"):
+            st.session_state["cfg_validate_ts"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state["cfg_validate_for"] = _validate_key
+            st.rerun()
+    # 保存/校验状态结论（单一状态模型：已保存并校验 / 刚保存待校验 / 自动校验中）
+    if _validated and _nerr == 0:
+        st.success("✅ 已保存并通过校验：当前配置版本于 " + st.session_state["cfg_validate_ts"] + " 手动校验通过")
+    elif _validated and _nerr:
+        st.error(f"❌ 手动校验未通过（{st.session_state['cfg_validate_ts']}）：存在 {_nerr} 个错误")
+    elif _just_saved_pending:
+        st.warning("⚠️ 配置已修改并保存，需重新校验：上方结果为页面加载时的自动校验，请点击右侧「重新校验」确认保存后的版本")
+    if _issues:
+        render_issues(_issues)
+    else:
+        st.success("✅ 未发现：样本名不匹配、物种目录缺失、路径无效、参数组合冲突等常见问题")
+
+st.markdown("---")
+
+# ============================================================
 # Tab 布局
 # ============================================================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🔧 全局参数",
-    "🧬 项目管理",
-    "📋 样本配对表",
-    "📍 ChIP 注释",
-    "🔬 GSEA 参数",
-    "🧬 Motif 参数",
+    "全局参数",
+    "项目管理",
+    "样本配对表",
+    "ChIP 注释",
+    "GSEA 参数",
+    "Motif 参数",
 ])
 
 # ============================================================
@@ -153,7 +272,7 @@ with tab1:
             broad_cutoff = st.number_input("Broad cutoff", min_value=0.0001, max_value=1.0, value=float(config.get("macs2_broad_cutoff", 0.1)), format="%.4f")
         else:
             broad_cutoff = None
-            st.caption("ℹ️ Narrow 模式下无需 Broad cutoff 参数")
+            st.caption("Narrow 模式下无需 Broad cutoff 参数")
     
     with col2:
         # MACS2 基因组大小参数
@@ -252,12 +371,12 @@ with tab1:
 
         # ---- 热图配色选择（含软色调分组 + 色带预览）----
         COLOR_MAP_GROUPS = {
-            "🔵 经典对比": {
+            "经典对比": {
                 "RdYlBu_r":   ["#313695","#4575b4","#74add1","#abd9e9","#ffffbf","#fdae61","#f46d43","#d73027"],
                 "coolwarm":   ["#3b4cc0","#6f92f3","#b8d0f9","#f7f7f7","#f5c4ac","#e0735a","#b40426"],
                 "RdBu_r":     ["#053061","#2166ac","#92c5de","#f7f7f7","#f4a582","#d6604d","#67001f"],
             },
-            "🌈 渐变单色": {
+            "渐变单色": {
                 "viridis":    ["#440154","#414487","#2a788e","#22a884","#7ad151","#fde725"],
                 "plasma":     ["#0d0887","#7e03a8","#cc4778","#f89441","#f0f921"],
                 "magma":      ["#000004","#3b0f70","#8c2981","#de4968","#fea16e","#fcfdbf"],
@@ -266,7 +385,7 @@ with tab1:
                 "Greens":     ["#f7fcf5","#c7e9c0","#74c476","#238b45","#00441b"],
                 "Reds":       ["#fff5f0","#fcbba1","#fb6a4a","#cb181d","#67000d"],
             },
-            "🌸 软色调": {
+            "软色调": {
                 "PuBuGn":     ["#fff7fb","#ece2f0","#a6bddb","#67a9cf","#1c9099","#016c59"],
                 "YlOrBr":     ["#ffffe5","#fff7bc","#fec44f","#d95f0e","#662506"],
                 "PiYG":       ["#8e0152","#de77ae","#f7f7f7","#b8e186","#4d9221"],
@@ -287,9 +406,9 @@ with tab1:
             cmap_names,
             index=cmap_idx,
             format_func=lambda x: (
-                "🌸 " + x if x in COLOR_MAP_GROUPS.get("🌸 软色调", {}) else
-                "🌈 " + x if x in COLOR_MAP_GROUPS.get("🌈 渐变单色", {}) else
-                "🔵 " + x
+                "" + x if x in COLOR_MAP_GROUPS.get("软色调", {}) else
+                "" + x if x in COLOR_MAP_GROUPS.get("渐变单色", {}) else
+                "" + x
             ),
             help="软色调配色适合发表级图片，对比度柔和；经典对比色适合强调信号差异",
         )
@@ -339,15 +458,15 @@ with tab1:
                     selected_file = st.selectbox(f"选择 {file_label}", available_files, key="dt_file_select")
                     # 构造完整相对路径
                     dt_file_path = os.path.join("workflow", "anno", dt_species, dt_bowtie2_dir, selected_file)
-                    st.caption(f"📄 路径: `{dt_file_path}`")
+                    st.caption(f"路径: `{dt_file_path}`")
                 else:
-                    st.warning(f"⚠️ 在 `workflow/anno/{dt_species}/{dt_bowtie2_dir}/` 下未找到 {file_label}")
+                    st.warning(f"在 `workflow/anno/{dt_species}/{dt_bowtie2_dir}/` 下未找到 {file_label}")
                     dt_file_path = st.text_input(f"手动输入 {file_label} 路径", value=dt.get("custom_bed", "") if bed_source == "custom" else dt.get("gtf_file", ""))
             else:
-                st.warning(f"⚠️ 在 `workflow/anno/{dt_species}/` 下未找到 bowtie2 开头的目录")
+                st.warning(f"在 `workflow/anno/{dt_species}/` 下未找到 bowtie2 开头的目录")
                 dt_file_path = ""
         else:
-            st.warning("⚠️ 未找到 `workflow/anno/` 下的物种目录")
+            st.warning("未找到 `workflow/anno/` 下的物种目录")
             dt_file_path = ""
     else:
         dt_file_path = ""
@@ -374,7 +493,7 @@ with tab1:
             sr_downstream = st.number_input("下游延伸 (bp)", min_value=0, max_value=50000, value=sr.get("downstream", 2000), step=500)
 
     # 保存按钮
-    if st.button("💾 保存全局配置", type="primary", key="save_global"):
+    if st.button("保存全局配置", type="primary", key="save_global"):
         # 重新读取最新 config，避免覆盖其他 Tab 的修改
         new_config = load_config()
         new_config["picard_dir"] = picard_dir
@@ -427,8 +546,8 @@ with tab1:
         new_config["deeptools"] = existing_dt
 
         save_config(new_config)
-        st.success("✅ 全局配置已保存！")
-        st.info("💡 提示：由于使用了 `ancient()` 包装，修改 config.yaml 不会触发已完成模块的重跑。")
+        st.success("全局配置已保存！")
+        st.info("提示：由于使用了 `ancient()` 包装，修改 config.yaml 不会触发已完成模块的重跑。")
 
 # ============================================================
 # Tab 2: 项目管理
@@ -439,8 +558,47 @@ with tab2:
 
     st.subheader("现有项目")
 
+    # —— 项目顺序：排在第一位的项目即总览/运行页默认的「当前项目」 ——
+    if projects:
+        st.caption("调整顺序：排在**第一位**的项目作为总览页的「当前项目」（运行管理、结果预览也默认定位到它）。用右侧 ↑ / ↓ 移动，顺序会写回 config.yaml。")
+        for _i, _p in enumerate(projects):
+            _mods = _p.get("modules", {}) or {}
+            _n_en = sum(1 for m in rt.MODULE_ORDER if _mods.get(m))
+            _c_tag, _c_name, _c_up, _c_dn = st.columns([1.3, 4.7, 0.5, 0.5])
+            with _c_tag:
+                st.markdown("**★ 当前项目**" if _i == 0 else "&nbsp;", unsafe_allow_html=True)
+            with _c_name:
+                render_html_list([list_row(
+                    main=f"{_p['species']} / {_p['experiment']}",
+                    sub_html=(code_html(f"result/{_p['species']}/{_p['experiment']}")
+                              + f" · {_n_en} 个启用模块"),
+                )])
+            with _c_up:
+                if st.button("↑", key=f"ord_up_{_i}", disabled=(_i == 0),
+                             use_container_width=True, help="上移（移到第一位即成为当前项目）"):
+                    _fresh = load_config()
+                    _fp = _fresh.get("projects", [])
+                    _fp[_i - 1], _fp[_i] = _fp[_i], _fp[_i - 1]
+                    _fresh["projects"] = _fp
+                    _ok, _msg = rt.save_project_order(_fresh)
+                    if not _ok:
+                        st.error(_msg)
+                    st.rerun()
+            with _c_dn:
+                if st.button("↓", key=f"ord_dn_{_i}", disabled=(_i == len(projects) - 1),
+                             use_container_width=True, help="下移"):
+                    _fresh = load_config()
+                    _fp = _fresh.get("projects", [])
+                    _fp[_i + 1], _fp[_i] = _fp[_i], _fp[_i + 1]
+                    _fresh["projects"] = _fp
+                    _ok, _msg = rt.save_project_order(_fresh)
+                    if not _ok:
+                        st.error(_msg)
+                    st.rerun()
+        st.markdown("---")
+
     for i, proj in enumerate(projects):
-        with st.expander(f"📁 {proj['species']}/{proj['experiment']}", expanded=False):
+        with st.expander(f"{proj['species']}/{proj['experiment']}", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
                 # 物种选择（基于 workflow/anno 下的实际目录）
@@ -494,12 +652,12 @@ with tab2:
                         )
                     elif index_prefix:
                         final_index_dir = index_prefix
-                        st.caption(f"✅ 索引前缀: `{index_prefix}`")
+                        st.caption(f"索引前缀: `{index_prefix}`")
                     else:
-                        st.warning("⚠️ 未在该目录下找到 .bt2 文件")
+                        st.warning("未在该目录下找到 .bt2 文件")
                         final_index_dir = current_index
                 else:
-                    st.warning(f"⚠️ `workflow/anno/{selected_species}/` 下无 bowtie2 开头的目录")
+                    st.warning(f"`workflow/anno/{selected_species}/` 下无 bowtie2 开头的目录")
                     final_index_dir = st.text_input(
                         "手动输入 Bowtie2 索引路径",
                         value=proj.get("index_dir", ""),
@@ -529,7 +687,7 @@ with tab2:
 
             btn_col1, btn_col2 = st.columns([3, 1])
             with btn_col1:
-                if st.button(f"💾 保存项目", key=f"save_proj_{i}"):
+                if st.button(f"保存项目", key=f"save_proj_{i}"):
                     # 重新读取最新 config 以避免被其他 Tab 的旧缓存覆盖
                     fresh_config = load_config()
                     fresh_projects = fresh_config.get("projects", [])
@@ -550,14 +708,14 @@ with tab2:
                         }
                         fresh_config["projects"] = fresh_projects
                         save_config(fresh_config)
-                        st.success(f"✅ 项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+                        st.success(f"项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
                         st.rerun()
             with btn_col2:
-                if st.button(f"🗑️ 删除", key=f"del_proj_{i}", type="secondary"):
+                if st.button(f"删除", key=f"del_proj_{i}", type="secondary"):
                     fresh_config = load_config()
                     fresh_config["projects"].pop(i)
                     save_config(fresh_config)
-                    st.success(f"✅ 项目 {proj['species']}/{proj['experiment']} 已删除")
+                    st.success(f"项目 {proj['species']}/{proj['experiment']} 已删除")
                     st.rerun()
 
     st.markdown("---")
@@ -580,12 +738,12 @@ with tab2:
             new_index_value = os.path.join("workflow", "anno", new_species, new_bt2_dir, new_selected_prefix)
         elif new_index_prefix:
             new_index_value = new_index_prefix
-            st.caption(f"✅ 索引前缀: `{new_index_prefix}`")
+            st.caption(f"索引前缀: `{new_index_prefix}`")
         else:
             new_index_value = ""
-            st.warning("⚠️ 未在该目录下找到 .bt2 文件")
+            st.warning("未在该目录下找到 .bt2 文件")
     else:
-        st.warning(f"⚠️ `workflow/anno/{new_species}/` 下无 bowtie2 开头的目录")
+        st.warning(f"`workflow/anno/{new_species}/` 下无 bowtie2 开头的目录")
         new_index_value = st.text_input("手动输入 Bowtie2 索引路径", key="new_idx_manual")
 
     with st.form("new_project_form"):
@@ -593,7 +751,7 @@ with tab2:
         with col1:
             new_experiment = st.text_input("实验名称")
             new_rawdata = st.text_input("原始数据目录")
-            st.caption(f"📄 Bowtie2 索引: `{new_index_value}`")
+            st.caption(f"Bowtie2 索引: `{new_index_value}`")
         with col2:
             new_txdb = st.text_input(
                 "TxDb（R 包名或本地 GFF3/GTF 路径）",
@@ -604,7 +762,7 @@ with tab2:
                 help="基因符号注释与富集分析用；大豆等无官方 OrgDb 的物种可留空（注释仍可用，GO/KEGG 富集将跳过）",
             )
 
-        submitted = st.form_submit_button("➕ 添加项目")
+        submitted = st.form_submit_button("添加项目")
         if submitted and new_experiment:
             new_proj = {
                 "species": new_species,
@@ -628,7 +786,7 @@ with tab2:
                 fresh_config["projects"] = []
             fresh_config["projects"].append(new_proj)
             save_config(fresh_config)
-            st.success(f"✅ 项目 {new_species}/{new_experiment} 已添加！")
+            st.success(f"项目 {new_species}/{new_experiment} 已添加！")
             st.rerun()
 
 # ============================================================
@@ -678,13 +836,13 @@ with tab3:
                 for grp, cnt in group_counts.items():
                     st.caption(f"  • `{grp}`: {cnt} 个样本对")
             else:
-                st.caption("📌 当前未设置重复组，所有样本对将独立分析")
+                st.caption("当前未设置重复组，所有样本对将独立分析")
 
         # ---- Consensus Peaks 参数 ----
         st.markdown("---")
         st.markdown("#### Consensus Peaks 参数")
         st.caption("当同一 group 有多个重复时，取重叠 peaks 作为 consensus")
-        st.caption("✅ Consensus peaks 将自动进行 ChIPseeker 注释（饼图 + CSV），结果在「结果预览」→「Peak Annotation」→「🔗 Consensus」中查看")
+        st.caption("Consensus peaks 将自动进行 ChIPseeker 注释（饼图 + CSV），结果在「结果预览」→「Peak Annotation」→「Consensus」中查看")
 
         config_for_tab3 = load_config()
         consensus_cfg = config_for_tab3.get("consensus_peaks", {})
@@ -708,7 +866,7 @@ with tab3:
 
         # ---- DeepTools 组间比较配置 ----
         st.markdown("---")
-        st.markdown("#### 🔬 DeepTools 组间比较 (Comparisons)")
+        st.markdown("#### DeepTools 组间比较 (Comparisons)")
         st.info(
             "**比较逻辑：** Peakcalling 使用 IP vs Input 配对，而 DeepTools 比较的是 **IP 之间**。\n\n"
             "在此配置哪些 group 需要做热图/profile 对比：\n"
@@ -730,7 +888,7 @@ with tab3:
             )
 
         if not available_groups:
-            st.warning("⚠️ 请先在上方配对表中设置 group 列，才能配置组间比较")
+            st.warning("请先在上方配对表中设置 group 列，才能配置组间比较")
         else:
             st.caption(f"可用 group: {', '.join(f'`{g}`' for g in available_groups)}")
 
@@ -743,20 +901,20 @@ with tab3:
                     comp_groups = comp.get("groups", [])
                     col1, col2, col3 = st.columns([2, 5, 1])
                     with col1:
-                        st.text(f"📊 {comp_name}")
+                        st.text(f"{comp_name}")
                     with col2:
                         st.caption(f"groups: {' vs '.join(comp_groups)}")
                     with col3:
-                        if st.button("🗑️", key=f"del_comp_{idx}"):
+                        if st.button("", key=f"del_comp_{idx}"):
                             to_delete = idx
 
                 # 执行删除（在循环外操作以避免 rerun 问题）
                 if to_delete is not None:
                     removed = st.session_state.comparisons_list.pop(to_delete)
-                    st.success(f"✅ 已删除比较: {removed.get('name', '')}")
+                    st.success(f"已删除比较: {removed.get('name', '')}")
                     st.rerun()
             else:
-                st.caption("📌 当前无比较项，请在下方添加")
+                st.caption("当前无比较项，请在下方添加")
 
             # 添加新比较
             st.markdown("**添加新比较：**")
@@ -775,23 +933,23 @@ with tab3:
                     help="选择 1 个 group 可查看该组重复信号分布；选择 ≥2 个 group 则做组间对比",
                 )
 
-            if st.button("➕ 添加比较", key="add_comparison"):
+            if st.button("添加比较", key="add_comparison"):
                 if new_comp_name and len(new_comp_groups) >= 1:
                     st.session_state.comparisons_list.append({
                         "name": new_comp_name,
                         "groups": new_comp_groups,
                     })
                     label = ' vs '.join(new_comp_groups) if len(new_comp_groups) > 1 else new_comp_groups[0]
-                    st.success(f"✅ 已添加比较: {new_comp_name} ({label})")
+                    st.success(f"已添加比较: {new_comp_name} ({label})")
                     st.rerun()
                 elif not new_comp_name:
-                    st.error("❌ 请输入比较名称")
+                    st.error("请输入比较名称")
                 else:
-                    st.error("❌ 请至少选择 1 个 group")
+                    st.error("请至少选择 1 个 group")
 
         # ---- 统一保存按钮 ----
         st.markdown("---")
-        if st.button("💾 保存本页所有设置", type="primary", key="save_tab3_all"):
+        if st.button("保存本页所有设置", type="primary", key="save_tab3_all"):
             # 1. 保存 metadata.csv
             save_metadata(edited_df)
 
@@ -812,7 +970,7 @@ with tab3:
             )
 
             save_config(fresh_cfg)
-            st.success("✅ 样本配对表、Consensus 参数、Comparisons 已全部保存！")
+            st.success("样本配对表、Consensus 参数、Comparisons 已全部保存！")
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):
@@ -847,7 +1005,7 @@ with tab4:
     else:
         tss_region_cfg = {"upstream": -3000, "downstream": 3000}
 
-    st.subheader("📍 ChIPseeker Peak 注释参数")
+    st.subheader("ChIPseeker Peak 注释参数")
 
     st.markdown("#### 分析逻辑")
     st.info(
@@ -857,7 +1015,7 @@ with tab4:
         "Promoter / 5'UTR / 3'UTR / Exon / Intron / Downstream / Intergenic\n"
         "3. 使用 OrgDb（可选）将 geneId 映射为 gene symbol\n"
         "4. 输出注释表 + 饼图 / 柱状图 / TSS 距离分布 / TSS 平均信号曲线 等可视化\n\n"
-        "🔗 TxDb / OrgDb 在「项目管理」中为每个项目单独配置；本 Tab 配置**注释规则与可视化输出**。"
+        "TxDb / OrgDb 在「项目管理」中为每个项目单独配置；本 Tab 配置**注释规则与可视化输出**。"
     )
 
     # 当前项目的注释库快览（仅展示，不可修改）
@@ -873,7 +1031,7 @@ with tab4:
 
     # ---- 1. Promoter 区域定义 ----
     st.markdown("---")
-    st.markdown("#### 1️⃣ Promoter 区域定义 (tssRegion)")
+    st.markdown("#### 1Promoter 区域定义 (tssRegion)")
     st.caption("以 TSS 为中心的区间被归类为 Promoter；ChIPseeker 默认 -3000 ~ +3000")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -903,7 +1061,7 @@ with tab4:
 
     # ---- 2. 注释优先级 ----
     st.markdown("---")
-    st.markdown("#### 2️⃣ Genomic Annotation Priority")
+    st.markdown("#### 2Genomic Annotation Priority")
     st.caption("当一个 peak 同时落在多个 feature（如 Exon 与 Intron）时，按此优先级归类。ChIPseeker 默认: Promoter > 5UTR > 3UTR > Exon > Intron > Downstream > Intergenic")
 
     DEFAULT_PRIORITY = ["Promoter", "5UTR", "3UTR", "Exon", "Intron", "Downstream", "Intergenic"]
@@ -921,13 +1079,13 @@ with tab4:
         help="列表中越靠前的类别优先级越高。若未选中某类别，该类别的 peak 将被归到下游低优先项或 Intergenic",
     )
     if not annotation_priority:
-        st.warning("⚠️ 至少选择一个类别，否则保存时将回退到默认优先级")
+        st.warning("至少选择一个类别，否则保存时将回退到默认优先级")
         annotation_priority = DEFAULT_PRIORITY
     st.caption(f"当前优先级: {' > '.join(annotation_priority)}")
 
     # 关键提示：5'UTR / 3'UTR 独立分类的可见性依赖 priority 顺序
     st.info(
-        "💡 **想看到独立的 5'UTR / 3'UTR 分类？** 把 `5UTR` / `3UTR` 拖到 `Promoter` 前面。\n\n"
+        "**想看到独立的 5'UTR / 3'UTR 分类？** 把 `5UTR` / `3UTR` 拖到 `Promoter` 前面。\n\n"
         "ChIPseeker 按此列表顺序“先到先得”：Promoter 区域（TSS ±3kb）与 5'UTR 高度重叠，"
         "若 Promoter 在前，大量 5'UTR peak 会被优先归为 Promoter，导致饼图里 5'UTR 计数为 0 或很少。\n\n"
         "推荐顺序（想突出 UTR）：`5UTR > 3UTR > Promoter > Exon > Intron > Downstream > Intergenic`"
@@ -935,7 +1093,7 @@ with tab4:
 
     # ---- 3. 注释粒度 ----
     st.markdown("---")
-    st.markdown("#### 3️⃣ 注释粒度")
+    st.markdown("#### 3注释粒度")
     col1, col2, col3 = st.columns(3)
     with col1:
         level_options = ["gene", "transcript"]
@@ -964,7 +1122,7 @@ with tab4:
 
     # ---- 4. ChIPseeker 高级 options ----
     st.markdown("---")
-    st.markdown("#### 4️⃣ 高级选项 (options 与 annotatePeak 参数)")
+    st.markdown("#### 4高级选项 (options 与 annotatePeak 参数)")
     st.caption(
         "仅列出 ChIPseeker v1.42 确实支持的选项："
         "`ignore_1st_exon` / `ignore_1st_intron` / `ignore_downstream` / `ignore_promoter_subcategory` / `downstreamDistance` 与 `annotatePeak(ignoreOverlap=...)`。"
@@ -1013,13 +1171,13 @@ with tab4:
 
     # ---- 5. 可视化输出 ----
     st.markdown("---")
-    st.markdown("#### 5️⃣ 输出可视化")
+    st.markdown("#### 5输出可视化")
     st.caption("所有输出位于 `result/<species>/<experiment>/4_analyse/annoChIPPeaks/<pair>/`；结果预览页会自动扫描")
     outputs_cfg = cs.get("outputs", {}) or {}
     col1, col2, col3 = st.columns(3)
     with col1:
         out_pie = st.checkbox(
-            "饼图 (plotAnnoPie) 🔒",
+            "饼图 (plotAnnoPie) ",
             value=True,
             disabled=True,
             key="cs_out_pie",
@@ -1058,7 +1216,7 @@ with tab4:
         )
     with col3:
         out_anno_csv = st.checkbox(
-            "完整注释表 CSV 🔒",
+            "完整注释表 CSV ",
             value=True,
             disabled=True,
             key="cs_out_anno_csv",
@@ -1074,7 +1232,7 @@ with tab4:
 
     # ---- 6. 当前配置预览 ----
     st.markdown("---")
-    st.markdown("#### 🔍 保存前预览")
+    st.markdown("#### 保存前预览")
     _preview = {
         "tssRegion": [int(tss_upstream), int(tss_downstream)],
         "flankDistance": int(flank_distance),
@@ -1099,21 +1257,21 @@ with tab4:
             "venn": bool(out_venn),
         },
     }
-    with st.expander("📄 config.yaml 中的 `chipseeker:` 节内容", expanded=False):
+    with st.expander("config.yaml 中的 `chipseeker:` 节内容", expanded=False):
         st.code(yaml.dump({"chipseeker": _preview}, allow_unicode=True, sort_keys=False), language="yaml")
 
     # ---- 7. 保存按钮 ----
-    if st.button("💾 保存 ChIP 注释参数", type="primary", key="save_chipseeker"):
+    if st.button("保存 ChIP 注释参数", type="primary", key="save_chipseeker"):
         fresh_cfg = load_config()
         fresh_cfg["chipseeker"] = _preview
         save_config(fresh_cfg)
-        st.success("✅ ChIPseeker 注释参数已保存到 `config/config.yaml`！")
+        st.success("ChIPseeker 注释参数已保存到 `config/config.yaml`！")
         st.caption(
             f"tssRegion: [{tss_upstream}, {tss_downstream}] | flankDistance: {flank_distance} | "
             f"level: {level} | priority: {' > '.join(annotation_priority)}"
         )
         st.info(
-            "💡 提示：修改后需重跑模块 4（annoChIPPeaks / anno_consensus）才能生效。\n"
+            "提示：修改后需重跑模块 4（annoChIPPeaks / anno_consensus）才能生效。\n"
             "若已完成的注释结果使用了 `ancient()` 包装的 config，Snakemake 不会自动重跑，需手动删除对应的输出文件或使用 `--forceall`。"
         )
 
@@ -1124,7 +1282,7 @@ with tab5:
     config = load_config()
     gsea = config.get("gsea", {})
 
-    st.subheader("🔬 模块5：GSEA 富集分析参数")
+    st.subheader("模块5：GSEA 富集分析参数")
 
     # ---- 数据来源说明 ----
     st.markdown("#### 分析逻辑")
@@ -1134,7 +1292,7 @@ with tab5:
         "2. 每个 group 的 consensus peaks（模块4生成）进行 ChIPseeker 注释\n"
         "3. 提取注释到的基因列表，做 GO 和 KEGG 富集分析\n"
         "4. 每个 group 独立输出富集结果（柱状图 + 点图 + CSV）\n\n"
-        "⚠️ 需要先运行模块4（含 consensus peaks 步骤）才能执行 GSEA"
+        "需要先运行模块4（含 consensus peaks 步骤）才能执行 GSEA"
     )
 
     # 显示当前 metadata 中的重复组
@@ -1148,11 +1306,11 @@ with tab5:
                 for grp, cnt in group_counts.items():
                     st.caption(f"  • `{grp}`: {cnt} 个样本对 → consensus peaks → 注释基因 → 富集分析")
             else:
-                st.warning("⚠️ metadata.csv 中未设置 group 列，请在「样本配对表」中配置重复组")
+                st.warning("metadata.csv 中未设置 group 列，请在「样本配对表」中配置重复组")
         else:
-            st.warning("⚠️ metadata.csv 中缺少 group 列，请在「样本配对表」中添加")
+            st.warning("metadata.csv 中缺少 group 列，请在「样本配对表」中添加")
     else:
-        st.warning("⚠️ 未找到 metadata.csv")
+        st.warning("未找到 metadata.csv")
 
     st.markdown("---")
     st.markdown("#### 分析内容开关")
@@ -1179,7 +1337,7 @@ with tab5:
             go_cc = st.checkbox("CC（细胞组分）",   value="CC" in current_go_types)
         go_types_selected = [t for t, v in [("BP", go_bp), ("MF", go_mf), ("CC", go_cc)] if v]
         if not go_types_selected:
-            st.warning("⚠️ 请至少选择一种 GO 类型")
+            st.warning("请至少选择一种 GO 类型")
     else:
         go_types_selected = gsea.get("go_types", ["BP", "MF", "CC"])
         st.caption("GO 分析已关闭")
@@ -1230,7 +1388,7 @@ with tab5:
     )
 
     st.markdown("---")
-    if st.button("💾 保存 GSEA 参数", type="primary", key="save_gsea"):
+    if st.button("保存 GSEA 参数", type="primary", key="save_gsea"):
         # 重新读取最新 config，避免覆盖其他 Tab 的修改
         fresh_cfg = load_config()
         fresh_cfg["gsea"] = {
@@ -1245,12 +1403,60 @@ with tab5:
             "promoter_only":  promoter_only,
         }
         save_config(fresh_cfg)
-        st.success("✅ GSEA 参数已保存到 config/config.yaml！")
+        st.success("GSEA 参数已保存到 config/config.yaml！")
         st.caption(
             f"GO 类型: {', '.join(go_types_selected)} | "
             f"p < {pvalue_cutoff} | q < {qvalue_cutoff} | "
             f"基因集大小: {min_gs_size}–{max_gs_size} | Top {top_n}"
         )
+
+# ============================================================
+# Motif 数据库：物种映射与一键获取
+# （与 workflow/scripts/6_1_motif.py 的 SPECIES_DB_MAP 保持同步）
+# ============================================================
+MEME_DB_BASE = os.path.join(os.path.expanduser("~"), ".meme_db")
+MOTIF_DB_URL = "https://meme-suite.org/meme/meme-software/Databases/motifs/motif_databases.12.25.tgz"
+MOTIF_SPECIES_OPTIONS = [
+    ("拟南芥 Arabidopsis (ArabidopsisDAPv1)", "motif_databases/ARABD/ArabidopsisDAPv1.meme"),
+    ("大豆 Glycine max (CIS-BP)",            "motif_databases/CIS-BP_2.00/Glycine_max.meme"),
+    ("人/脊椎动物 JASPAR2022 (vertebrates)", "motif_databases/JASPAR/JASPAR2022_CORE_vertebrates_non-redundant_v2.meme"),
+    ("果蝇 Drosophila (FLY factor survey)",  "motif_databases/FLY/fly_factor_survey.meme"),
+    ("线虫 C. elegans (WORM uniprobe)",       "motif_databases/WORM/uniprobe_worm.meme"),
+    ("酵母 S. cerevisiae (SwissRegulon)",     "motif_databases/YEAST/SwissRegulon_s_cer.meme"),
+]
+
+
+def motif_db_downloaded():
+    """本地是否已下载并解压 motif 数据库"""
+    return os.path.isdir(os.path.join(MEME_DB_BASE, "motif_databases"))
+
+
+def motif_db_download():
+    """下载并解压 MEME motif 数据库到 ~/.meme_db，返回 (ok, msg)"""
+    import subprocess
+    os.makedirs(MEME_DB_BASE, exist_ok=True)
+    tmp = "/tmp/motif_databases.tgz"
+    try:
+        r = subprocess.run(
+            f"wget -q -O {tmp} '{MOTIF_DB_URL}'", shell=True, capture_output=True, text=True
+        )
+        if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1000:
+            return False, f"下载失败：{r.stderr[:300]}"
+        r2 = subprocess.run(
+            f"tar -xzf {tmp} -C {MEME_DB_BASE}", shell=True, capture_output=True, text=True
+        )
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        if r2.returncode != 0:
+            return False, f"解压失败：{r2.stderr[:300]}"
+        return True, "下载并解压完成"
+    except Exception as e:
+        return False, f"异常：{e}"
+
+
+def motif_db_path_for(rel_path):
+    return os.path.join(MEME_DB_BASE, rel_path)
+
 
 # ============================================================
 # Tab 6: Motif 参数
@@ -1259,7 +1465,7 @@ with tab6:
     config = load_config()
     motif_cfg = config.get("motif", {})
 
-    st.subheader("🧬 模块6：MEME-ChIP Motif 富集分析参数")
+    st.subheader("模块6：MEME-ChIP Motif 富集分析参数")
 
     st.markdown("#### 分析逻辑")
     st.info(
@@ -1268,9 +1474,62 @@ with tab6:
         "2. 调用 MEME-ChIP 进行从头 motif 发现 (MEME/STREME)\n"
         "3. 与已知 motif 数据库比对 (TOMTOM)\n"
         "4. 分析 motif 在 peaks 中的位置富集 (CentriMo)\n\n"
-        "⚠️ 需要先运行模块4（含 consensus peaks 步骤）才能执行 Motif 分析\n\n"
-        "💡 首次运行时会自动下载 MEME motif 数据库（~200MB），后续复用"
+        "需要先运行模块4（含 consensus peaks 步骤）才能执行 Motif 分析\n\n"
+        "首次运行时会自动下载 MEME motif 数据库（~200MB），后续复用"
     )
+
+    st.markdown("---")
+
+    st.markdown("#### Motif 数据库 · 物种选择与一键获取")
+    # 初始化数据库输入框状态（若未点过『一键获取』，沿用已保存配置）
+    if "meme_db_field" not in st.session_state:
+        st.session_state["meme_db_field"] = motif_cfg.get("meme_db", "")
+
+    _labels = [lab for lab, _ in MOTIF_SPECIES_OPTIONS]
+    pick_label = st.selectbox(
+        "选择 motif 数据库物种",
+        _labels,
+        help="决定『一键获取』解析哪个物种的 .meme 数据库；若下方路径留空，运行流程中各项目仍会按其物种自动选库",
+    )
+    _rel = dict(MOTIF_SPECIES_OPTIONS)[pick_label]
+    _target_path = motif_db_path_for(_rel)
+
+    if motif_db_downloaded():
+        _exists = os.path.exists(_target_path)
+        st.caption(f"📦 本地数据库已就绪：`{os.path.join(MEME_DB_BASE, 'motif_databases')}`")
+        st.caption(
+            f"➜ 该物种文件：`{_target_path}` "
+            + ("✅ 存在" if _exists else "⚠️ 未找到（版本可能不同，可手动指定）")
+        )
+    else:
+        st.caption(f"📦 本地尚未下载数据库（`{MEME_DB_BASE}` 为空），获取约需下载 ~200MB")
+
+    fc1, fc2 = st.columns([1, 3])
+    with fc1:
+        do_fetch = st.button("🔽 一键获取", type="primary", key="fetch_motif_db")
+    with fc2:
+        st.caption(
+            "获取后会自动将该物种 .meme 绝对路径填入下方『Motif 数据库路径』，"
+            "记得点击底部『保存 Motif 参数』写回配置（该路径对所有项目生效）"
+        )
+
+    if do_fetch:
+        if not motif_db_downloaded():
+            with st.spinner("正在下载并解压 MEME motif 数据库（~200MB，请耐心等待）..."):
+                _ok, _msg = motif_db_download()
+            if _ok:
+                st.success(_msg)
+            else:
+                st.error(f"下载失败：{_msg}")
+        if os.path.exists(_target_path):
+            st.session_state["meme_db_field"] = _target_path
+            st.success(f"已填充路径：`{_target_path}`，请下拉确认并点击『保存 Motif 参数』")
+        elif motif_db_downloaded():
+            _cand = sorted(
+                glob.glob(os.path.join(MEME_DB_BASE, "motif_databases", "**", "*.meme"), recursive=True)
+            )
+            st.warning(f"未找到目标文件，本地共有 {len(_cand)} 个 .meme 数据库，可从中手动指定：")
+            st.code("\n".join(_cand[:30]), language="text")
 
     st.markdown("---")
     st.markdown("#### 基本设置")
@@ -1302,11 +1561,11 @@ with tab6:
             help="留空时从项目配置的 index_dir 推断 .fa 文件路径",
         )
         meme_db = st.text_input(
-            "Motif 数据库路径（留空自动下载）",
-            value=motif_cfg.get("meme_db", ""),
-            help="指定 .meme 格式的 motif 数据库文件。留空则根据物种自动选择默认数据库（首次运行时自动下载）",
+            "Motif 数据库路径（留空 = 按项目物种自动选库）",
+            key="meme_db_field",
+            help="指定 .meme 格式数据库文件绝对路径。可用上方『一键获取』自动填充。留空则各项目按其物种自动选择默认数据库（首次运行自动下载）",
         )
-        st.caption("📥 数据库下载地址: https://meme-suite.org/meme/doc/download.html")
+        st.caption("数据库下载地址: https://meme-suite.org/meme/doc/download.html")
 
     st.markdown("---")
     st.markdown("#### MEME 参数")
@@ -1351,7 +1610,7 @@ with tab6:
         )
 
     st.markdown("---")
-    if st.button("💾 保存 Motif 参数", type="primary", key="save_motif"):
+    if st.button("保存 Motif 参数", type="primary", key="save_motif"):
         fresh_cfg = load_config()
         fresh_cfg["motif"] = {
             "use_consensus_peaks": use_consensus,
@@ -1366,4 +1625,4 @@ with tab6:
             "streme_pvt":    float(streme_pvt),
         }
         save_config(fresh_cfg)
-        st.success("✅ Motif 参数已保存到 config/config.yaml！")
+        st.success("Motif 参数已保存到 config/config.yaml！")
