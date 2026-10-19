@@ -59,7 +59,7 @@ cd ChIPseq_Pipline
 > **安装路径（默认 conda，开箱即用）**
 > - **conda 模式（默认推荐，无需容器）** 分两步：
 >   - **① `CHIPSEQ_RUNTIME=conda ./bootstrap.sh`** 只创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml）把面板拉起来，并写标记、装 CLI——**不下载几个 GB、不建分析环境**。
->   - **② 命令行构建分析环境** `~/.local/chipseq-env`（全部生信工具 + R）：最省事 `chipseq-app-update all`（有离线包则秒级解压，否则在线 mamba/conda 构建）；或直接 `conda env create -p ~/.local/chipseq-env -f environment.yml`。嫌慢见下方「⚡ 更快的环境安装」。
+>   - **② 命令行构建分析环境** `~/.local/chipseq-env`（全部生信**命令行工具**；**R 不在这里装**，走系统/管理员基线那个）：最省事 `chipseq-app-update all`（有离线包则秒级解压，否则在线 mamba/conda 构建）；或直接 `conda env create -p ~/.local/chipseq-env -f environment.yml`。嫌慢见下方「⚡ 更快的环境安装」。
 >   - 浏览器「环境监测」页**只读**检测分析环境是否满足要求，**不再触发安装**（旧的在线「环境配置」页已移除）。
 > - **容器模式（可选，仅当有真实镜像时）**：Apptainer / Podman / Docker 一次性给全量环境。⚠️ 仓库默认的 `ghcr.io/chipseq-pipeline/...` 是**从未发布的占位地址**，直接 `./bootstrap.sh` 走容器会报 **403 Forbidden**。要用容器需自备镜像：把离线包 `chipseq-pipeline-image.tar.zst` 放项目根目录（自动识别加载），或用 `CHIPSEQ_IMAGE=<真实可访问镜像>` 指定。
 >
@@ -75,7 +75,7 @@ CHIPSEQ_RUNTIME=conda ./bootstrap.sh
 
 1. 创建**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml），负责把面板拉起来
 2. 写好运行时/分析环境标记，把 `chipseq-app*` 命令装到 `~/.local/bin/`
-3. **不构建分析环境**——分析环境（生信工具 + R）在第 3 步用命令行完成
+3. **不构建分析环境**——分析环境（生信命令行工具）在第 3 步用命令行完成
 
 装完后按提示把 `~/.local/bin` 加到 PATH：
 
@@ -83,9 +83,11 @@ CHIPSEQ_RUNTIME=conda ./bootstrap.sh
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### 第 3 步：构建分析环境（全部生信工具 + R）
+### 第 3 步：构建分析环境（全部生信命令行工具）
 
 这是唯一“重”的一步（要下几个 GB）。**推荐一条命令**：
+
+> ℹ️ 分析环境**只含命令行工具**，**故意不含 R**：流程与「环境监测」里的 `Rscript` 会直接解析到**系统 R**（管理员基线，已装满 ChIPseeker 等包），避免一个精简 `r-base` 遮蔽它。缺 R 包时补齐的是系统 R，不是分析环境。
 
 ```bash
 chipseq-app-update all
@@ -96,7 +98,8 @@ chipseq-app-update all
 ```bash
 conda env create -p ~/.local/chipseq-env -f environment.yml   # 首次
 conda env update  -p ~/.local/chipseq-env -f environment.yml   # 已存在→补缺
-Rscript workflow/env/install_R_packages.R                       # 若分析环境里的 R 缺包
+# R 不在分析环境里；若「环境监测」显示缺 R 包，用流程实际调用的那个（系统）Rscript 补：
+Rscript workflow/env/install_R_packages.R
 ```
 
 > ⏩ **嫌 conda 求解慢？** 看下方「⚡ 更快的环境安装」：用 mamba / libmamba，或**一次打包、多台秒级解压**。
@@ -206,6 +209,7 @@ chipseq-app --public          # 让同网段的同事也能访问
 | 浏览器打不开 `localhost:8501` | 服务器上用 `chipseq-app-status` 看是不是没启动；SSH 隧道断了重连一下 |
 | 基因组下载很慢 | Ensembl/NCBI 国外源，可以「自定义物种」页面换成国内镜像 URL |
 | `conda env create` / `chipseq-app-update all` 慢 | 多半是经典 conda 求解慢：装 mamba、或 `conda config --set solver libmamba`，或提前 `pack-analysis-env.sh` 打包走离线秒级解压（见「⚡ 更快的环境安装」） |
+| 分析环境已建但监测仍显示缺 R 包 | 正常：分析环境故意不含 R，`Rscript` 走系统 R。缺的是系统 R 的包，用系统 `Rscript workflow/env/install_R_packages.R` 补，或让管理员补（`txdbmaker` 在 Bioc<3.21 为可选，不装不影响） |
 | 分析中途报错 | `chipseq-app-logs` 或到「🚀 运行管理」页看 Snakemake 日志，通常在 `logs/` 目录 |
 
 其他问题：在项目 GitHub Issues 页面提问，或联系维护者。
