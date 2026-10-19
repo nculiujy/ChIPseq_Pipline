@@ -86,7 +86,8 @@ provision_analysis_offline() {
     tar -xzf "$local_tar" -C "$env_root" || die "解压失败"
     if [ -x "$env_root/bin/conda-unpack" ]; then
         log "运行 conda-unpack 修正路径 ..."
-        ( source "$env_root/bin/activate" && "$env_root/bin/conda-unpack" ) || warn "conda-unpack 失败（可能已运行过），继续"
+        # conda-pack 环境可能无 bin/activate，conda-unpack 为独立脚本，直接按绝对路径调用
+        "$env_root/bin/conda-unpack" || warn "conda-unpack 失败（可能已运行过），继续"
     fi
     [ -x "$env_root/bin/snakemake" ] || warn "解压后未找到 snakemake，环境包可能不完整"
     echo "$env_root" > "$DATA_DIR/analysis_env"
@@ -140,15 +141,14 @@ runtime_run() {
     # shellcheck disable=SC2086
     (
         cd "$repo" || exit 1
-        # 激活启动器环境（含 streamlit）
-        # shellcheck disable=SC1091
-        source "$launcher/bin/activate"
-        # 把分析环境 bin 前置到 PATH，并用标记/环境变量告知 Streamlit 子进程
-        export PATH="$analysis/bin:$PATH"
+        # conda create -p 前缀环境内没有 bin/activate，故不 source activate：
+        # 直接用启动器 env 的 streamlit 绝对路径（shebang 指向该 env 的 python），
+        # 并把 launcher/bin、analysis/bin 前置到 PATH，同时用标记/环境变量告知子进程。
+        export PATH="$launcher/bin:$analysis/bin:$PATH"
         export CHIPSEQ_CONDA_ENV="$analysis"
         export CHIPSEQ_DATA="$DATA_DIR"
         # 后台运行；用 setsid 让它脱离终端
-        setsid nohup streamlit run streamlit_app/app.py \
+        setsid nohup "$launcher/bin/streamlit" run streamlit_app/app.py \
             --server.address="$bind_addr" \
             --server.port="$port" \
             --server.headless=true \
@@ -220,13 +220,18 @@ runtime_status() {
 runtime_shell() {
     local launcher="$CHIPSEQ_LAUNCH_ENV" analysis="$CHIPSEQ_CONDA_ENV"
     local repo; repo=$(_repo_dir)
-    [ -x "$launcher/bin/activate" ] || die "启动器环境未安装"
+    [ -x "$launcher/bin/python" ] || die "启动器环境未安装"
     cd "$repo" || die "无法进入仓库目录 $repo"
-    # shellcheck disable=SC1091
-    source "$launcher/bin/activate"
-    export PATH="$analysis/bin:$PATH"
+    # -p 前缀环境没有 bin/activate：优先用 base 的 conda.sh 规范激活，失败则仅设 PATH 兜底
+    export PATH="$launcher/bin:$analysis/bin:$PATH"
     export CHIPSEQ_CONDA_ENV="$analysis"
     export CHIPSEQ_DATA="$DATA_DIR"
+    local croot=""
+    [ -n "${CONDA_EXE:-}" ] && croot="$(dirname "$(dirname "$CONDA_EXE")")"
+    if [ -n "$croot" ] && [ -f "$croot/etc/profile.d/conda.sh" ]; then
+        # shellcheck disable=SC1091
+        source "$croot/etc/profile.d/conda.sh" && conda activate "$launcher" 2>/dev/null || true
+    fi
     exec "${SHELL:-/bin/bash}"
 }
 
