@@ -79,7 +79,7 @@ case "$RUNTIME" in
                 # 用户显式指定了容器后端：不擅自切换，给出可执行指引
                 die "请三选一后重跑：1) 设 CHIPSEQ_IMAGE=<真实镜像>（apptainer 亦可设 CHIPSEQ_SIF_URI）；2) 把离线包 chipseq-pipeline-image.tar.zst 或 chipseq-pipeline.sif 放到 $HERE；3) 改用 conda：CHIPSEQ_RUNTIME=conda ./bootstrap.sh"
             elif command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1; then
-                warn "自动降级到 conda 后端（秒级建启动器，完整分析环境稍后在浏览器「环境配置」页构建）。"
+                warn "自动降级到 conda 后端（秒级建启动器）。完整分析环境需随后用命令行构建（见安装完成后的【下一步】提示）。"
                 RUNTIME=conda
             else
                 die "容器镜像不可达，且本机未安装 conda/mamba。请安装 miniforge 后重跑，或提供上面的离线包/自定义镜像。"
@@ -104,7 +104,7 @@ if [ "${SKIP_INSTALL:-0}" = "1" ]; then
     warn "SKIP_INSTALL=1，跳过镜像/环境下载"
 else
     if [ "$RUNTIME" = "conda" ]; then
-        log "conda 模式：仅创建秒级启动器（完整分析环境稍后在浏览器【环境配置】页构建）"
+        log "conda 模式：仅创建秒级启动器（完整分析环境请用命令行构建，见下方【下一步】第 5 步）"
     else
         log "开始安装运行时依赖（可能几个 GB，请耐心等待）..."
     fi
@@ -145,8 +145,10 @@ cat <<EOF
         本地机器执行: ssh -L 8501:localhost:8501 \$USER@<服务器地址>
         浏览器打开:   http://localhost:8501
 
-   5) （仅 conda 模式）启动后打开浏览器【环境配置】页，
-      一键构建完整分析环境（离线包优先、缺则在线 create）。
+   5) （仅 conda 模式）构建完整分析环境（全部生信工具 + R）：
+        conda env create -p "${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}" -f environment.yml
+      （已存在则用 conda env update；或 chipseq-app-update all 重建）
+      完成后启动 chipseq-app，到侧栏【环境监测】页确认是否满足分析要求。
 ============================================================
 
 EOF

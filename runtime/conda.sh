@@ -9,7 +9,7 @@
 #   - 参考基因组/结果/日志都写到仓库内相应路径
 
 : "${DATA_DIR:=$HOME/.chipseq-pipeline}"
-# 分析环境 prefix（全部生信工具 + R），由浏览器「环境配置」页(B)构建
+# 分析环境 prefix（全部生信工具 + R），由命令行 conda env create / chipseq-app-update all 构建
 : "${CHIPSEQ_CONDA_ENV:=$HOME/.local/chipseq-env}"
 # 精简启动器 prefix（仅 python + streamlit + pyyaml），由 bootstrap.sh(A)秒级创建
 : "${CHIPSEQ_LAUNCH_ENV:=$HOME/.local/chipseq-launch}"
@@ -36,7 +36,7 @@ _installer() {
 
 runtime_install() {
     # A 的职责：确保有 conda/mamba → 建精简启动器 → 写 analysis_env 标记。
-    # 不再下载 4GB 分析环境（那是 B【浏览器「环境配置」页】的事）。
+    # 不下载 4GB 分析环境（由命令行 provision_analysis_* / chipseq-app-update all 构建）。
     local launcher="$CHIPSEQ_LAUNCH_ENV"
 
     command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1 \
@@ -60,11 +60,11 @@ runtime_install() {
         ok "分析环境已就绪: $CHIPSEQ_CONDA_ENV"
     else
         warn "分析环境尚未构建（$CHIPSEQ_CONDA_ENV）。"
-        warn "启动后请到浏览器【环境配置】页完成阶段③～⑦（离线包优先、缺则在线 create）。"
+        warn "请用命令行构建：conda env create -p $CHIPSEQ_CONDA_ENV -f <仓库>/environment.yml（或 chipseq-app-update all）；随后可在【环境监测】页确认。"
     fi
 }
 
-# ---------- 分析环境构建（命令行兼底；主路由为浏览器【环境配置】页）----------
+# ---------- 分析环境构建（命令行；【环境监测】页只读检测、不触发安装）----------
 # 优先本地离线包：chipseq-env*.tar.gz 解压 + conda-unpack
 provision_analysis_offline() {
     local env_root="$CHIPSEQ_CONDA_ENV"
@@ -204,7 +204,7 @@ runtime_status() {
     if [ -x "$analysis/bin/snakemake" ]; then
         echo "  状态:      就绪"
     else
-        echo "  状态:      未构建 → 请到浏览器【环境配置】页补全（或运行 provision_analysis_online）"
+        echo "  状态:      未构建 → 命令行构建：conda env create -p $analysis -f <仓库>/environment.yml（或 chipseq-app-update all）"
     fi
     [ -d "$analysis" ] && echo "  大小:      $(du -sh "$analysis" 2>/dev/null | awk '{print $1}')"
     echo "仓库路径:    $repo"

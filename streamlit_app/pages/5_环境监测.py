@@ -2,12 +2,13 @@
 环境监测页面 —— 只读检测「当前环境是否满足分析要求」
 ===================================================
 背景：在线 conda 建环境太慢、UI 里干等不划算。因此本页**不再触发任何安装**，
-环境构建改由命令行 `CHIPSEQ_RUNTIME=conda ./bootstrap.sh` 一次性完成；本页只
-负责**监测当前运行环境**是否满足本流程分析所需：
+环境构建改由命令行完成（`bootstrap.sh` 建启动器 + `conda env create -p <分析prefix>
+-f environment.yml` 建分析环境，或 `chipseq-app-update all`）；本页只负责**监测当前
+运行环境**是否满足本流程分析所需：
 
   ① 运行模式 / prefix / Python / R / 系统（架构 · glibc · 磁盘）
   ② 核心 CLI 命令（bowtie2 / samtools / macs2 / deeptools / MEME / picard / snakemake …）
-  ③ R 必需包（CRAN + Bioconductor，含 txdbmaker 等版本敏感项）
+  ③ R 必需包（CRAN + Bioconductor）；txdbmaker 等版本相关包列为可选（缺失不算不满足）
   ④ 已装注释数据库（TxDb.* / org.*.db，按物种列出）
 
 每项给出「是否就位 + 版本」，并汇总缺失清单与修复指引。检测走同步但很快
@@ -45,7 +46,7 @@ inject_theme()
 render_sidebar("env")
 page_header(
     "环境监测",
-    "只读检测当前环境是否满足分析要求（不安装任何东西）；构建环境请用命令行 bootstrap.sh",
+    "只读检测当前环境是否满足分析要求（不安装任何东西）；构建环境请用命令行 conda env create / chipseq-app-update all",
 )
 
 
@@ -137,9 +138,12 @@ if not r["available"]:
 else:
     render_html_list([
         list_row(
-            main=p["name"],
-            sub=f"v{p['version']}" if p["present"] else "未安装",
-            right_html=pill("就位" if p["present"] else "缺失", "ok" if p["present"] else "err"),
+            main=p["name"] + ("（可选）" if p.get("optional") else ""),
+            sub=(f"v{p['version']}" if p["present"]
+                 else (p.get("note") or "未安装")),
+            right_html=(pill("就位", "ok") if p["present"]
+                        else pill("可选·未装", "idle") if p.get("optional")
+                        else pill("缺失", "err")),
         )
         for p in r["packages"]
     ])
@@ -158,14 +162,15 @@ else:
 # ---------------------------------------------------------------------------
 if not report["ok"]:
     section_title("待补齐项与指引")
+    _ap = meta["analysis_prefix"]
     if n_tools_missing:
         st.warning("缺失命令：" + ", ".join(report["missing_tools"]))
     if r["available"] and n_r_missing:
         st.warning("缺失 R 包：" + ", ".join(report["missing_r"]))
     st.markdown(
         "**修复方式（命令行一次性完成，不在本页执行）：**\n\n"
-        "1. 构建/补齐分析环境：\n"
-        "   `CHIPSEQ_RUNTIME=conda ./bootstrap.sh`\n"
+        "1. 构建/补齐分析环境（补齐缺失命令；conda 模式的 bootstrap 只建启动器、不建此环境）：\n"
+        f"   `conda env create -p {_ap} -f environment.yml`（已存在则用 `conda env update -p {_ap} -f environment.yml`；或 `chipseq-app-update all` 重建）\n"
         "2. 仅补 R 包：\n"
         "   `Rscript workflow/env/install_R_packages.R`\n"
         "3. 单个 R 包：\n"

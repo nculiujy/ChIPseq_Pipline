@@ -67,7 +67,16 @@ REQUIRED_R_CRAN: List[str] = [
 # R 必需包（Bioconductor）
 REQUIRED_R_BIOCG: List[str] = [
     "ChIPseeker", "rtracklayer", "GenomicFeatures",
-    "txdbmaker", "GenomicRanges", "clusterProfiler",
+    "GenomicRanges", "clusterProfiler",
+]
+# 可选 R 包：缺失**不**判「不满足」（(包名, 说明)）。
+# txdbmaker 仅在 Bioconductor ≥3.21(R 4.5) 才存在且必需——那时 makeTxDbFromGFF
+# 从 GenomicFeatures 拆分到 txdbmaker；旧版(GenomicFeatures ≤1.5x / Bioc 3.20)
+# 仍自带该函数。4_2_annoChIPPeaks.R 已做 requireNamespace 回退，故低版本不装也算满足。
+OPTIONAL_R_BIOCG: List[tuple[str, str]] = [
+    ("txdbmaker",
+     "仅 Bioconductor ≥3.21(R 4.5) 需要；旧版 GenomicFeatures 自带 makeTxDbFromGFF，"
+     "脚本有回退，本环境可不装"),
 ]
 
 _VER_RE = re.compile(r"(\d+(?:\.\d+)+)")
@@ -128,8 +137,11 @@ def check_r() -> Dict:
     result["rscript"] = rs
 
     req = REQUIRED_R_CRAN + REQUIRED_R_BIOCG
+    opt_names = [n for n, _ in OPTIONAL_R_BIOCG]
+    opt_note = dict(OPTIONAL_R_BIOCG)
+    probe = req + opt_names
     try:
-        r = subprocess.run([rs, "--vanilla", "-e", _r_probe_expr(req)],
+        r = subprocess.run([rs, "--vanilla", "-e", _r_probe_expr(probe)],
                            capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
         result["error"] = f"Rscript 探测失败：{e}"
@@ -152,9 +164,13 @@ def check_r() -> Dict:
         else:
             pkg_map[name] = ver
 
-    for p in req:
+    for p in probe:
         ver = pkg_map.get(p, "")
-        result["packages"].append({"name": p, "present": bool(ver), "version": ver})
+        item = {"name": p, "present": bool(ver), "version": ver,
+                "optional": p in opt_names}
+        if p in opt_names:
+            item["note"] = opt_note.get(p, "")
+        result["packages"].append(item)
     for a in sorted(anno_map):
         result["annotation"].append({"name": a, "present": bool(anno_map[a]),
                                      "version": anno_map[a]})
@@ -205,7 +221,8 @@ def check_environment() -> Dict:
     r = check_r()
 
     missing_tools = [t["name"] for t in tools if not t["present"]]
-    missing_r = [p["name"] for p in r["packages"] if not p["present"]]
+    missing_r = [p["name"] for p in r["packages"]
+                 if not p["present"] and not p.get("optional")]
 
     return {
         "checked_at": time.time(),
