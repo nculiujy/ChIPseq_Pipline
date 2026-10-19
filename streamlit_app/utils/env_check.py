@@ -50,7 +50,7 @@ REQUIRED_TOOLS: List[tuple[str, List[tuple[str, List[str]]]]] = [
         ("plotCorrelation", ["--version"]),
     ]),
     ("motif (MEME suite)", [
-        ("meme", ["--version"]),
+        ("meme", ["-version"]),      # MEME 用单横线 -version；--version 不支持会打 usage
         ("streme", ["--version"]),
     ]),
     ("流程编排 / 其它", [
@@ -74,17 +74,27 @@ _VER_RE = re.compile(r"(\d+(?:\.\d+)+)")
 
 
 def _probe_version(exe: str, args: List[str], timeout: int = 12) -> str:
-    """运行 `<exe> <args>` 抓第一个版本号；失败返回空串（视为“已装、版本未知”）。"""
+    """运行 `<exe> <args>` 抓第一个版本号；失败返回空串（视为“已装、版本未知”）。
+
+    只扫描前几行非空输出：支持 --version/-version 的工具版本一般都在首行；
+    不支持的工具会打整页 usage（里面全是无关数字），限定行数可避免误抓。
+    """
     try:
         r = subprocess.run([exe, *args], capture_output=True, text=True,
                            timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return ""
     out = (r.stdout or "") + "\n" + (r.stderr or "")
+    scanned = 0
     for line in out.splitlines():
+        if not line.strip():
+            continue
         m = _VER_RE.search(line)
         if m:
             return m.group(1)
+        scanned += 1
+        if scanned >= 3:          # 前 3 行非空仍无版本号 → 判为“版本未知”
+            break
     return ""
 
 
