@@ -677,7 +677,7 @@ _NAV_GROUPS: list[tuple[str, list[tuple[str, str, str, str]]]] = [
     ("开始", [("home", "\u25a4", "总览", "app.py")]),
     ("配置", [
         ("config", "\u2699", "配置编辑", "pages/1_配置编辑.py"),
-        ("env", "\u2692", "环境配置", "pages/5_环境配置.py"),
+        ("env", "\u2692", "环境监测", "pages/5_环境监测.py"),
         ("annotation", "\u2736", "物种注释", "pages/4_物种注释.py"),
     ]),
     ("运行", [("run", "\u25b6", "运行管理", "pages/2_运行管理.py")]),

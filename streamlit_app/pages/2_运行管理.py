@@ -700,8 +700,8 @@ _analysis_ready = _snakemake_bin is not None
 if not _analysis_ready:
     st.error(
         "分析环境未就绪：在分析环境/当前环境中找不到 `snakemake`。\n\n"
-        "请先到侧栏【环境配置】页完成阶段③～⑦构建分析环境（若为 conda 启动器模式）；\n"
-        "或确认已激活含工具的 conda 环境。"
+        "请用命令行构建/补齐分析环境：`CHIPSEQ_RUNTIME=conda ./bootstrap.sh`（环境构建已从 UI 移出）；\n"
+        "或确认已激活含工具的 conda 环境。可在侧栏【环境监测】页查看当前环境缺哪些命令/R 包。"
     )
 
 _disable_launch = st.session_state.snakemake_running or _sel_blocked or not _analysis_ready

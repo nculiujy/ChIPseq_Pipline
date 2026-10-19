@@ -6,7 +6,8 @@ env_paths.py — 统一的"分析工具定向"层（launcher / analysis 双 pref
   - 启动器环境（launcher）：只含 python + streamlit + pyyaml，由 A（bootstrap.sh）
     秒级创建，负责把 Streamlit UI 拉起来。
   - 分析环境（analysis）：含全部生信工具 + R（bowtie2/samtools/macs2/snakemake…），
-    由 B（浏览器「环境配置」页）混合构建（离线 tar 优先、缺则在线 create）。
+    由命令行 `CHIPSEQ_RUNTIME=conda ./bootstrap.sh` 构建（离线 tar 优先、缺则在线 create）；
+    浏览器「环境监测」页只读检测其是否满足分析要求，不再触发安装。
 
 关键解耦：所有"分析工具"的子进程调用都通过 tool_search_path()/routed_env() 定向到
 分析环境，而不是依赖"Streamlit 恰好跑在哪个环境里"。
