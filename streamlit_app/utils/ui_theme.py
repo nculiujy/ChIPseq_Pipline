@@ -349,6 +349,27 @@ hr { border: none !important; height: 1px !important; background: var(--ux-borde
 .ux-nav a.ux-nav-link:focus-visible { outline: 2px solid var(--ux-accent); outline-offset: 1px; }
 .ux-nav-foot { margin-top: .6rem; padding-top: .5rem; border-top: 1px solid var(--ux-border);
   font-size: .7rem; color: var(--ux-subtle); font-family: var(--ux-mono); }
+/* 当前页静态高亮块（div，不可点） */
+.ux-nav-active-static { display: flex; align-items: center; gap: .5rem; padding: .42rem .6rem;
+  border-radius: 8px; background: var(--ux-accent-soft); color: var(--ux-accent-strong) !important;
+  font-weight: 700; font-size: .86rem; border-left: 3px solid var(--ux-accent); }
+.ux-nav-active-static .ux-nav-ic { width: 16px; text-align: center; font-size: .92rem; opacity: .9; }
+/* 侧栏内的 page_link 还原为扁平 nav 行（区别于内容区的卡片式 page_link） */
+[data-testid="stSidebar"] [data-testid="stPageLink"] {
+  border: none !important; background: transparent !important; box-shadow: none !important;
+  border-radius: 8px !important; border-left: 3px solid transparent !important;
+  padding: 0 !important; margin: 0 !important; }
+[data-testid="stSidebar"] [data-testid="stPageLink"]:hover {
+  background: var(--ux-surface-2) !important; border-color: transparent !important; }
+[data-testid="stSidebar"] [data-testid="stPageLink"] p,
+[data-testid="stSidebar"] [data-testid="stPageLink"] span,
+[data-testid="stSidebar"] [data-testid="stPageLink"] a,
+[data-testid="stSidebar"] [data-testid="stPageLink"] [data-testid="stPageLink-Row"] {
+  color: var(--ux-muted) !important; font-weight: 550 !important; font-size: .86rem !important;
+  text-decoration: none !important; }
+/* 收紧侧栏 markdown 块外边距/间距，使分组标题与链接贴近原生 nav */
+[data-testid="stSidebar"] .stMarkdown { margin-bottom: .1rem !important; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .18rem; }
 
 /* ---------- 侧栏折叠按钮：hover / focus 反馈 + 中文 tooltip ---------- */
 /* Streamlit 原生折叠按钮已带 aria-label（收起/展开侧栏），这里补齐可见反馈 */
@@ -649,48 +670,58 @@ def status_bar(text: str, kind: str | None = None, meta: str | None = None) -> N
     )
 
 
-# 侧边栏导航项定义（按工作流顺序分组；href 为 Streamlit MPA 页面 slug）
+# 侧边栏导航项定义（按工作流顺序分组）。
+# 元组：(key, icon, label, page)；page 为 st.page_link 需要的、相对于入口脚本的路径，
+# 走客户端路由，切页不会新建会话→ session_state 不丢。home 即入口 app.py。
 _NAV_GROUPS: list[tuple[str, list[tuple[str, str, str, str]]]] = [
-    ("开始", [("home", "\u25a4", "总览", "/")]),
+    ("开始", [("home", "\u25a4", "总览", "app.py")]),
     ("配置", [
-        ("config", "\u2699", "配置编辑", "/配置编辑"),
-        ("env", "\u2692", "环境配置", "/环境配置"),
-        ("annotation", "\u2736", "物种注释", "/物种注释"),
+        ("config", "\u2699", "配置编辑", "pages/1_配置编辑.py"),
+        ("env", "\u2692", "环境配置", "pages/5_环境配置.py"),
+        ("annotation", "\u2736", "物种注释", "pages/4_物种注释.py"),
     ]),
-    ("运行", [("run", "\u25b6", "运行管理", "/运行管理")]),
-    ("结果", [("preview", "\u25a6", "结果预览", "/结果预览")]),
+    ("运行", [("run", "\u25b6", "运行管理", "pages/2_运行管理.py")]),
+    ("结果", [("preview", "\u25a6", "结果预览", "pages/3_结果预览.py")]),
 ]
 
 
 def render_sidebar(current: str, running: str | None = None,
                    kind: str | None = None, footer: str | None = None) -> None:
-    """在所有页面顶部调一次：渲染品牌区 + 按工作流分组的导航（含选中态），
-    取代默认平铺的原生导航。current: home|config|annotation|run|preview。
+    """品牌区 + 按工作流分组导航（含选中态）。
+    当前页渲染为定制高亮块（div，本就在该页不可点），其余页用 st.page_link
+    走客户端路由，避免锁定锚点整页跳转清空 session_state。
+    current: home|config|env|annotation|run|preview。
     """
     brand_sub = running or "ChIP-seq 分析流程控制台"
     _k = kind or "idle"
     dot = f'<span class="ux-dot ux-dot-{_k}"></span> ' if running else ""
-    html = (
+    st.sidebar.markdown(
         '<div class="ux-brand">'
         '<span class="ux-brand-logo">ChIP</span>'
         f'<div><div class="ux-brand-name">ChIPseq Pipeline</div>'
-        f'<div class="ux-brand-sub">{dot}{_html.escape(brand_sub)}</div></div></div>'
-        '<nav class="ux-nav" aria-label="主导航">'
+        f'<div class="ux-brand-sub">{dot}{_html.escape(brand_sub)}</div></div></div>',
+        unsafe_allow_html=True,
     )
     for group_name, items in _NAV_GROUPS:
-        html += f'<div class="ux-nav-group">{_html.escape(group_name)}</div>'
-        for key, ic, label, href in items:
-            active = " ux-nav-active" if key == current else ""
-            cur_attr = ' aria-current="page"' if key == current else ""
-            html += (
-                f'<a class="ux-nav-link{active}" href="{href}"{cur_attr} '
-                f'aria-label="{_html.escape(label)}">'
-                f'<span class="ux-nav-ic">{ic}</span>{_html.escape(label)}</a>'
-            )
-    html += "</nav>"
+        st.sidebar.markdown(
+            f'<div class="ux-nav-group">{_html.escape(group_name)}</div>',
+            unsafe_allow_html=True,
+        )
+        for key, ic, label, page in items:
+            if key == current:
+                st.sidebar.markdown(
+                    '<div class="ux-nav"><div class="ux-nav-active-static">'
+                    f'<span class="ux-nav-ic">{ic}</span>{_html.escape(label)}</div></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                # 必须用 st.sidebar.page_link（默认 st.page_link 会渲染到主区）
+                st.sidebar.page_link(page, label=f"{ic}  {label}", use_container_width=True)
     if footer:
-        html += f'<div class="ux-nav-foot">{_html.escape(footer)}</div>'
-    st.sidebar.markdown(html, unsafe_allow_html=True)
+        st.sidebar.markdown(
+            f'<div class="ux-nav-foot">{_html.escape(footer)}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def pipeline_table(stages: list[dict]) -> None:
