@@ -94,19 +94,24 @@ provision_analysis_offline() {
     ok "分析环境就绪: $env_root"
 }
 
-# 在线构建：conda env create/update -p <prefix> -f environment.yml
+# 在线构建：优先 mamba（求解/下载快数倍），否则 conda env create/update -p <prefix> -f environment.yml
 provision_analysis_online() {
     local env_root="$CHIPSEQ_CONDA_ENV"
     local repo; repo=$(_repo_dir 2>/dev/null || echo ".")
     local yml="$repo/environment.yml"
     [ -f "$yml" ] || die "未找到 environment.yml: $yml"
-    command -v conda >/dev/null 2>&1 || die "未检测到 conda"
-    log "在线构建分析环境: conda env create -p $env_root -f $yml"
+    local inst; inst=$(_installer)          # mamba 优先，无则 conda
+    command -v "$inst" >/dev/null 2>&1 || die "未检测到 conda/mamba，无法在线构建"
+    if [ "$inst" = conda ]; then
+        warn "当前用经典 conda 求解较慢；建议装 mamba，或 conda config --set solver libmamba 后重试"
+    fi
+    log "在线构建分析环境：$inst env … -p $env_root -f $yml"
     check_disk_space "$(dirname "$env_root")" 8
     if [ -d "$env_root/conda-meta" ]; then
-        conda env update -p "$env_root" -f "$yml" || die "conda env update 失败"
+        log "分析环境已存在 → 执行 update（补缺）"
+        "$inst" env update -p "$env_root" -f "$yml" || die "$inst env update 失败"
     else
-        conda env create -p "$env_root" -f "$yml" || die "conda env create 失败"
+        "$inst" env create -p "$env_root" -f "$yml" || die "$inst env create 失败"
     fi
     echo "$env_root" > "$DATA_DIR/analysis_env"
     ok "分析环境就绪: $env_root"
@@ -236,16 +241,44 @@ runtime_shell() {
 }
 
 # ---------- 升级 ----------
-# 默认只重建启动器（秒级）；传 all 同时重建分析环境。
+# 默认只重建启动器（秒级）。第二参数控制分析环境：
+#   all / analysis  本地离线包优先→秒级解压；否则在线 mamba/conda 构建（存在则 update 补缺）
+#   offline         强制从离线包解压重装
+#   online          强制在线构建（存在则 update 补缺，不删旧）
+_has_local_env_tarball() {
+    local repo; repo=$(_repo_dir 2>/dev/null || echo ".")
+    local f
+    for f in "$repo"/chipseq-env-*.tar.gz ./chipseq-env-*.tar.gz \
+             "$DATA_DIR"/chipseq-env-*.tar.gz; do
+        if [ -f "$f" ]; then return 0; fi
+    done
+    return 1
+}
+
 runtime_update() {
     runtime_stop || true
-    local launcher="$CHIPSEQ_LAUNCH_ENV"
+    local launcher="$CHIPSEQ_LAUNCH_ENV" mode="${1:-}"
     log "更新启动器环境: $launcher"
     rm -rf "$launcher"
     runtime_install
-    if [ "${1:-}" = "all" ]; then
-        log "同时重建分析环境: $CHIPSEQ_CONDA_ENV"
-        rm -rf "$CHIPSEQ_CONDA_ENV"
-        provision_analysis_online || provision_analysis_offline
-    fi
+    case "$mode" in
+        all|analysis)
+            if _has_local_env_tarball; then
+                log "检测到本地离线分析环境包 → 秒级解压安装"
+                rm -rf "$CHIPSEQ_CONDA_ENV"
+                provision_analysis_offline
+            else
+                log "在线构建/补齐分析环境（mamba/conda，存在则 update）: $CHIPSEQ_CONDA_ENV"
+                provision_analysis_online
+            fi
+            ;;
+        offline)
+            rm -rf "$CHIPSEQ_CONDA_ENV"; provision_analysis_offline ;;
+        online)
+            provision_analysis_online ;;
+        "")
+            : ;;  # 仅更新启动器
+        *)
+            warn "未知模式 '$mode'（可用: all|online|offline）；仅更新了启动器" ;;
+    esac
 }

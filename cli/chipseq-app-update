@@ -6,6 +6,22 @@ set -euo pipefail
 source "@@LIB@@"
 
 DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+
+# 先解析 -h/--help（不需读 runtime 即可给出用法）
+case "${1:-}" in
+    -h|--help)
+        cat <<EOF
+用法: chipseq-app-update [模式]
+
+更新启动器环境（秒级）。可选模式同时处理分析环境：
+  all            重建/补齐分析环境（本地离线包 chipseq-env*.tar.gz 优先→秒级；否则在线 mamba/conda）
+  online         仅在线 conda env create/update -p ~/.local/chipseq-env -f environment.yml
+  offline        仅从离线包解压安装分析环境
+  （不带参数）   只更新启动器环境
+EOF
+        exit 0 ;;
+esac
+
 RUNTIME=$(read_runtime "$DATA_DIR")
 
 BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
@@ -13,5 +29,5 @@ BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
 source "$BACKEND"
 
 log "升级中 (runtime=$RUNTIME) ..."
-runtime_update
+runtime_update "$@"
 ok "升级完成；再次运行 'chipseq-app' 启动新版本"
