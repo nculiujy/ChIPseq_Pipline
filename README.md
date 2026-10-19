@@ -45,7 +45,7 @@ ChIPseq_Pipline/
 - **至少 16 GB 内存**（比对和 peak calling 会吃内存）
 - **不需要管理员权限**
 
-如果机器上装了 Apptainer/Singularity（大部分学校集群都有）、或 Podman/Docker，安装会自动用上；如果都没有，会自动回落到 conda 方案，也能跑。
+**默认走 conda 方案**（无需任何容器、开箱即用）。只有当机器上装了 Apptainer/Singularity/Podman/Docker **且你们有真实可拉取的镜像**时，才需要考虑容器模式（详见下方「安装路径」说明）。
 
 ### 第 1 步：下载项目
 
@@ -56,26 +56,28 @@ cd ChIPseq_Pipline
 
 > 没有 git？让管理员装一下，或者从 GitHub 网页上点「Download ZIP」，解压后 `cd` 进目录即可。
 
-> **关于安装路径（按运行时不同分两条）**
-> - **容器模式（Apptainer / Podman / Docker，优先探测）**：`./bootstrap.sh` 拉取镜像，环境即全量、一次性装好，`chipseq-app` 启动后面板直接用，**无需**再动「环境配置」页（该页对容器用户仅做工具 / 运行时自检）。
-> - **conda 模式（无任何容器时的组合流程，A→B）**：
->   - **A. `./bootstrap.sh`** 只创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml），负责把面板拉起来，**不再下载几个 GB**。
+> **安装路径（默认 conda，开箱即用）**
+> - **conda 模式（默认推荐，无需容器）** —— 组合流程 A→B：
+>   - **A. `CHIPSEQ_RUNTIME=conda ./bootstrap.sh`** 只创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml），负责把面板拉起来，**不下载几个 GB**。
 >   - **B. 浏览器「环境配置」页** 一键构建**完整分析环境** `~/.local/chipseq-env`（全部生信工具 + R）：离线 `chipseq-env*.tar.gz` 优先、缺则在线 `conda env create/update`，全程分阶段可视化、可取消。
 >   - 两者各司其职、互不覆盖：UI 跑在启动器里，分析工具由启动器定向到分析环境。
+> - **容器模式（可选，仅当有真实镜像时）**：Apptainer / Podman / Docker 一次性给全量环境。⚠️ 仓库默认的 `ghcr.io/chipseq-pipeline/...` 是**从未发布的占位地址**，直接 `./bootstrap.sh` 走容器会报 **403 Forbidden**。要用容器需自备镜像：把离线包 `chipseq-pipeline-image.tar.zst` 放项目根目录（自动识别加载），或用 `CHIPSEQ_IMAGE=<真实可访问镜像>` 指定。
 >
 > 开发态直接 `streamlit run streamlit_app/app.py`（已激活含工具的 conda 环境）时，「环境配置」页会回落到当前环境，照常可用。
 
 ### 第 2 步：一键安装
 
 ```bash
-./bootstrap.sh
+CHIPSEQ_RUNTIME=conda ./bootstrap.sh
 ```
 
-**这一步会做什么**（容器模式约 5–30 分钟取决于网速；conda 模式仅数秒建启动器）：
+**这一步会做什么**（conda 方案仅数秒）：
 
-1. 自动检测你机器上有什么运行时（Apptainer / Podman / Docker / conda）
-2. 容器模式：拉取镜像（全量环境）；conda 模式：只建精简启动器 `~/.local/chipseq-launch`（完整分析环境留到第 5 步在浏览器「环境配置」页构建）
+1. 创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml），负责把面板拉起来——**不下载几个 GB**
+2. 完整分析环境留到第 5 步在浏览器「环境配置」页一键构建
 3. 把 6 个命令装到你的 `~/.local/bin/` 下
+
+> 想走容器模式（需自备真实镜像，见上方说明）就直接 `./bootstrap.sh`，它会自动探测 Apptainer / Podman / Docker；机器上没有任何容器时也会回落到 conda。
 
 安装脚本会打印详细进度。**中间不需要输入密码，不会碰系统文件**。
 
@@ -96,7 +98,7 @@ chipseq-app
 
 ```
 ============================================================
- ChIPseq Pipeline 已启动  (runtime: apptainer)
+ ChIPseq Pipeline 已启动  (runtime: conda)
 ------------------------------------------------------------
  本机访问:    http://localhost:8501
  SSH 隧道:    在本地机器执行:
