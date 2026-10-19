@@ -181,6 +181,22 @@ chipseq ui                                          # 启动 Streamlit 管理面
 通过后再把入口软链从 1.2.0 切到 1.3.0（改 `~/.local/bin/chipseq` 指向）。
 **用户数据（`~/.config`、`~/.local/share`、`/data`、`/work`）不随程序升级覆盖。**
 
+### launcher / analysis 双 prefix 解耦（conda 模式的 A→B 组合）
+
+当机器上没有任何容器运行时，`bootstrap.sh`（conda 后端）拆成两段，避免“一上来就下几个 GB”：
+
+| prefix | 内容 | 由谁建 | 耗时 |
+|---|---|---|---|
+| `~/.local/chipseq-launch`（启动器） | python + streamlit + pyyaml | A `bootstrap.sh` | 秒级 |
+| `~/.local/chipseq-env`（分析环境） | 全部生信工具 + R | B 浏览器「环境配置」页 | 重、可视化 |
+
+- A 把分析环境 prefix 写入标记文件 `~/.chipseq-pipeline/analysis_env`；UI 启动后，所有分析工具
+  子进程调用统一经 `streamlit_app/utils/env_paths.py` 的 `tool_search_path()` 定向到该 prefix
+  （`<prefix>/bin : sys.prefix/bin : 系统 PATH`），不再依赖“Streamlit 跑在哪个环境”。
+- B 阶段③ 混合建环境：本地 `chipseq-env*.tar.gz` 优先（离线），缺则 `conda env create/update -p <prefix>`；
+  阶段⑦ 回写 `analysis_env` 标记并对代表性 ELF 做 `ldd` 抽查（对齐 §3.4）。
+- 开发态（分析 prefix 不存在）时 `tool_search_path()` 自动回落 `sys.prefix/bin`，保持向后兼容。
+
 ---
 
 ## 6. `manifest.json` 规范

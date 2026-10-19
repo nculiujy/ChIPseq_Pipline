@@ -56,11 +56,14 @@ cd ChIPseq_Pipline
 
 > 没有 git？让管理员装一下，或者从 GitHub 网页上点「Download ZIP」，解压后 `cd` 进目录即可。
 
-> **关于两条安装路径（二选一，互不覆盖）**
-> - **A. `./bootstrap.sh`（推荐给终端用户 / HPC / 共享服务器）**：探测容器运行时（Apptainer / Podman / Docker）或回落 conda-pack，把预打包环境装到 `~/.local/chipseq-env`，再用 `chipseq-app` 启动面板。免管理员、可离线。
-> - **B. 浏览器内「环境配置」页（开发态）**：当你直接 `streamlit run streamlit_app/app.py` 时，可在页面里一键 `conda env create/update` 构建命名环境 `ChIPseq_Pipline`、补齐 R 包并做运行时自检。仅在自己激活 conda 环境跑 Streamlit 时使用。
+> **关于安装路径（按运行时不同分两条）**
+> - **容器模式（Apptainer / Podman / Docker，优先探测）**：`./bootstrap.sh` 拉取镜像，环境即全量、一次性装好，`chipseq-app` 启动后面板直接用，**无需**再动「环境配置」页（该页对容器用户仅做工具 / 运行时自检）。
+> - **conda 模式（无任何容器时的组合流程，A→B）**：
+>   - **A. `./bootstrap.sh`** 只创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml），负责把面板拉起来，**不再下载几个 GB**。
+>   - **B. 浏览器「环境配置」页** 一键构建**完整分析环境** `~/.local/chipseq-env`（全部生信工具 + R）：离线 `chipseq-env*.tar.gz` 优先、缺则在线 `conda env create/update`，全程分阶段可视化、可取消。
+>   - 两者各司其职、互不覆盖：UI 跑在启动器里，分析工具由启动器定向到分析环境。
 >
-> 走 A 路径并用 `chipseq-app` 启动后，环境已由镜像 / 打包提供，**无需**再点「环境配置」页。
+> 开发态直接 `streamlit run streamlit_app/app.py`（已激活含工具的 conda 环境）时，「环境配置」页会回落到当前环境，照常可用。
 
 ### 第 2 步：一键安装
 
@@ -68,10 +71,10 @@ cd ChIPseq_Pipline
 ./bootstrap.sh
 ```
 
-**这一步会做什么**（大约 5–30 分钟，取决于网速）：
+**这一步会做什么**（容器模式约 5–30 分钟取决于网速；conda 模式仅数秒建启动器）：
 
 1. 自动检测你机器上有什么运行时（Apptainer / Podman / Docker / conda）
-2. 下载对应的镜像或预打包环境（约 4 GB）
+2. 容器模式：拉取镜像（全量环境）；conda 模式：只建精简启动器 `~/.local/chipseq-launch`（完整分析环境留到第 5 步在浏览器「环境配置」页构建）
 3. 把 6 个命令装到你的 `~/.local/bin/` 下
 
 安装脚本会打印详细进度。**中间不需要输入密码，不会碰系统文件**。
@@ -115,7 +118,7 @@ chipseq-app
 |:---:|------|-------|
 | 1️⃣ | **总览** | 看当前项目、配置是否可运行、管线进度与最近日志 |
 | 2️⃣ | **配置编辑** | 填实验名、把 FASTQ 数据目录指过去、勾选要跑的分析模块 |
-| 3️⃣ | **环境配置** | （开发态）一键 `conda env` 构建 + R 包补齐 + 工具 / 运行时自检，分阶段进度与实时日志；bootstrap 用户可跳过 |
+| 3️⃣ | **环境配置** | conda 模式一键构建分析环境（离线优先 / 在线兜底）+ R 包补齐 + 工具 / 运行时自检，分阶段进度与实时日志；容器模式仅做自检 |
 | 4️⃣ | **物种注释** | 选择物种（如 TAIR10 拟南芥）→ 下载基因组 + 建 bowtie2 索引 → 点「应用到 config.yaml」 |
 | 5️⃣ | **运行管理** | 选项目、点运行按钮启动流程，页面实时刷新进度与日志 |
 | 6️⃣ | **结果预览** | 跑完后在这里看 Peak 表格、注释饼图、信号热图 |
