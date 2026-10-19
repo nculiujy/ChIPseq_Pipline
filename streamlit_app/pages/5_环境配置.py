@@ -178,12 +178,31 @@ if not selected_stages:
 # ---------------------------------------------------------------------------
 # 运行控制
 # ---------------------------------------------------------------------------
+# 侧栏为锚点整页跳转，切 tab 会新建会话清空 st.session_state，
+# 因此活跃/最近任务一律以磁盘 state.json 为准自动接管，不依赖内存态。
+_all_tasks = em.list_tasks(ENV_DIR)              # 新→旧
 running_task = None
 active_id = st.session_state.get("env_active_task")
+
+# 1) session 里记的活跃任务：仅当仍在 pending/running 时认可
 if active_id:
-    t = em.get_task(ENV_DIR, active_id)
-    if t and t.get("status") in ("pending", "running"):
-        running_task = t
+    _t = em.get_task(ENV_DIR, active_id)
+    if _t and _t.get("status") in ("pending", "running"):
+        running_task = _t
+    else:
+        active_id = None                          # 已结束或丢失，下面按磁盘重选
+
+# 2) 无 session 记录（硬刷新/切页回来）：自动接管磁盘上最新且进行中的任务
+if running_task is None:
+    _live = next((t for t in _all_tasks if t.get("status") in ("pending", "running")), None)
+    if _live is not None:
+        running_task = _live
+        active_id = _live["task_id"]
+        st.session_state["env_active_task"] = active_id
+
+# 3) 已无进行中任务：把“最近一次”指向磁盘最新一条，回看界面不因切页丢失
+if running_task is None and active_id is None and _all_tasks:
+    active_id = _all_tasks[0]["task_id"]
 
 _launch_disabled = running_task is not None or not selected_stages
 
