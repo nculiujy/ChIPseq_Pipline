@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# ChIPseq Pipeline — 卸载 CLI 与（可选）镜像/环境
+# ChIPseq Pipeline — 卸载 CLI 与（可选）镜像/环境（仓库内直接调用的兵分——优先用 chipseq-app-uninstall）
 #
-# 用户数据目录 ~/.chipseq-pipeline/ 默认不删除；如需彻底清理加 --purge-data
+# 项目内目录默认不删 data/ 子目录；如需彻底清理加 --purge-data
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export CHIPSEQ_REPO="$SRC"
 # shellcheck disable=SC1091
-source "$HERE/lib/common.sh"
+source "$SRC/scripts/lib/common.sh"
 
-BIN="${PREFIX:-$HOME/.local}/bin"
-SHARE="${PREFIX:-$HOME/.local}/share/chipseq-pipeline"
-DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
-CONDA_ENV="${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}"
+RUNTIME_DIR="$CHIPSEQ_RUNTIME_DIR"
+BIN="$HOME/.local/bin"
+SHARE="$HOME/.local/share/chipseq-pipeline"    # 旧 HOME 侧副本，一并清理
+DATA_DIR="$CHIPSEQ_DEFAULT_DATA_DIR"
+CONDA_ENV="$CHIPSEQ_DEFAULT_ANALYSIS_ENV"
+LAUNCH_ENV="$CHIPSEQ_DEFAULT_LAUNCH_ENV"
 
 PURGE_DATA=0
 ASSUME_YES=0
@@ -84,12 +87,22 @@ if ask_yes "删除运行时产物（镜像/.sif/conda 环境）？"; then
     esac
 fi
 
-# ---------- 3. 删除 CLI ----------
-log "删除 $BIN/chipseq-app* ..."
+# ---------- 3. 删除 CLI 与项目内运行时目录 ----------
+log "删除软链 $BIN/chipseq-app* ..."
 rm -f "$BIN"/chipseq-app*
 
-log "删除 $SHARE ..."
+log "删除旧版 HOME 侧副本 $SHARE ..."
 rm -rf "$SHARE"
+
+if [ -d "$RUNTIME_DIR" ]; then
+    log "删除项目内运行时目录 $RUNTIME_DIR（data/ 下用 --purge-data 控制）..."
+    for sub in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]*; do
+        [ -e "$sub" ] || continue
+        base="${sub##*/}"
+        [ "$base" = "data" ] && [ "$PURGE_DATA" != "1" ] && continue
+        rm -rf "$sub"
+    done
+fi
 
 # ---------- 4. 用户数据（可选） ----------
 if [ "$PURGE_DATA" = "1" ]; then

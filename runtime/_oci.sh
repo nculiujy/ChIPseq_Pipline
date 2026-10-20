@@ -3,7 +3,7 @@
 # 使用前必须设置 ENGINE=docker 或 ENGINE=podman。
 # 由 runtime/docker.sh 与 runtime/podman.sh source。
 
-: "${DATA_DIR:=$HOME/.chipseq-pipeline}"
+: "${DATA_DIR:=$CHIPSEQ_DEFAULT_DATA_DIR}"
 : "${ENGINE:?_oci.sh requires \$ENGINE to be set}"
 : "${CHIPSEQ_IMAGE:=${CHIPSEQ_DEFAULT_IMAGE:-ghcr.io/chipseq-pipeline/chipseq-pipeline:latest}}"
 

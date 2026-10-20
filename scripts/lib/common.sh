@@ -24,7 +24,73 @@ CHIPSEQ_APP_NAME="chipseq-pipeline"
 CHIPSEQ_CONTAINER_NAME="chipseq-pipeline"
 CHIPSEQ_DEFAULT_PORT=8501
 CHIPSEQ_DEFAULT_IMAGE="${CHIPSEQ_IMAGE:-ghcr.io/chipseq-pipeline/chipseq-pipeline:latest}"
-CHIPSEQ_DEFAULT_DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+
+# ---------- 项目内运行时目录派生（C 方案：全封装到 <repo>/.chipseq-runtime/） ----------
+# 派生 repo：从 common.sh 自身位置向上两级。
+#   开发态 <repo>/scripts/lib/common.sh  -> <repo>
+#   安装态 <repo>/.chipseq-runtime/lib/common.sh -> <repo>
+# 兜底：若派生不出（比如 source 到软链接），从旧版 marker <data>/repo_path 读；仍失败则回落 HOME。
+_chipseq_default_repo() {
+    local self="${BASH_SOURCE[0]}" dir=""
+    dir=$(cd "$(dirname "$self")/../.." 2>/dev/null && pwd) || dir=""
+    # 排除误派到 HOME 顶层（老式 ~/.local/share/... 场景）
+    case "$dir" in
+        "$HOME"|"/"|"") dir="" ;;
+    esac
+    if [ -z "$dir" ] && [ -f "$HOME/.chipseq-pipeline/repo_path" ]; then
+        dir=$(cat "$HOME/.chipseq-pipeline/repo_path" 2>/dev/null)
+    fi
+    [ -n "$dir" ] && [ -d "$dir" ] && echo "$dir"
+}
+
+CHIPSEQ_REPO="${CHIPSEQ_REPO:-$(_chipseq_default_repo)}"
+CHIPSEQ_RUNTIME_DIR="${CHIPSEQ_RUNTIME_DIR:-${CHIPSEQ_REPO:+$CHIPSEQ_REPO/.chipseq-runtime}}"
+# 派生不出（少见）时兜底 HOME，避免下游变量为空
+: "${CHIPSEQ_RUNTIME_DIR:=$HOME/.chipseq-pipeline-runtime}"
+
+# 默认路径常量（都可被同名环境变量覆盖；调用方负责 mkdir）
+CHIPSEQ_DEFAULT_DATA_DIR="${CHIPSEQ_DATA:-$CHIPSEQ_RUNTIME_DIR/data}"
+CHIPSEQ_DEFAULT_LAUNCH_ENV="${CHIPSEQ_LAUNCH_ENV:-$CHIPSEQ_RUNTIME_DIR/launch}"
+CHIPSEQ_DEFAULT_ANALYSIS_ENV="${CHIPSEQ_CONDA_ENV:-$CHIPSEQ_RUNTIME_DIR/analysis}"
+CHIPSEQ_DEFAULT_RLIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_RUNTIME_DIR/Rlib}"
+CHIPSEQ_DEFAULT_PKGS="${CHIPSEQ_RUNTIME_DIR}/pkgs"
+CHIPSEQ_DEFAULT_ENVS="${CHIPSEQ_RUNTIME_DIR}/envs"
+CHIPSEQ_DEFAULT_PIP_CACHE="${CHIPSEQ_RUNTIME_DIR}/cache/pip"
+
+# 一键把 conda / mamba / pip / R 的写入位置全部锁进项目运行时目录，
+# 不动 ~/.condarc、$CONDA_ROOT/pkgs、~/R/...-library、~/.cache/pip。
+# 需要在调用 conda env create / Rscript / pip 之前 source 或调用本函数。
+_chipseq_export_isolation_env() {
+    export CHIPSEQ_REPO CHIPSEQ_RUNTIME_DIR
+    export CHIPSEQ_DATA="${CHIPSEQ_DATA:-$CHIPSEQ_DEFAULT_DATA_DIR}"
+    export CHIPSEQ_LAUNCH_ENV="${CHIPSEQ_LAUNCH_ENV:-$CHIPSEQ_DEFAULT_LAUNCH_ENV}"
+    export CHIPSEQ_CONDA_ENV="${CHIPSEQ_CONDA_ENV:-$CHIPSEQ_DEFAULT_ANALYSIS_ENV}"
+    export CHIPSEQ_R_LIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_DEFAULT_RLIB}"
+    export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-$CHIPSEQ_DEFAULT_PKGS}"
+    export CONDA_ENVS_DIRS="${CONDA_ENVS_DIRS:-$CHIPSEQ_DEFAULT_ENVS}"
+    export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$CHIPSEQ_DEFAULT_PIP_CACHE}"
+    # 若用户 shell 里已设 R_LIBS_USER，尊重之；否则指向项目内 Rlib
+    export R_LIBS_USER="${R_LIBS_USER:-$CHIPSEQ_R_LIB}"
+    mkdir -p "$CHIPSEQ_RUNTIME_DIR" "$CHIPSEQ_DATA" \
+             "$CHIPSEQ_DEFAULT_PKGS" "$CHIPSEQ_DEFAULT_ENVS" \
+             "$CHIPSEQ_R_LIB" "$PIP_CACHE_DIR" 2>/dev/null || true
+}
+
+# conda -p <prefix> 会静默追加 ~/.conda/environments.txt，污染用户 conda env 列表。
+# 每次 conda env create/update 之后清掉本项目相关行；卸载时再兜一次。
+_chipseq_sanitize_environments_txt() {
+    local f="$HOME/.conda/environments.txt"
+    [ -f "$f" ] || return 0
+    [ -n "${CHIPSEQ_RUNTIME_DIR:-}" ] || return 0
+    local tmp="$f.tmp.$$"
+    # index==1 = 前缀匹配；只保留不属于本项目运行时目录的行
+    if awk -v p="$CHIPSEQ_RUNTIME_DIR" 'index($0,p)==1{next}{print}' "$f" > "$tmp" 2>/dev/null; then
+        # 只有内容真变时才 mv，避免 mtime 抖动
+        if ! cmp -s "$tmp" "$f"; then mv "$tmp" "$f"; else rm -f "$tmp"; fi
+    else
+        rm -f "$tmp"
+    fi
+}
 
 # ---------- 数据目录 ----------
 # init_data_dir <root> <assets_dir>
@@ -219,9 +285,11 @@ usage() {
   CHIPSEQ_ENV_URL    覆盖分析环境 conda-pack tarball 地址（conda，供 provision_analysis_* 兜底）
   CHIPSEQ_PORT       覆盖端口
   CHIPSEQ_BIND       覆盖绑定地址（127.0.0.1 或 0.0.0.0）
-  CHIPSEQ_DATA       覆盖数据目录（默认 ~/.chipseq-pipeline）
-  CHIPSEQ_CONDA_ENV  覆盖分析环境 prefix（默认 ~/.local/chipseq-env）
-  CHIPSEQ_LAUNCH_ENV 覆盖启动器环境 prefix（默认 ~/.local/chipseq-launch）
+  CHIPSEQ_RUNTIME_DIR 项目内运行时目录（默认 <repo>/.chipseq-runtime）
+  CHIPSEQ_DATA       数据目录（默认 <runtime>/data）
+  CHIPSEQ_CONDA_ENV  分析环境 prefix（默认 <runtime>/analysis）
+  CHIPSEQ_LAUNCH_ENV 启动器环境 prefix（默认 <runtime>/launch）
+  CHIPSEQ_R_LIB      R 用户库（默认 <runtime>/Rlib）
   NO_COLOR           设置后禁用彩色输出
 EOF
 }
@@ -237,6 +305,6 @@ check_disk_space() {
     avail_gb=$((avail_kb / 1024 / 1024))
     if [ "$avail_gb" -lt "$need_gb" ]; then
         warn "$path 可用空间 ${avail_gb}G，可能不足以容纳 ${need_gb}G 的镜像/环境。"
-        warn "如空间不足，可设 CHIPSEQ_DATA=/scratch/\$USER/chipseq-pipeline 换到大容量存储。"
+        warn "如空间不足，可将项目仓库放到大盘上，或设 CHIPSEQ_DATA=/scratch/\$USER/chipseq-pipeline 换到大容量存储。"
     fi
 }

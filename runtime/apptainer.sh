@@ -2,7 +2,7 @@
 # ChIPseq Pipeline — Apptainer/Singularity 后端
 # 由 cli/chipseq-app* 与 bootstrap.sh source；依赖 common.sh 已加载。
 
-: "${DATA_DIR:=$HOME/.chipseq-pipeline}"
+: "${DATA_DIR:=$CHIPSEQ_DEFAULT_DATA_DIR}"
 
 # 可通过环境变量覆盖
 : "${CHIPSEQ_SIF_URI:=https://github.com/chipseq-pipeline/ChIPseq_Pipline/releases/latest/download/chipseq-pipeline.sif}"

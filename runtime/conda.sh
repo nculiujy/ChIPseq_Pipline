@@ -2,18 +2,22 @@
 # ChIPseq Pipeline — conda-pack 后端（无容器环境兜底）
 # 依赖 common.sh 已加载。
 #
-# 与容器后端的差异：
-#   - 直接在宿主上跑 streamlit（无网络/挂载命名空间）
-#   - 用户数据 = git clone 下来的仓库目录（$REPO_DIR），
-#     ~/.chipseq-pipeline/ 只放运行时元数据（PID、日志、repo_path、runtime 标记）
-#   - 参考基因组/结果/日志都写到仓库内相应路径
+# 目录约定（C 方案：项目内封装）：
+#   <repo>/.chipseq-runtime/   CHIPSEQ_RUNTIME_DIR
+#     ├ launch/                CHIPSEQ_LAUNCH_ENV   启动器 prefix env
+#     ├ analysis/              CHIPSEQ_CONDA_ENV    分析  prefix env
+#     ├ data/                  CHIPSEQ_DATA         用户数据根（配置/参考/结果/logs/marker）
+#     ├ pkgs/                  CONDA_PKGS_DIRS      conda 包缓存（不写 $CONDA_ROOT/pkgs）
+#     ├ Rlib/                  CHIPSEQ_R_LIB        R 用户库（不写 ~/R/...-library）
+#     └ cache/pip/             PIP_CACHE_DIR        pip 缓存
+#   ~/.local/bin/chipseq-*                     软链接，卸载时一并删
+#   ~/.conda/environments.txt                   conda -p 会静默追加，调后清
 
-: "${DATA_DIR:=$HOME/.chipseq-pipeline}"
-# 分析环境 prefix（全部生信工具 + R），由命令行 conda env create / chipseq-app-update all 构建
-: "${CHIPSEQ_CONDA_ENV:=$HOME/.local/chipseq-env}"
-# 精简启动器 prefix（仅 python + streamlit + pyyaml），由 bootstrap.sh(A)秒级创建
-: "${CHIPSEQ_LAUNCH_ENV:=$HOME/.local/chipseq-launch}"
-# 离线分析环境包下载地址（供 provision_analysis_* 兼底；可用环境变量覆盖）
+# 项目内默认路径（common.sh 已派生 CHIPSEQ_RUNTIME_DIR，同名环境变量可覆盖）
+: "${DATA_DIR:=$CHIPSEQ_DEFAULT_DATA_DIR}"
+: "${CHIPSEQ_CONDA_ENV:=$CHIPSEQ_DEFAULT_ANALYSIS_ENV}"
+: "${CHIPSEQ_LAUNCH_ENV:=$CHIPSEQ_DEFAULT_LAUNCH_ENV}"
+# 离线分析环境包下载地址（供 provision_analysis_* 兜底；可用环境变量覆盖）
 : "${CHIPSEQ_ENV_URL:=https://github.com/nculiujy/ChIPseq_Pipline/releases/latest/download/chipseq-env-1.0.0.tar.gz}"
 
 _pid_file() { echo "$DATA_DIR/streamlit.pid"; }
@@ -38,6 +42,7 @@ runtime_install() {
     # A 的职责：确保有 conda/mamba → 建精简启动器 → 写 analysis_env 标记。
     # 不下载 4GB 分析环境（由命令行 provision_analysis_* / chipseq-app-update all 构建）。
     local launcher="$CHIPSEQ_LAUNCH_ENV"
+    _chipseq_export_isolation_env
 
     command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1 \
         || die "未检测到 conda/mamba。请先安装 Miniforge（https://github.com/conda-forge/miniforge）后重跑 bootstrap.sh"
@@ -50,6 +55,7 @@ runtime_install() {
         local inst; inst=$(_installer)
         "$inst" create -p "$launcher" -y python=3.11 streamlit pyyaml \
             || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 streamlit pyyaml）"
+        _chipseq_sanitize_environments_txt
     fi
 
     # 写 analysis_env 标记（供 Streamlit 侧 env_paths.analysis_prefix() 读取）
@@ -107,12 +113,14 @@ provision_analysis_online() {
     fi
     log "在线构建分析环境：$inst env … -p $env_root -f $yml"
     check_disk_space "$(dirname "$env_root")" 8
+    _chipseq_export_isolation_env
     if [ -d "$env_root/conda-meta" ]; then
         log "分析环境已存在 → 执行 update（补缺）"
         "$inst" env update -p "$env_root" -f "$yml" || die "$inst env update 失败"
     else
         "$inst" env create -p "$env_root" -f "$yml" || die "$inst env create 失败"
     fi
+    _chipseq_sanitize_environments_txt
     echo "$env_root" > "$DATA_DIR/analysis_env"
     ok "分析环境就绪: $env_root"
 }
@@ -151,7 +159,12 @@ runtime_run() {
         # 并把 launcher/bin、analysis/bin 前置到 PATH，同时用标记/环境变量告知子进程。
         export PATH="$launcher/bin:$analysis/bin:$PATH"
         export CHIPSEQ_CONDA_ENV="$analysis"
+        export CHIPSEQ_LAUNCH_ENV="$launcher"
         export CHIPSEQ_DATA="$DATA_DIR"
+        export CHIPSEQ_REPO="$repo"
+        export CHIPSEQ_RUNTIME_DIR="${CHIPSEQ_RUNTIME_DIR:-$repo/.chipseq-runtime}"
+        export CHIPSEQ_R_LIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_RUNTIME_DIR/Rlib}"
+        export R_LIBS_USER="${R_LIBS_USER:-$CHIPSEQ_R_LIB}"
         # 后台运行；用 setsid 让它脱离终端
         setsid nohup "$launcher/bin/streamlit" run streamlit_app/app.py \
             --server.address="$bind_addr" \
@@ -228,9 +241,8 @@ runtime_shell() {
     [ -x "$launcher/bin/python" ] || die "启动器环境未安装"
     cd "$repo" || die "无法进入仓库目录 $repo"
     # -p 前缀环境没有 bin/activate：优先用 base 的 conda.sh 规范激活，失败则仅设 PATH 兜底
+    _chipseq_export_isolation_env
     export PATH="$launcher/bin:$analysis/bin:$PATH"
-    export CHIPSEQ_CONDA_ENV="$analysis"
-    export CHIPSEQ_DATA="$DATA_DIR"
     local croot=""
     [ -n "${CONDA_EXE:-}" ] && croot="$(dirname "$(dirname "$CONDA_EXE")")"
     if [ -n "$croot" ] && [ -f "$croot/etc/profile.d/conda.sh" ]; then
@@ -276,7 +288,9 @@ _install_R_packages_best_effort() {
         warn "可先装系统 R，随后手动：Rscript $r_script"
         return 0
     fi
-    log "补齐 R 包（幂等；已就位则秒过；首次可能几分钟）: $rscript_bin"
+    log "补齐 R 包（幂等；已就位秒过；首次可能几分钟）: $rscript_bin"
+    # 确保项目内 Rlib 存当，并把 R_LIBS_USER 锁到项目内
+    _chipseq_export_isolation_env
     NONINTERACTIVE=1 "$rscript_bin" "$r_script" \
         || warn "R 包安装/校验有告警；可稍后手动重试：$rscript_bin $r_script"
 }

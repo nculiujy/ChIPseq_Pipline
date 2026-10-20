@@ -45,6 +45,10 @@ logs/*
 # Snakemake 缓存
 .snakemake/
 
+# 项目内封装的运行时目录（启动器/分析 env、conda 包缓存、R 库、pip 缓存、数据、日志）
+# 一个 'rm -rf .chipseq-runtime' = 卸载整个应用（包括数据）；详见 README【目录位置】
+.chipseq-runtime/
+
 # Benchmarks
 benchmarks/*
 !benchmarks/.gitkeep

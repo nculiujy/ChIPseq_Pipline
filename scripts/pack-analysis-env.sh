@@ -12,20 +12,21 @@
 #   CHIPSEQ_ENV_VERSION=1.0.1 bash scripts/pack-analysis-env.sh
 #
 # 环境变量：
-#   CHIPSEQ_CONDA_ENV    要打包的分析 prefix（默认 ~/.local/chipseq-env）
-#   CHIPSEQ_ENV_VERSION  产物版本号（默认 1.0.0，决定默认文件名 chipseq-env-<版本>.tar.gz）
+#   CHIPSEQ_CONDA_ENV     要打包的分析 prefix（默认 <repo>/.chipseq-runtime/analysis）
+#   CHIPSEQ_ENV_VERSION   产物版本号（默认 1.0.0，决定默认文件名 chipseq-env-<版本>.tar.gz）
 #
 # 产物放置（新机器会自动识别）：
-#   - 放仓库根目录或 ~/.chipseq-pipeline/ 下，命名 chipseq-env-*.tar.gz；
+#   - 放仓库根目录或 <repo>/.chipseq-runtime/data/ 下，命名 chipseq-env-*.tar.gz；
 #   - 或上传到 GitHub Release，资产名与 runtime/conda.sh 的 CHIPSEQ_ENV_URL 一致。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     # <repo>/scripts
 REPO="$(cd "$HERE/.." && pwd)"
+export CHIPSEQ_REPO="$REPO"
 # shellcheck disable=SC1091
 source "$HERE/lib/common.sh"
 
-ANALYSIS_ENV="${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}"
+ANALYSIS_ENV="${CHIPSEQ_CONDA_ENV:-$CHIPSEQ_DEFAULT_ANALYSIS_ENV}"
 VERSION="${CHIPSEQ_ENV_VERSION:-1.0.0}"
 OUT="${1:-$REPO/chipseq-env-${VERSION}.tar.gz}"
 

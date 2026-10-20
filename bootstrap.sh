@@ -10,7 +10,11 @@
 #             可搭 CHIPSEQ_SKIP_R=1 跳过 R 包步骤
 #
 # 环境变量：
-#   CHIPSEQ_DATA         数据目录（默认 ~/.chipseq-pipeline）
+#   CHIPSEQ_RUNTIME_DIR  项目内运行时目录（默认 <repo>/.chipseq-runtime）
+#   CHIPSEQ_DATA         数据目录（默认 <runtime>/data）
+#   CHIPSEQ_LAUNCH_ENV   启动器 prefix（默认 <runtime>/launch）
+#   CHIPSEQ_CONDA_ENV    分析 prefix （默认 <runtime>/analysis）
+#   CHIPSEQ_R_LIB        R 用户库   （默认 <runtime>/Rlib）
 #   CHIPSEQ_RUNTIME      强制指定运行时（跳过探测）
 #   CHIPSEQ_IMAGE        OCI 镜像地址
 #   CHIPSEQ_SIF_URI      Apptainer .sif 下载地址
@@ -23,8 +27,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 先定住项目侧派生链，common.sh 依赖 CHIPSEQ_REPO
+export CHIPSEQ_REPO="$HERE"
 # shellcheck disable=SC1091
 source "$HERE/scripts/lib/common.sh"
+# 把 conda / mamba / pip / R 的写入锁到项目内；后续所有子进程自动继承
+_chipseq_export_isolation_env
 
 # ---------- 0a. 参数解析 ----------
 FULL=0
@@ -54,6 +62,21 @@ for c in curl tar; do
     command -v "$c" >/dev/null 2>&1 || die "缺少 '$c'，请先安装（通常系统自带）"
 done
 
+# ---------- 0.5 旧安装位置探测（仅提供迁移提示，不自动删除）----------
+_legacy_hits=()
+[ -d "$HOME/.chipseq-pipeline" ] && _legacy_hits+=("  - 数据目录：$HOME/.chipseq-pipeline")
+[ -d "$HOME/.local/chipseq-env" ] && _legacy_hits+=("  - 分析环境：$HOME/.local/chipseq-env")
+[ -d "$HOME/.local/chipseq-launch" ] && _legacy_hits+=("  - 启动器：  $HOME/.local/chipseq-launch")
+if [ ${#_legacy_hits[@]} -gt 0 ]; then
+    warn "检测到旧版本的位置不在项目内（本版开始封装到 $CHIPSEQ_RUNTIME_DIR）："
+    printf '%s\n' "${_legacy_hits[@]}" >&2
+    warn "  可选："
+    warn "    a) 迁移：手动 'mv <旧> $CHIPSEQ_RUNTIME_DIR/{data,analysis,launch}'，重跑本脚本即可识别"
+    warn "    b) 新开：不管旧数据，直接确认安装（旧目录自行 'rm -rf' 卸掉）"
+    warn "    c) 保持旧布局：'export CHIPSEQ_DATA=~/.chipseq-pipeline CHIPSEQ_CONDA_ENV=~/.local/chipseq-env CHIPSEQ_LAUNCH_ENV=~/.local/chipseq-launch' 后重跑"
+    unset _legacy_hits
+fi
+
 # ---------- 1. 探测运行时 ----------
 if [ -n "${CHIPSEQ_RUNTIME:-}" ]; then
     RUNTIME="$CHIPSEQ_RUNTIME"
@@ -72,8 +95,9 @@ else
 fi
 
 # ---------- 2. 初始化数据目录 ----------
-DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
-log "数据目录: $DATA_DIR"
+DATA_DIR="$CHIPSEQ_DATA"
+log "项目运行时目录: $CHIPSEQ_RUNTIME_DIR"
+log "数据目录:     $DATA_DIR"
 mkdir -p "$DATA_DIR"
 check_disk_space "$DATA_DIR" 6
 
@@ -154,29 +178,32 @@ if [ "$FULL" = "1" ]; then
 fi
 
 # ---------- 5. 完成 ----------
-BIN_DIR="${PREFIX:-$HOME/.local}/bin"
+BIN_DIR="$HOME/.local/bin"
 cat <<EOF
 
 ============================================================
  安装完成！
 ------------------------------------------------------------
- 运行时:    $RUNTIME
- 数据目录:  $DATA_DIR
- CLI 目录:  $BIN_DIR
+ 运行时:        $RUNTIME
+ 项目内目录:    $CHIPSEQ_RUNTIME_DIR
+   ├─ launch/    启动器 prefix env
+   ├─ analysis/  分析 prefix env
+   ├─ data/      数据目录（配置/参考/结果）
+   ├─ pkgs/      conda 包缓存（隔离）
+   ├─ Rlib/      R 用户库（隔离）
+   └─ bin/       CLI 实体（~/.local/bin 中为软链接）
+ CLI 目录:      $BIN_DIR（软链接到 项目内 bin/）
 
  下一步:
-   1) 确保 $BIN_DIR 在 PATH 中:
+   1) 确保 $BIN_DIR 在 PATH 中（很多 Linux 默认已含）:
         echo 'export PATH="$BIN_DIR:\$PATH"' >> ~/.bashrc && source ~/.bashrc
 
-   2) 把参考基因组放到:
-        $DATA_DIR/references/       （基因组索引）
-        $DATA_DIR/annotations/      （物种注释）
+   2) 参考基因组、结果、日志都在项目内：
+        $CHIPSEQ_RUNTIME_DIR/data/references/
+        $CHIPSEQ_RUNTIME_DIR/data/annotations/
+        $CHIPSEQ_RUNTIME_DIR/data/config/config.yaml
 
-   3) 编辑配置:
-        $DATA_DIR/config/config.yaml
-        $DATA_DIR/config/metadata.csv
-
-   4) 启动:
+   3) 启动:
         chipseq-app
 
       远程服务器访问（无桌面）:
@@ -186,21 +213,24 @@ EOF
 if [ "$FULL" != "1" ] && [ "$RUNTIME" = "conda" ]; then
     cat <<EOF
 
-   5) 尚未 --full，分析环境未建。一行补齐（含 R 包）：
+   4) 尚未 --full，分析环境未建。一行补齐（含 R 包）：
         chipseq-app-update all
-      等价手动：
-        conda env create -p "${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}" -f environment.yml
+      等价手动（路径已在项目内）：
+        conda env create -p "$CHIPSEQ_CONDA_ENV" -f environment.yml
         Rscript workflow/env/install_R_packages.R
       完成后启动 chipseq-app，到侧栏【环境监测】页确认。
 EOF
 elif [ "$FULL" = "1" ] && [ "$RUNTIME" = "conda" ]; then
     cat <<EOF
 
-   5) --full 已建完分析环境 + 补齐 R 包；如中途中断，重跑：
+   4) --full 已建完分析环境 + 补齐 R 包；如中途中断，重跑：
         chipseq-app-update all      # 幂等，已装则秒过
 EOF
 fi
 cat <<EOF
+
+ 卸载：chipseq-app-uninstall   （默认删项目内目录 + ~/.local/bin 软链，保留数据）
+       rm -rf $CHIPSEQ_RUNTIME_DIR 是同样效果（数据也在里面，自行备份）
 ============================================================
 
 EOF

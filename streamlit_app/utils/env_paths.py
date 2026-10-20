@@ -2,25 +2,25 @@
 env_paths.py — 统一的"分析工具定向"层（launcher / analysis 双 prefix 解耦）
 =========================================================================
 
-背景（对齐 A-B 组合环境配置重构方案）：
-  - 启动器环境（launcher）：只含 python + streamlit + pyyaml，由 A（bootstrap.sh）
-    秒级创建，负责把 Streamlit UI 拉起来。
-  - 分析环境（analysis）：含全部生信工具 + R（bowtie2/samtools/macs2/snakemake…），
-    由命令行 `conda env create -p <prefix> -f environment.yml` 构建（或 `chipseq-app-update all`
-    重建；注：conda 模式的 bootstrap.sh 只建启动器、不建此环境）；
-    浏览器「环境监测」页只读检测其是否满足分析要求，不再触发安装。
+目录约定（C 方案：项目内封装）：
+  <repo>/.chipseq-runtime/          CHIPSEQ_RUNTIME_DIR
+    ├ launch/                       CHIPSEQ_LAUNCH_ENV   启动器 prefix env
+    ├ analysis/                     CHIPSEQ_CONDA_ENV    分析  prefix env
+    ├ data/                         CHIPSEQ_DATA         用户数据根
+    ├ pkgs/  Rlib/  cache/pip/      隔离的包缓存 / R 库 / pip 缓存
+    └ bin/ lib/ runtime/ assets/    CLI 实体
 
-关键解耦：所有"分析工具"的子进程调用都通过 tool_search_path()/routed_env() 定向到
-分析环境，而不是依赖"Streamlit 恰好跑在哪个环境里"。
+标记文件：
+  <data_dir>/analysis_env   单行绝对路径（runtime_install / _run 时会写）
+  <data_dir>/runtime        apptainer|podman|docker|conda
+  <data_dir>/repo_path      仓库目录（向后兼容旧安装）
 
-向后兼容：开发态直接 `streamlit run`（在已含工具的 conda 环境里）时，若分析 prefix
-不存在，tool_search_path() 会自动回落到 sys.prefix/bin，一切照旧可用。
+开发态直接 streamlit run 时（没跑 bootstrap），本模块从 __file__ 上溯三级得到
+仓库目录，默认指向 <repo>/.chipseq-runtime/*。如果 prefix 不存在，分析工具搜索
+会回落到 sys.prefix/bin（即当前 Streamlit 运行环境），保持开发可用。
 
-约定路径：
-  - 数据/元数据目录：$CHIPSEQ_DATA 或 ~/.chipseq-pipeline
-  - 分析环境标记：  <data_dir>/analysis_env   （单行文本，写入 prefix 绝对路径）
-  - 运行时标记：    <data_dir>/runtime        （apptainer|podman|docker|conda）
-  - 分析环境默认：  $CHIPSEQ_CONDA_ENV 或 ~/.local/chipseq-env
+旧版本将 env 落在 ~/.local/chipseq-{env,launch} 与 ~/.chipseq-pipeline；本模块
+提供 fallback：新位置 marker 不存在时尝试读旧位置，避免旧安装 UI 直接坏掉。
 """
 
 from __future__ import annotations
@@ -30,23 +30,51 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-# 与 runtime/conda.sh、bootstrap.sh 中 CHIPSEQ_CONDA_ENV 的默认值保持一致
-_DEFAULT_ANALYSIS_PREFIX = os.path.expanduser("~/.local/chipseq-env")
-_DEFAULT_DATA_DIR = os.path.expanduser("~/.chipseq-pipeline")
+# ---------- 项目内默认路径派生 ----------
+# env_paths.py 位于 <repo>/streamlit_app/utils/，parents[2] 即仓库根。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_RUNTIME_DIR_DEFAULT = Path(
+    os.environ.get("CHIPSEQ_RUNTIME_DIR") or (_REPO_ROOT / ".chipseq-runtime")
+)
+_DEFAULT_ANALYSIS_PREFIX = _RUNTIME_DIR_DEFAULT / "analysis"
+_DEFAULT_LAUNCH_PREFIX = _RUNTIME_DIR_DEFAULT / "launch"
+_DEFAULT_DATA_DIR = _RUNTIME_DIR_DEFAULT / "data"
+
+# 旧版 HOME 侧位置（仅作 fallback，存在 marker 文件才用）
+_LEGACY_DATA_DIR = Path(os.path.expanduser("~/.chipseq-pipeline"))
+_LEGACY_ANALYSIS_PREFIX = Path(os.path.expanduser("~/.local/chipseq-env"))
+_LEGACY_LAUNCH_PREFIX = Path(os.path.expanduser("~/.local/chipseq-launch"))
 
 _CONTAINER_RUNTIMES = ("apptainer", "podman", "docker")
 
 
+def repo_root() -> Path:
+    """仓库目录（env_paths.py 上溯三级）。"""
+    return _REPO_ROOT
+
+
+def runtime_dir() -> Path:
+    """项目内运行时目录（.chipseq-runtime）。"""
+    return _RUNTIME_DIR_DEFAULT
+
+
 def data_dir() -> Path:
-    """运行时元数据目录：$CHIPSEQ_DATA 或 ~/.chipseq-pipeline。"""
-    return Path(os.environ.get("CHIPSEQ_DATA") or _DEFAULT_DATA_DIR)
+    """数据目录：$CHIPSEQ_DATA → <runtime>/data → 旧版 ~/.chipseq-pipeline（存在则用）。"""
+    env = os.environ.get("CHIPSEQ_DATA")
+    if env:
+        return Path(os.path.expanduser(env))
+    if _DEFAULT_DATA_DIR.is_dir():
+        return _DEFAULT_DATA_DIR
+    # 向后兼容：旧位置存在 marker 文件则沿用
+    if (_LEGACY_DATA_DIR / "runtime").is_file() or (_LEGACY_DATA_DIR / "repo_path").is_file():
+        return _LEGACY_DATA_DIR
+    return _DEFAULT_DATA_DIR
 
 
 def analysis_prefix() -> str:
     """分析环境 prefix（绝对路径字符串）。
 
-    优先读 <data_dir>/analysis_env 标记文件；缺省回落到 CHIPSEQ_CONDA_ENV 默认值。
-    这里只负责"报告目标 prefix"，不要求它一定存在（B 会负责创建）。
+    优先读 <data_dir>/analysis_env marker；缺省回落到 CHIPSEQ_CONDA_ENV → 项目默认。
     """
     marker = data_dir() / "analysis_env"
     try:
@@ -56,7 +84,13 @@ def analysis_prefix() -> str:
                 return os.path.expanduser(txt)
     except OSError:
         pass
-    return os.path.expanduser(os.environ.get("CHIPSEQ_CONDA_ENV") or _DEFAULT_ANALYSIS_PREFIX)
+    env = os.environ.get("CHIPSEQ_CONDA_ENV")
+    if env:
+        return os.path.expanduser(env)
+    # 向后兼容：旧位置存在则用，否则用项目内默认
+    if _LEGACY_ANALYSIS_PREFIX.is_dir():
+        return str(_LEGACY_ANALYSIS_PREFIX)
+    return str(_DEFAULT_ANALYSIS_PREFIX)
 
 
 def analysis_bin() -> str:

@@ -5,7 +5,7 @@ set -euo pipefail
 # shellcheck disable=SC1091
 source "@@LIB@@"
 
-DATA_DIR="${CHIPSEQ_DATA:-$HOME/.chipseq-pipeline}"
+DATA_DIR="$CHIPSEQ_DEFAULT_DATA_DIR"
 RUNTIME=$(read_runtime "$DATA_DIR")
 
 BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"

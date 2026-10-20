@@ -1,6 +1,6 @@
 # ChIPseq Pipeline
 
-ChIP-seq / CUT&Tag 数据分析流程。Snakemake + Streamlit，浏览器操作。
+ChIP-seq / CUT&Tag 数据分析流程。Snakemake + Streamlit，浏览器操作。所有安装产物（conda 环境、包缓存、R 库、数据）都封装在项目仓库内的 `.chipseq-runtime/`，不污染你 HOME 里的 conda / R / pip。
 
 ## 安装
 
@@ -70,26 +70,47 @@ chipseq-app-uninstall   卸载（默认保留数据目录）
 ## 卸载
 
 ```bash
-chipseq-app-uninstall            预览要删什么，输 yes 确认
-chipseq-app-uninstall --yes      跳过确认
-chipseq-app-uninstall --data     连 ~/.chipseq-pipeline 数据一起删（不可逆）
+chipseq-app-uninstall              预览要删什么，输 yes 确认
+chipseq-app-uninstall --yes        跳过确认
+chipseq-app-uninstall --data       连项目内数据目录一起删（参考基因组/结果/配置，不可逆）
+chipseq-app-uninstall --purge-legacy  一并删旧版本 HOME 侧残留（~/.local/chipseq-*、~/.chipseq-pipeline）
+chipseq-app-uninstall --all        = --data + --purge-legacy
 ```
+
+默认只删：`<repo>/.chipseq-runtime/` 下的 launch/analysis/pkgs/Rlib/cache/bin/lib/runtime/assets，`~/.local/bin/chipseq-*` 软链接，以及 `~/.conda/environments.txt` 中属于本项目的行。**数据目录** `<repo>/.chipseq-runtime/data/` 保留。
+
+直接 `rm -rf <repo>` 是终极卸载（一切都在仓库内），但会连数据一起丢。
 
 ## 目录位置
 
+本应用把安装的一切封装在项目仓库内，不会往你 HOME 的 conda / R / pip 里写东西：
+
 ```
-ChIPseq_Pipline/
+<repo>/                             仓库本体
 ├── bootstrap.sh
-├── config/                  配置（浏览器里编辑）
-├── workflow/anno/           基因组注释
-└── workflow/resources/      FASTQ 原始数据
-
-~/.chipseq-pipeline/         数据目录：结果、日志、marker
-~/.local/chipseq-launch/     启动器环境（python + streamlit + pyyaml）
-~/.local/chipseq-env/        分析环境（生信命令行工具，不含 R）
+├── config/                         开发用默认配置
+├── workflow/anno/                  基因组注释 + bowtie2 索引
+├── workflow/resources/             FASTQ 原始数据
+├── result/                         分析结果
+├── logs/                           Snakemake 日志
+├── renv/library/                   R 包库（开发态）
+├── .snakemake/                     Snakemake 内部缓存
+└── .chipseq-runtime/               本应用安装的一切（.gitignore）
+    ├── launch/                     启动器 prefix env（python + streamlit + pyyaml）
+    ├── analysis/                   分析 prefix env（生信命令行工具，不含 R）
+    ├── data/                       用户数据（config / references / annotations / results / logs）
+    ├── pkgs/                       conda 包缓存（不写 $CONDA_ROOT/pkgs）
+    ├── Rlib/                       R 用户库（不写 ~/R/...-library）
+    ├── cache/pip/                  pip 缓存
+    └── bin/ lib/ runtime/ assets/  CLI 实体与共享脚本
 ```
 
-分析环境故意不含 R。`Rscript` 走系统 R（一般管理员装的 R 4.4.x），避免一个精简 `r-base` 遮蔽系统那个装满 ChIPseeker 等包的 R。缺包用系统 `Rscript workflow/env/install_R_packages.R` 补。
+HOME 侧只碰两个地方：
+
+- `~/.local/bin/chipseq-app*` — 7 个软链接（卸载会自动删）
+- `~/.conda/environments.txt` — conda `-p` 会静默追加；本项目在安装/卸载/更新后自动清除相关行
+
+分析环境故意不含 R。`Rscript` 走系统 R（一般管理员装的 R 4.4.x），避免一个精简 `r-base` 遮蔽系统那个装满 ChIPseeker 等包的 R。缺包用系统 `Rscript workflow/env/install_R_packages.R` 补，会装到 `<repo>/.chipseq-runtime/Rlib/`。
 
 ## 遇到问题
 
@@ -102,6 +123,8 @@ ChIPseq_Pipline/
 | 分析环境已建但监测显示缺 R 包 | 正常：分析环境不含 R。用系统 `Rscript workflow/env/install_R_packages.R` 补；`txdbmaker` 在 Bioc<3.21 是可选，不装不影响 |
 | 启动后 Xshell 弹自带火狐、延迟高 | 关 Xshell 的 X11 转发；临时绕过 `chipseq-app --no-browser` |
 | 分析中途报错 | `chipseq-app-logs`，或运行管理页看 Snakemake 日志（在 `logs/`） |
+| 从旧版本升级（环境在 `~/.local/chipseq-*` / 数据在 `~/.chipseq-pipeline`） | `bootstrap.sh` 会提示迁移。推荐：`mv ~/.local/chipseq-launch <repo>/.chipseq-runtime/launch && mv ~/.local/chipseq-env <repo>/.chipseq-runtime/analysis && mv ~/.chipseq-pipeline <repo>/.chipseq-runtime/data`；确认新版能跑后再 `chipseq-app-uninstall --purge-legacy` 收尾 |
+| 不想污染 HOME，但项目所在盘空间不够 | 把仓库整个搬到大盘；或临时 `export CHIPSEQ_RUNTIME_DIR=/scratch/$USER/chipseq-runtime` 后再跑 bootstrap，一切写入（env/pkgs/Rlib/data）都会落到该目录 |
 
 其他问题提 GitHub Issues。
 
