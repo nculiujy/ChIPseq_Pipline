@@ -116,7 +116,9 @@ provision_analysis_online() {
     _chipseq_export_isolation_env
     if [ -d "$env_root/conda-meta" ]; then
         log "分析环境已存在 → 执行 update（补缺）"
-        "$inst" env update -y -p "$env_root" -f "$yml" </dev/null || die "$inst env update 失败"
+        # 注意：mamba/conda 的 `env update` 子命令不接受 -y/--yes（只有 env create 接受），
+        # 传了会直接报 "unrecognized arguments: -y"。update 本身不弹 Confirm，用 </dev/null 兜底。
+        "$inst" env update -p "$env_root" -f "$yml" </dev/null || die "$inst env update 失败"
     else
         "$inst" env create -y -p "$env_root" -f "$yml" </dev/null || die "$inst env create 失败"
     fi
