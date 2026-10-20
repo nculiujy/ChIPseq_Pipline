@@ -45,9 +45,41 @@ esac
 RUNTIME=$(read_runtime "$DATA_DIR")
 
 BACKEND="@@RUNTIME_DIR@@/${RUNTIME}.sh"
+[ -f "$BACKEND" ] || die "找不到后端脚本 $BACKEND"
 # shellcheck disable=SC1090
 source "$BACKEND"
 
+repo="${CHIPSEQ_REPO:-}"
+
+# ---------- (1) 尽力拉取最新源码 ----------
+# 以前 chipseq-app-update 完全不 pull，用户得自己 git pull，极易漏更；这里自动尝试，
+# 失败（本地改动/网络/非 git 检出）不阻断，只用当前源码继续并提示手动 pull。
+if [ -n "$repo" ] && git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "拉取最新源码: $repo ..."
+    if git -C "$repo" pull --ff-only; then
+        ok "源码已更新"
+    else
+        warn "git pull 未成功（可能有本地改动或网络问题）；将用当前源码继续。可手动执行：git -C $repo pull"
+    fi
+else
+    warn "未检测到 git 工作区，跳过拉取（请自行确认源码为最新）"
+fi
+
+# ---------- (2) 重装 CLI/后端/共享库到 .chipseq-runtime 执行副本 ----------
+# 关键根因：chipseq-app 实际执行的是 .chipseq-runtime/{bin,lib,runtime} 里的安装副本，
+# 而非仓库源文件；不重装则 git pull 下来的修复（streamlit 启动参数、访问横幅等）根本
+# 不会生效——这正是「升级了却还白屏/还只印一个 IP」的元凶。
+if [ -n "$repo" ] && [ -f "$repo/scripts/install-cli.sh" ]; then
+    log "重装 CLI 执行副本 → 刷新 .chipseq-runtime/{bin,lib,runtime,assets} ..."
+    bash "$repo/scripts/install-cli.sh" || warn "install-cli.sh 执行失败；执行副本可能未刷新，可手动重跑该脚本"
+    # 重装后重新加载后端，使本次 runtime_update 也用最新函数
+    # shellcheck disable=SC1090
+    source "$BACKEND" 2>/dev/null || true
+else
+    warn "找不到 $repo/scripts/install-cli.sh；执行副本未刷新（请手动运行 scripts/install-cli.sh）"
+fi
+
+# ---------- (3) 重建环境 ----------
 log "升级中 (runtime=$RUNTIME) ..."
 runtime_update "$@"
 ok "升级完成；再次运行 'chipseq-app' 启动新版本"
