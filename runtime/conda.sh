@@ -168,10 +168,15 @@ runtime_run() {
         export CHIPSEQ_R_LIB="${CHIPSEQ_R_LIB:-$analysis/lib/R/library}"
         export R_LIBS_USER="${R_LIBS_USER:-$CHIPSEQ_R_LIB}"
         # 后台运行；用 setsid 让它脱离终端
+        # enableCORS/enableXsrfProtection 关掉：否则 Streamlit 对非 localhost 来源
+        # （Qoder 预览跨域 iframe、cloudflared *.trycloudflare.com、局域网 IP）会拒绝
+        # WebSocket 握手 → 前端卡在空白页。关掉后接受任意 Origin，内嵌/隧道代理下正常渲染。
         setsid nohup "$launcher/bin/streamlit" run streamlit_app/app.py \
             --server.address="$bind_addr" \
             --server.port="$port" \
             --server.headless=true \
+            --server.enableCORS=false \
+            --server.enableXsrfProtection=false \
             --browser.gatherUsageStats=false \
             >>"$outlog" 2>&1 < /dev/null &
         echo $! > "$pid"
