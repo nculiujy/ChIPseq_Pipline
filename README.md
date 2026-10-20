@@ -34,7 +34,9 @@ chipseq-app
 
 本机浏览器打开 <http://localhost:8501>。
 
-远程服务器：本地机器执行 `ssh -L 8501:localhost:8501 用户@服务器`，本地浏览器打开 <http://localhost:8501>。
+**默认监听 `0.0.0.0`（对整个局域网开放）**，所以从同一局域网内的自己 Windows/Mac 浏览器直接开启动日志里打印的「局域网访问」那条地址（`http://<服务器IP>:8501`，不是 localhost）即可。只想绑回环（仅本机/隧道）时用 `chipseq-app --private`。
+
+服务器在公网上 / 不想暴露局域网时，改用 SSH 隧道：本地机器执行 `ssh -L 8501:localhost:8501 用户@服务器`，本地浏览器再开 <http://localhost:8501>。
 
 用 Xshell / PuTTY 请关掉 X11 转发（会话属性 → SSH → 隧道 → 取消勾选）。`chipseq-app` 已自动识别 SSH 会话不再拉远程浏览器，但关掉转发更保险。
 
@@ -65,7 +67,7 @@ chipseq-app-update      更新启动器；all/analysis/online/offline 一并建�
 chipseq-app-uninstall   卸载（默认保留数据目录）
 ```
 
-启动选项：`chipseq-app --port 9000`、`chipseq-app --public`（允许局域网）、`chipseq-app --no-browser`。
+启动选项：`chipseq-app --port 9000`、`chipseq-app --private`（只绑 127.0.0.1，默认已局域网开放，`--public` 同义）、`chipseq-app --no-browser`。
 
 ## 卸载
 
@@ -118,7 +120,7 @@ R 包写到 `analysis/lib/R/library/`（workflow 中 `4_2`/`5_1` 都会硬指向
 |---|---|
 | `bootstrap.sh` 报「无可用运行时」 | 装 miniconda 或 miniforge 后重跑 |
 | `chipseq-app: command not found` | 上面那个 `export PATH=...` 没生效；执行后 `source ~/.bashrc` |
-| 打不开 `localhost:8501` | `chipseq-app-status` 看进程；SSH 隧道断了重连 |
+| 打不开 `localhost:8501` | 先看启动时打印的「局域网访问」URL，用服务器 IP 而不是 localhost（localhost 永远指你自己本机）；`chipseq-app-status` 看进程；确认没跑 `--private`（那会只绑 127.0.0.1）；服务器在公网则重做 SSH 隧道 |
 | `chipseq-app-update all` 慢 | 经典 conda 求解慢。装 mamba（`conda install -n base -c conda-forge mamba`），或 `conda config --set solver libmamba`，或用离线包（见下） |
 | 监测页显示缺 R 包 | 手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`；`txdbmaker` 在 Bioc<3.21 不存在，install_R_packages.R 会自动跳过 |
 | 启动后 Xshell 弹自带火狐、延迟高 | 关 Xshell 的 X11 转发；临时绕过 `chipseq-app --no-browser` |

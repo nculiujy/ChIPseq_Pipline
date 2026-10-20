@@ -8,7 +8,8 @@ source "@@LIB@@"
 
 DATA_DIR="$CHIPSEQ_DEFAULT_DATA_DIR"
 PORT="${CHIPSEQ_PORT:-$CHIPSEQ_DEFAULT_PORT}"
-BIND="${CHIPSEQ_BIND:-127.0.0.1}"
+# 默认绑 0.0.0.0（局域网可直连，与历史行为一致）；只想本机/回环访问用 --private 或 CHIPSEQ_BIND=127.0.0.1
+BIND="${CHIPSEQ_BIND:-0.0.0.0}"
 RUNTIME_OVERRIDE=""
 NO_BROWSER="${NO_BROWSER:-0}"
 FORCE_PULL=0
@@ -17,6 +18,7 @@ FORCE_PULL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --public)     BIND="0.0.0.0"; shift ;;
+        --private|--local) BIND="127.0.0.1"; shift ;;
         --port)       [ $# -ge 2 ] || die "--port 需要参数"; PORT="$2"; shift 2 ;;
         --port=*)     PORT="${1#*=}"; shift ;;
         --runtime)    [ $# -ge 2 ] || die "--runtime 需要参数"; RUNTIME_OVERRIDE="$2"; shift 2 ;;

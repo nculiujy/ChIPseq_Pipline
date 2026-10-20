@@ -221,8 +221,14 @@ print_access_info() {
 ------------------------------------------------------------
  本机访问:    http://localhost:${port}
 EOF
-    if [ "$bind" = "0.0.0.0" ] && [ -n "$host_ip" ]; then
-        echo " 局域网访问:  http://${host_ip}:${port}"
+    if [ "$bind" = "0.0.0.0" ]; then
+        if [ -n "$host_ip" ]; then
+            echo " 局域网访问:  http://${host_ip}:${port}   ← Windows/Mac 浏览器开这个（不是 localhost）"
+        else
+            echo " 局域网访问:  已绑 0.0.0.0（未探到本机 IP，用 'hostname -I' 查）"
+        fi
+    else
+        echo " (当前 --private：只监听 127.0.0.1，本机以外无法直连；去掉 --private 或加 --public 可局域网直连)"
     fi
     cat <<EOF
  SSH 隧道:    在本地机器执行:
@@ -275,7 +281,8 @@ usage() {
 用法: chipseq-app [选项]
 
 选项:
-  --public           绑定到 0.0.0.0，允许局域网访问（默认仅 127.0.0.1）
+  --public           绑定到 0.0.0.0，允许局域网访问（默认已局域网开放）
+  --private, --local  只绑 127.0.0.1（仅服务器本机/SSH 隧道可访问）
   --port PORT        指定宿主端口（默认 ${CHIPSEQ_DEFAULT_PORT}，冲突时自动 +1）
   --runtime NAME     强制指定运行时 (apptainer|podman|docker|conda)
   --no-browser       即使有桌面也不自动打开浏览器
@@ -287,7 +294,7 @@ usage() {
   CHIPSEQ_SIF_URI    覆盖 .sif 下载地址（apptainer）
   CHIPSEQ_ENV_URL    覆盖分析环境 conda-pack tarball 地址（conda，供 provision_analysis_* 兜底）
   CHIPSEQ_PORT       覆盖端口
-  CHIPSEQ_BIND       覆盖绑定地址（127.0.0.1 或 0.0.0.0）
+  CHIPSEQ_BIND       覆盖绑定地址（默认 0.0.0.0；只想回环就设 127.0.0.1）
   CHIPSEQ_RUNTIME_DIR 项目内运行时目录（默认 <repo>/.chipseq-runtime）
   CHIPSEQ_DATA       数据目录（默认 <runtime>/data）
   CHIPSEQ_CONDA_ENV  分析环境 prefix（默认 <runtime>/analysis）
