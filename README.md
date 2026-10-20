@@ -59,11 +59,30 @@ cd ChIPseq_Pipline
 > **安装路径（默认 conda，开箱即用）**
 > - **conda 模式（默认推荐，无需容器）** 分两步：
 >   - **① `CHIPSEQ_RUNTIME=conda ./bootstrap.sh`** 只创建一个**秒级精简启动器** `~/.local/chipseq-launch`（python + streamlit + pyyaml）把面板拉起来，并写标记、装 CLI——**不下载几个 GB、不建分析环境**。
->   - **② 命令行构建分析环境** `~/.local/chipseq-env`（全部生信**命令行工具**；**R 不在这里装**，走系统/管理员基线那个）：最省事 `chipseq-app-update all`（有离线包则秒级解压，否则在线 mamba/conda 构建）；或直接 `conda env create -p ~/.local/chipseq-env -f environment.yml`。嫌慢见下方「⚡ 更快的环境安装」。
+>   - **② 一键建分析环境 + R 包** `~/.local/chipseq-env`（全部生信**命令行工具**；**R 走系统**）：
+>       • **推荐一命令到底** `CHIPSEQ_RUNTIME=conda ./bootstrap.sh --full`（启动器+CLI+分析环境+R 全包）
+>       • 或分两步：先 `./bootstrap.sh`（秒），再 `chipseq-app-update all`（自动 mamba/离线包建分析环境 → 自动补 R 包，可用 `CHIPSEQ_SKIP_R=1` 跳过 R）
+>       • 或直接 `conda env create -p ~/.local/chipseq-env -f environment.yml && Rscript workflow/env/install_R_packages.R`。嫌慢见下方「⚡ 更快的环境安装」。
 >   - 浏览器「环境监测」页**只读**检测分析环境是否满足要求，**不再触发安装**（旧的在线「环境配置」页已移除）。
 > - **容器模式（可选，仅当有真实镜像时）**：Apptainer / Podman / Docker 一次性给全量环境。⚠️ 仓库默认的 `ghcr.io/chipseq-pipeline/...` 是**从未发布的占位地址**，直接 `./bootstrap.sh` 走容器会报 **403 Forbidden**。要用容器需自备镜像：把离线包 `chipseq-pipeline-image.tar.zst` 放项目根目录（自动识别加载），或用 `CHIPSEQ_IMAGE=<真实可访问镜像>` 指定。
 >
 > 开发态直接 `streamlit run streamlit_app/app.py`（已激活含工具的 conda 环境）时，「环境监测」页会回落到当前环境检测，照常可用。
+
+### 🚀 推荐：一条命令到底
+
+```bash
+CHIPSEQ_RUNTIME=conda ./bootstrap.sh --full
+```
+
+上面这一条会把下面第 2–3 步都做完：**启动器 + CLI + 分析环境 + R 包**。首次 10–30 分钟（mamba 下载）；重跑幂等，已装部分秒过。相关开关：
+
+```bash
+CHIPSEQ_SKIP_R=1  ./bootstrap.sh --full   # 只建分析环境，不碰 R
+CHIPSEQ_R_ANNO=1  ./bootstrap.sh --full   # 一并预装 TxDb/OrgDb 注释 DB（体积大）
+CHIPSEQ_CRAN_MIRROR=<URL>                  # 换 CRAN 镜像
+```
+
+中断后想继续：`chipseq-app-update all`（同样幂等）。下面第 2–3 步是分步版本，适合想拆开验证的场。
 
 ### 第 2 步：一键安装（启动器 + CLI，数秒）
 
@@ -83,11 +102,11 @@ CHIPSEQ_RUNTIME=conda ./bootstrap.sh
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### 第 3 步：构建分析环境（全部生信命令行工具）
+### 第 3 步：构建分析环境（全部生信命令行工具 + R 包）
 
 这是唯一“重”的一步（要下几个 GB）。**推荐一条命令**：
 
-> ℹ️ 分析环境**只含命令行工具**，**故意不含 R**：流程与「环境监测」里的 `Rscript` 会直接解析到**系统 R**（管理员基线，已装满 ChIPseeker 等包），避免一个精简 `r-base` 遮蔽它。缺 R 包时补齐的是系统 R，不是分析环境。
+> ℹ️ 分析环境**只含命令行工具**，**故意不含 R**：流程与「环境监测」里的 `Rscript` 会直接解析到**系统 R**（管理员基线，已装满 ChIPseeker 等包），避免一个精简 `r-base` 遮蔽它。`chipseq-app-update all` 会在建完分析环境后自动调 `install_R_packages.R` 补齐必需 R 包（已就位幂等秒过；`CHIPSEQ_SKIP_R=1` 可跳过）。
 
 ```bash
 chipseq-app-update all
@@ -162,7 +181,7 @@ chipseq-app-update offline                     # 秒级解压 + 自动 conda-unp
 ```
 
 **方案 B（在线提速）：mamba** —— 求解 + 并行下载快数倍
-`chipseq-app-update all/online` 会自动优先用 mamba（若已安装）。装 mamba：
+`chipseq-app-update all` 会自动优先用 mamba（若已安装）。装 mamba：
 ```bash
 conda install -n base -c conda-forge mamba     # 或直接用自带 mamba 的 Miniforge
 ```
@@ -187,7 +206,7 @@ chipseq-app-status     # 看运行状态（含分析环境是否就绪）
 chipseq-app-logs       # 看实时日志（Ctrl+C 退出）
 chipseq-app-stop       # 停止面板
 chipseq-app-shell      # 进入环境的命令行（高级用户）
-chipseq-app-update     # 更新启动器；all/online/offline 同时构建分析环境（见第 3 步）
+chipseq-app-update     # 更新启动器；all/analysis/offline/online 同时建分析环境 + 自动补 R（见第 3 步）
 chipseq-app-uninstall  # 卸载 bootstrap 安装的启动器/分析环境/CLI（默认保留数据）
 ```
 

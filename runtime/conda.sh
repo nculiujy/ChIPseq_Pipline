@@ -255,6 +255,45 @@ _has_local_env_tarball() {
     return 1
 }
 
+# 幂等补齐 R 包（best-effort）。
+# 约定：分析环境不含 R（environment.yml 故意去掉 r-base），这里直接调 PATH 上的
+# 系统 Rscript；install_R_packages.R 自己会探可写 lib、选 Bioc 版本、txdbmaker 条件安装。
+_install_R_packages_best_effort() {
+    if [ "${CHIPSEQ_SKIP_R:-0}" = "1" ]; then
+        log "CHIPSEQ_SKIP_R=1 → 跳过 R 包补齐"
+        return 0
+    fi
+    local repo; repo=$(_repo_dir 2>/dev/null || echo ".")
+    local r_script="$repo/workflow/env/install_R_packages.R"
+    if [ ! -f "$r_script" ]; then
+        warn "未找到 $r_script，跳过 R 包补齐"
+        return 0
+    fi
+    local rscript_bin
+    rscript_bin="$(command -v Rscript 2>/dev/null || true)"
+    if [ -z "$rscript_bin" ]; then
+        warn "未检测到 Rscript（分析环境不含 R、系统也未装）→ 跳过 R 包补齐"
+        warn "可先装系统 R，随后手动：Rscript $r_script"
+        return 0
+    fi
+    log "补齐 R 包（幂等；已就位则秒过；首次可能几分钟）: $rscript_bin"
+    NONINTERACTIVE=1 "$rscript_bin" "$r_script" \
+        || warn "R 包安装/校验有告警；可稍后手动重试：$rscript_bin $r_script"
+}
+
+# 建分析环境 + 补 R 包，不碰启动器（供 bootstrap --full 直接调用）
+runtime_build_all() {
+    if _has_local_env_tarball; then
+        log "检测到本地离线分析环境包 → 秒级解压安装"
+        rm -rf "$CHIPSEQ_CONDA_ENV"
+        provision_analysis_offline
+    else
+        log "在线构建/补齐分析环境（mamba/conda，存在则 update）: $CHIPSEQ_CONDA_ENV"
+        provision_analysis_online
+    fi
+    _install_R_packages_best_effort
+}
+
 runtime_update() {
     runtime_stop || true
     local launcher="$CHIPSEQ_LAUNCH_ENV" mode="${1:-}"
@@ -263,22 +302,16 @@ runtime_update() {
     runtime_install
     case "$mode" in
         all|analysis)
-            if _has_local_env_tarball; then
-                log "检测到本地离线分析环境包 → 秒级解压安装"
-                rm -rf "$CHIPSEQ_CONDA_ENV"
-                provision_analysis_offline
-            else
-                log "在线构建/补齐分析环境（mamba/conda，存在则 update）: $CHIPSEQ_CONDA_ENV"
-                provision_analysis_online
-            fi
-            ;;
+            runtime_build_all ;;
         offline)
-            rm -rf "$CHIPSEQ_CONDA_ENV"; provision_analysis_offline ;;
+            rm -rf "$CHIPSEQ_CONDA_ENV"; provision_analysis_offline
+            _install_R_packages_best_effort ;;
         online)
-            provision_analysis_online ;;
+            provision_analysis_online
+            _install_R_packages_best_effort ;;
         "")
             : ;;  # 仅更新启动器
         *)
-            warn "未知模式 '$mode'（可用: all|online|offline）；仅更新了启动器" ;;
+            warn "未知模式 '$mode'（可用: all|analysis|online|offline）；仅更新了启动器" ;;
     esac
 }

@@ -13,11 +13,17 @@ case "${1:-}" in
         cat <<EOF
 用法: chipseq-app-update [模式]
 
-更新启动器环境（秒级）。可选模式同时处理分析环境：
-  all            重建/补齐分析环境（本地离线包 chipseq-env*.tar.gz 优先→秒级；否则在线 mamba/conda）
-  online         仅在线 conda env create/update -p ~/.local/chipseq-env -f environment.yml
-  offline        仅从离线包解压安装分析环境
+更新启动器环境（秒级）。可选模式同时处理分析环境 + R 包：
+  all            推荐。先建分析环境（本地离线包 chipseq-env*.tar.gz 优先→秒级；否则在线 mamba/conda），
+                 建完后自动调 install_R_packages.R 幂等补齐必需 R 包（已就位秒过）
+  analysis       同 all
+  online         仅在线 conda env create/update -p ~/.local/chipseq-env -f environment.yml + 补 R
+  offline        仅从离线包解压安装分析环境 + 补 R
   （不带参数）   只更新启动器环境
+相关环境变量：
+  CHIPSEQ_SKIP_R=1     跳过 R 包补齐步骤
+  CHIPSEQ_R_ANNO=1     一并预装 TxDb/OrgDb 注释数据库
+  CHIPSEQ_CRAN_MIRROR  自定义 CRAN 镜像
 EOF
         exit 0 ;;
 esac

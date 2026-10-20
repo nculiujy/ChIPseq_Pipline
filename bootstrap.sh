@@ -2,15 +2,21 @@
 # ChIPseq Pipeline — 一键安装入口（无 root）
 #
 # 用法：
-#   git clone <repo> && cd ChIPseq_Pipline && ./bootstrap.sh
+#   git clone <repo> && cd ChIPseq_Pipline && ./bootstrap.sh [--full]
+#
+# 参数：
+#   --full    一键到底：装完启动器+CLI 后立即建分析环境 + 补齐 R 包
+#             等价于 ./bootstrap.sh 后紧跟 chipseq-app-update all
+#             可搭 CHIPSEQ_SKIP_R=1 跳过 R 包步骤
 #
 # 环境变量：
-#   CHIPSEQ_DATA       数据目录（默认 ~/.chipseq-pipeline）
-#   CHIPSEQ_RUNTIME    强制指定运行时（跳过探测）
-#   CHIPSEQ_IMAGE      OCI 镜像地址
-#   CHIPSEQ_SIF_URI    Apptainer .sif 下载地址
-#   CHIPSEQ_ENV_URL    conda-pack tarball 地址
-#   SKIP_INSTALL       1 = 只探测不下载镜像/环境
+#   CHIPSEQ_DATA         数据目录（默认 ~/.chipseq-pipeline）
+#   CHIPSEQ_RUNTIME      强制指定运行时（跳过探测）
+#   CHIPSEQ_IMAGE        OCI 镜像地址
+#   CHIPSEQ_SIF_URI      Apptainer .sif 下载地址
+#   CHIPSEQ_ENV_URL      conda-pack tarball 地址
+#   CHIPSEQ_SKIP_R=1     跳过 R 包补齐步骤
+#   SKIP_INSTALL         1 = 只探测不下载镜像/环境
 #
 # 容器后端（apptainer/podman/docker）若命中未发布的占位镜像地址且无本地/已加载镜像，
 # 会自动降级为 conda 后端（除非显式 CHIPSEQ_RUNTIME 强制指定，那样改为报错给出可执行指引）。
@@ -19,6 +25,24 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/scripts/lib/common.sh"
+
+# ---------- 0a. 参数解析 ----------
+FULL=0
+for a in "$@"; do
+    case "$a" in
+        --full)     FULL=1 ;;
+        -h|--help)
+            cat <<'EOF'
+用法：CHIPSEQ_RUNTIME=conda ./bootstrap.sh [--full]
+
+  --full   一键到底：启动器 + CLI + 分析环境 + R 包（首次 10–30 分钟，后续幂等秒级）
+           可搭 CHIPSEQ_SKIP_R=1 跳过 R 步骤
+           可搭 SKIP_INSTALL=1 只探测不下载
+EOF
+            exit 0 ;;
+        *) ;;
+    esac
+done
 
 log "==== ChIPseq Pipeline 一键安装（无 root）===="
 log "仓库目录: $HERE"
@@ -115,6 +139,20 @@ fi
 log "安装 CLI 命令到 ~/.local/bin ..."
 "$HERE/scripts/install-cli.sh"
 
+# ---------- 4.5 --full: 一键到底，直接建分析环境 + 补 R 包 ----------
+if [ "$FULL" = "1" ]; then
+    if [ "$RUNTIME" != "conda" ]; then
+        warn "--full 目前仅对 conda 后端自动展开（当前 RUNTIME=$RUNTIME）；容器模式请手动预拉镜像/加载 .sif"
+    elif [ "${SKIP_INSTALL:-0}" = "1" ]; then
+        warn "--full 已忽略（SKIP_INSTALL=1）；去掉 SKIP_INSTALL 重跑才会下载分析环境"
+    else
+        log "--full 模式：接着建分析环境 + 补齐 R 包（首次 10–30 分钟；已装则幂等秒级）"
+        log "  想只补命令行工具不装 R：CHIPSEQ_SKIP_R=1 重跑"
+        log "  想中断：Ctrl+C；之后可单独跑 chipseq-app-update all 继续"
+        runtime_build_all
+    fi
+fi
+
 # ---------- 5. 完成 ----------
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
 cat <<EOF
@@ -144,11 +182,25 @@ cat <<EOF
       远程服务器访问（无桌面）:
         本地机器执行: ssh -L 8501:localhost:8501 \$USER@<服务器地址>
         浏览器打开:   http://localhost:8501
+EOF
+if [ "$FULL" != "1" ] && [ "$RUNTIME" = "conda" ]; then
+    cat <<EOF
 
-   5) （仅 conda 模式）构建完整分析环境（全部生信工具 + R）：
+   5) 尚未 --full，分析环境未建。一行补齐（含 R 包）：
+        chipseq-app-update all
+      等价手动：
         conda env create -p "${CHIPSEQ_CONDA_ENV:-$HOME/.local/chipseq-env}" -f environment.yml
-      （已存在则用 conda env update；或 chipseq-app-update all 重建）
-      完成后启动 chipseq-app，到侧栏【环境监测】页确认是否满足分析要求。
+        Rscript workflow/env/install_R_packages.R
+      完成后启动 chipseq-app，到侧栏【环境监测】页确认。
+EOF
+elif [ "$FULL" = "1" ] && [ "$RUNTIME" = "conda" ]; then
+    cat <<EOF
+
+   5) --full 已建完分析环境 + 补齐 R 包；如中途中断，重跑：
+        chipseq-app-update all      # 幂等，已装则秒过
+EOF
+fi
+cat <<EOF
 ============================================================
 
 EOF
