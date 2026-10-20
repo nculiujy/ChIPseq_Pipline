@@ -210,7 +210,9 @@ print_access_info() {
     local bind="$1" port="$2" data="$3" rt="$4" tunnel_url="${5:-}"
     local host_ip=""
     if command -v hostname >/dev/null 2>&1; then
-        host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        # 多网卡/多网段机器：列出所有非回环 IPv4，逐个给候选地址（以前只取第一个会误导）
+        host_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^(127\.|::1|$)' | tr '\n' ' ')
+        host_ip=${host_ip% }
         [ -z "$host_ip" ] && host_ip=$(hostname -i 2>/dev/null | awk '{print $1}')
     fi
 
@@ -231,7 +233,15 @@ EOF
     else
         if [ "$bind" = "0.0.0.0" ]; then
             if [ -n "$host_ip" ]; then
-                echo " 局域网访问:  http://${host_ip}:${port}   ← Windows/Mac 浏览器开这个（不是 localhost）"
+                local _ip _n=0
+                for _ip in $host_ip; do
+                    _n=$((_n+1))
+                    if [ "$_n" = 1 ]; then
+                        echo " 局域网访问:  http://${_ip}:${port}   ← Windows/Mac 浏览器开这个（不是 localhost）"
+                    else
+                        echo "              http://${_ip}:${port}   ← 若上面那个不通（本机在另一个网段），换这个试"
+                    fi
+                done
             else
                 echo " 局域网访问:  已绑 0.0.0.0（未探到本机 IP，用 'hostname -I' 查）"
             fi
