@@ -14,3 +14,5 @@ source "$BACKEND"
 
 log "停止 (runtime=$RUNTIME) ..."
 runtime_stop
+# 一并关掉 cloudflared 公网临时隧道（若之前在跑）
+stop_tunnel "$DATA_DIR" || true

@@ -40,6 +40,22 @@ chipseq-app
 
 用 Xshell / PuTTY 请关掉 X11 转发（会话属性 → SSH → 隧道 → 取消勾选）。`chipseq-app` 已自动识别 SSH 会话不再拉远程浏览器，但关掉转发更保险。
 
+### 云服务器 / 堡垒机：cloudflared 公网临时隧道（断网不死）
+
+拿不到局域网 IP、SSH 隧道也不方便时，加 `--tunnel`，面板就绪后会自动在后台拉起一个 cloudflared 快隧道，并打印一个 `https://xxx.trycloudflare.com` 公网地址，任何地方浏览器直接打开：
+
+```bash
+# 首次：下载 cloudflared 到仓库根目录（或放 PATH，或用 CHIPSEQ_CLOUDFLARED 指定绝对路径）
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x cloudflared-linux-amd64
+
+# 每次：
+chipseq-app --tunnel
+```
+
+Streamlit 和 cloudflared 都以 `setsid nohup` 脱离终端后台运行，**断网 / 关 Xshell 都不会停**；`chipseq-app-status` 会显示当前隧道 URL，`chipseq-app-stop` 会把面板和隧道一起关掉。注意：快隧道的 URL 每次重启会变（要固定域名需 Cloudflare 命名隧道），且该地址**公网可访问**，用完记得关。
+
+
 ## 页面
 
 浏览器面板 6 个页面，按工作流顺序：
@@ -67,7 +83,7 @@ chipseq-app-update      更新启动器；all/analysis/online/offline 一并建�
 chipseq-app-uninstall   卸载（默认保留数据目录）
 ```
 
-启动选项：`chipseq-app --port 9000`、`chipseq-app --private`（只绑 127.0.0.1，默认已局域网开放，`--public` 同义）、`chipseq-app --no-browser`。
+启动选项：`chipseq-app --port 9000`、`chipseq-app --private`（只绑 127.0.0.1，默认已局域网开放，`--public` 同义）、`chipseq-app --tunnel`（cloudflared 公网临时 URL）、`chipseq-app --no-browser`。
 
 ## 卸载
 
@@ -124,6 +140,7 @@ R 包写到 `analysis/lib/R/library/`（workflow 中 `4_2`/`5_1` 都会硬指向
 | `chipseq-app-update all` 慢 | 经典 conda 求解慢。装 mamba（`conda install -n base -c conda-forge mamba`），或 `conda config --set solver libmamba`，或用离线包（见下） |
 | 监测页显示缺 R 包 | 手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`；`txdbmaker` 在 Bioc<3.21 不存在，install_R_packages.R 会自动跳过 |
 | 启动后 Xshell 弹自带火狐、延迟高 | 关 Xshell 的 X11 转发；临时绕过 `chipseq-app --no-browser` |
+| `--tunnel` 报找不到 cloudflared | 按上面 `wget` 下载 `cloudflared-linux-amd64` 到仓库根目录并 `chmod +x`；或 `export CHIPSEQ_CLOUDFLARED=/绝对路径`。云服务器连不上 GitHub 时，本地下好再传上去 |
 | 分析中途报错 | `chipseq-app-logs`，或运行管理页看 Snakemake 日志（在 `logs/`） |
 | 从旧版本升级（环境在 `~/.local/chipseq-*` / 数据在 `~/.chipseq-pipeline`） | `bootstrap.sh` 会提示迁移。推荐：`mv ~/.local/chipseq-launch <repo>/.chipseq-runtime/launch && mv ~/.local/chipseq-env <repo>/.chipseq-runtime/analysis && mv ~/.chipseq-pipeline <repo>/.chipseq-runtime/data`；确认新版能跑后再 `chipseq-app-uninstall --purge-legacy` 收尾 |
 | 不想污染 HOME，但项目所在盘空间不够 | 把仓库整个搬到大盘；或临时 `export CHIPSEQ_RUNTIME_DIR=/scratch/$USER/chipseq-runtime` 后再跑 bootstrap，一切写入（env/pkgs/R 库/data）都会落到该目录 |

@@ -207,7 +207,7 @@ build_binds() {
 # ---------- 访问信息打印 ----------
 # print_access_info <bind> <port> <data_dir> <runtime>
 print_access_info() {
-    local bind="$1" port="$2" data="$3" rt="$4"
+    local bind="$1" port="$2" data="$3" rt="$4" tunnel_url="${5:-}"
     local host_ip=""
     if command -v hostname >/dev/null 2>&1; then
         host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -221,22 +221,34 @@ print_access_info() {
 ------------------------------------------------------------
  本机访问:    http://localhost:${port}
 EOF
-    if [ "$bind" = "0.0.0.0" ]; then
-        if [ -n "$host_ip" ]; then
-            echo " 局域网访问:  http://${host_ip}:${port}   ← Windows/Mac 浏览器开这个（不是 localhost）"
-        else
-            echo " 局域网访问:  已绑 0.0.0.0（未探到本机 IP，用 'hostname -I' 查）"
-        fi
+    if [ -n "$tunnel_url" ]; then
+        cat <<EOF
+ 🌐 公网地址:   $tunnel_url
+              ← cloudflared 快隧道，任何地方浏览器直接打开；断网/关终端仍在后台跑
+              ⚠ 该 URL 公网可访问，知道链接的人都能进；用完 chipseq-app-stop 关闭
+              ⚠ 重启隧道会换一个临时地址（需命名隧道才能固定）
+EOF
     else
-        echo " (当前 --private：只监听 127.0.0.1，本机以外无法直连；去掉 --private 或加 --public 可局域网直连)"
-    fi
-    cat <<EOF
+        if [ "$bind" = "0.0.0.0" ]; then
+            if [ -n "$host_ip" ]; then
+                echo " 局域网访问:  http://${host_ip}:${port}   ← Windows/Mac 浏览器开这个（不是 localhost）"
+            else
+                echo " 局域网访问:  已绑 0.0.0.0（未探到本机 IP，用 'hostname -I' 查）"
+            fi
+        else
+            echo " (当前 --private：只监听 127.0.0.1，本机以外无法直连；去掉 --private 或加 --public 可局域网直连)"
+        fi
+        cat <<EOF
  SSH 隧道:    在本地机器执行:
                 ssh -L ${port}:localhost:${port} \$USER@<服务器地址>
               然后浏览器打开 http://localhost:${port}
+              （或直接加 --tunnel 走 cloudflared 公网临时地址，免配 SSH）
  ⚠ Xshell/PuTTY: 请关远程的 X11 转发（会话属性 > SSH > 隧道 > 取消 X11），
               否则启动脚本会误弹一个远程 Firefox 、延迟极高。
               新版已自动识别 SSH 会话，不会弹远程浏览器。
+EOF
+    fi
+    cat <<EOF
  数据目录:    ${data}
  容器/进程:   ${CHIPSEQ_CONTAINER_NAME}
 ------------------------------------------------------------
@@ -247,6 +259,92 @@ EOF
 ============================================================
 
 EOF
+}
+
+# ---------- cloudflared 快速隧道（可选，临时公网 URL） ----------
+# 目的：云服务器/多层 NAT 后拿不到局域网 IP、SSH 隧道也不方便时，用 cloudflared
+# quick tunnel 把 http://localhost:PORT 暴露成一个 *.trycloudflare.com 临时地址，
+# 任何地方浏览器直接打开。与 Streamlit 同款 setsid+nohup 脱离终端，断网不死。
+
+_cloudflared_log()     { echo "${1:-$CHIPSEQ_DEFAULT_DATA_DIR}/logs/cloudflared.out"; }
+_cloudflared_pid_file() { echo "${1:-$CHIPSEQ_DEFAULT_DATA_DIR}/cloudflared.pid"; }
+
+# 定位 cloudflared 二进制：CHIPSEQ_CLOUDFLARED > <repo>/cloudflared-linux-amd64 > <repo>/cloudflared > PATH
+_find_cloudflared() {
+    if [ -n "${CHIPSEQ_CLOUDFLARED:-}" ] && [ -x "${CHIPSEQ_CLOUDFLARED:-}" ]; then
+        echo "$CHIPSEQ_CLOUDFLARED"; return 0
+    fi
+    local repo="${CHIPSEQ_REPO:-$(_chipseq_default_repo)}" cand
+    for cand in "$repo/cloudflared-linux-amd64" "$repo/cloudflared" "$(command -v cloudflared 2>/dev/null || true)"; do
+        [ -n "$cand" ] && [ -x "$cand" ] && { echo "$cand"; return 0; }
+    done
+    return 1
+}
+
+# 从隧道日志里抓最后一条 trycloudflare URL
+_tunnel_url_from_log() {
+    local outlog; outlog=$(_cloudflared_log "${1:-$CHIPSEQ_DEFAULT_DATA_DIR}")
+    [ -f "$outlog" ] && grep -oE 'https://[a-zA-Z0-9._-]+\.trycloudflare\.com' "$outlog" | tail -1
+}
+
+# 隧道是否在跑（pid 存活）
+_tunnel_alive() {
+    local pidf; pidf=$(_cloudflared_pid_file "${1:-$CHIPSEQ_DEFAULT_DATA_DIR}")
+    [ -f "$pidf" ] && kill -0 "$(cat "$pidf" 2>/dev/null || echo 0)" 2>/dev/null
+}
+
+# start_tunnel <port> [data_dir]：后台起 cloudflared 快隧道，最多等 20s 拓 URL
+start_tunnel() {
+    local port="$1" data="${2:-$CHIPSEQ_DEFAULT_DATA_DIR}"
+    local cf; cf=$(_find_cloudflared) || {
+        warn "找不到 cloudflared 二进制。下载并放到仓库根目录："
+        warn "  wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x cloudflared-linux-amd64"
+        warn "  或用 CHIPSEQ_CLOUDFLARED=/绝对/路径/cloudflared 指定"
+        return 1
+    }
+    local pidf outlog; pidf=$(_cloudflared_pid_file "$data"); outlog=$(_cloudflared_log "$data")
+    mkdir -p "$data/logs"
+    if _tunnel_alive "$data"; then
+        local u; u=$(_tunnel_url_from_log "$data")
+        log "隧道已在运行 (PID $(cat "$pidf"))${u:+ → $u}"
+        TUNNEL_URL="$u"; export TUNNEL_URL; return 0
+    fi
+    rm -f "$pidf"
+    log "启动 cloudflared 快隧道 → http://localhost:${port} ..."
+    : > "$outlog"   # 每次重开都清空，避免抓到上一次会话的陈旧 URL
+    (
+        setsid nohup "$cf" tunnel --no-autoupdate --url "http://localhost:${port}" \
+            >>"$outlog" 2>&1 < /dev/null &
+        echo $! > "$pidf"
+    )
+    local url="" i
+    for i in $(seq 1 20); do
+        url=$(_tunnel_url_from_log "$data")
+        [ -n "$url" ] && break
+        kill -0 "$(cat "$pidf" 2>/dev/null || echo 0)" 2>/dev/null || { warn "cloudflared 进程异常退出，见 $outlog"; return 1; }
+        sleep 1
+    done
+    if [ -n "$url" ]; then
+        TUNNEL_URL="$url"; export TUNNEL_URL
+        ok "公网临时地址: $url"
+    else
+        TUNNEL_URL=""; export TUNNEL_URL
+        warn "20s 内未抓到 trycloudflare URL；可稍后手动查看：grep -o 'https://[^ ]*trycloudflare.com' $outlog"
+    fi
+}
+
+# stop_tunnel [data_dir]
+stop_tunnel() {
+    local data="${1:-$CHIPSEQ_DEFAULT_DATA_DIR}" pidf; pidf=$(_cloudflared_pid_file "$data")
+    [ -f "$pidf" ] || return 0
+    local p; p=$(cat "$pidf" 2>/dev/null || echo "")
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+        kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$p" 2>/dev/null || true
+        log "隧道已停止"
+    fi
+    rm -f "$pidf"
 }
 
 # ---------- 浏览器打开 ----------
@@ -283,6 +381,7 @@ usage() {
 选项:
   --public           绑定到 0.0.0.0，允许局域网访问（默认已局域网开放）
   --private, --local  只绑 127.0.0.1（仅服务器本机/SSH 隧道可访问）
+  --tunnel           启动后再后台起一个 cloudflared 快隧道，打印 *.trycloudflare.com 公网临时 URL（适合云服务器/堡垒机，断网不死）
   --port PORT        指定宿主端口（默认 ${CHIPSEQ_DEFAULT_PORT}，冲突时自动 +1）
   --runtime NAME     强制指定运行时 (apptainer|podman|docker|conda)
   --no-browser       即使有桌面也不自动打开浏览器
@@ -295,6 +394,8 @@ usage() {
   CHIPSEQ_ENV_URL    覆盖分析环境 conda-pack tarball 地址（conda，供 provision_analysis_* 兜底）
   CHIPSEQ_PORT       覆盖端口
   CHIPSEQ_BIND       覆盖绑定地址（默认 0.0.0.0；只想回环就设 127.0.0.1）
+  CHIPSEQ_TUNNEL     设为 1 等效 --tunnel（cloudflared 公网临时 URL）
+  CHIPSEQ_CLOUDFLARED cloudflared 二进制绝对路径（默认找 <repo>/cloudflared-linux-amd64 或 PATH）
   CHIPSEQ_RUNTIME_DIR 项目内运行时目录（默认 <repo>/.chipseq-runtime）
   CHIPSEQ_DATA       数据目录（默认 <runtime>/data）
   CHIPSEQ_CONDA_ENV  分析环境 prefix（默认 <runtime>/analysis）

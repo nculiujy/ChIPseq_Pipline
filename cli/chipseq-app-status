@@ -17,4 +17,7 @@ echo " ChIPseq Pipeline 状态"
 echo "------------------------------------------------------------"
 echo "数据目录:    $DATA_DIR"
 runtime_status
+if _tunnel_alive "$DATA_DIR"; then
+    echo "cloudflared 隧道: 运行中 → $(_tunnel_url_from_log "$DATA_DIR")"
+fi
 echo "============================================================"
