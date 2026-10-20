@@ -159,6 +159,9 @@ EOF
  SSH 隧道:    在本地机器执行:
                 ssh -L ${port}:localhost:${port} \$USER@<服务器地址>
               然后浏览器打开 http://localhost:${port}
+ ⚠ Xshell/PuTTY: 请关远程的 X11 转发（会话属性 > SSH > 隧道 > 取消 X11），
+              否则启动脚本会误弹一个远程 Firefox 、延迟极高。
+              新版已自动识别 SSH 会话，不会弹远程浏览器。
  数据目录:    ${data}
  容器/进程:   ${CHIPSEQ_CONTAINER_NAME}
 ------------------------------------------------------------
@@ -173,10 +176,25 @@ EOF
 
 # ---------- 浏览器打开 ----------
 # maybe_open_browser <bind> <port>
+# 设计：只在真本地桌面会话里才弹浏览器；远程 SSH/X11 转发下启动远程 Firefox 会走 X 协议
+# 回传到本地（典型表现为 Xshell 自带火狐弹出 + 高延迟），且用户本就该用 SSH 隧道 + 本地浏览器，
+# 因此一律跳过。
 maybe_open_browser() {
     local port="$2"
+    # 1) 显式 --no-browser / NO_BROWSER=1
     [ "${NO_BROWSER:-0}" = "1" ] && return 0
-    # 无 X11/Wayland -> 静默跳过
+    # 2) 任何 SSH 会话（Xshell / PuTTY / iTerm / linux term / 包括开了 X11 转发的）
+    if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-}" ]; then
+        log "SSH 会话→不弹远程浏览器；请在本地机器建 SSH 隧道后用本地浏览器打开 http://localhost:${port}"
+        return 0
+    fi
+    # 3) 没 SSH_* 变量但 DISPLAY 仍为 localhost:N 形态（X 转发遗留环境）
+    case "${DISPLAY:-}" in
+        localhost:*|localhost*:[0-9]*)
+            warn "DISPLAY=${DISPLAY} 看起来是 X11 转发→不弹远程浏览器（会非常慢）"
+            return 0 ;;
+    esac
+    # 4) 无显示环境直接跳过
     [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ] && return 0
     command -v xdg-open >/dev/null 2>&1 || return 0
     (xdg-open "http://localhost:${port}" >/dev/null 2>&1 &) || true

@@ -211,6 +211,7 @@ chipseq-app --public          # 让同网段的同事也能访问
 | `conda env create` / `chipseq-app-update all` 慢 | 多半是经典 conda 求解慢：装 mamba、或 `conda config --set solver libmamba`，或提前 `pack-analysis-env.sh` 打包走离线秒级解压（见「⚡ 更快的环境安装」） |
 | 分析环境已建但监测仍显示缺 R 包 | 正常：分析环境故意不含 R，`Rscript` 走系统 R。缺的是系统 R 的包，用系统 `Rscript workflow/env/install_R_packages.R` 补，或让管理员补（`txdbmaker` 在 Bioc<3.21 为可选，不装不影响） |
 | 分析中途报错 | `chipseq-app-logs` 或到「🚀 运行管理」页看 Snakemake 日志，通常在 `logs/` 目录 |
+| 启动后 Xshell 自动弹出内置火狐、延迟很高 | 这是远程 X11 转发误拉远程浏览器的经典坑。新版 `chipseq-app` 已自动识别 SSH 会话不再弹；你仍可以在 Xshell 里“会话属性 > SSH > 隧道 > 取消 X11”关掉转发；或在本地新开终端 `ssh -L 8501:localhost:8501 用户@服务器` 后本地浏览器打开 http://localhost:8501。临时绕过：`chipseq-app --no-browser` |
 
 其他问题：在项目 GitHub Issues 页面提问，或联系维护者。
 
