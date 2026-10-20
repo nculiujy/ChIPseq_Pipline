@@ -95,9 +95,14 @@ if (length(missing_cran)) {
 }
 
 # ---------- 5. Bioconductor 必需包（含 txdbmaker 条件项） ----------
+# 直接列上 ChIPseeker/clusterProfiler 的关键传递依赖：
+#   BiocManager::install 对已装包不递归修依赖（renv/旧 site-lib 干扰时
+#   会造成“ggtree 缺、但 enrichplot 看似已装”的假阳性），写到这里强制确认。
 bioc_required <- c(
     "ChIPseeker", "rtracklayer", "GenomicFeatures",
-    "GenomicRanges", "clusterProfiler"
+    "GenomicRanges", "GenomeInfoDb", "S4Vectors", "IRanges",
+    "clusterProfiler", "DOSE", "GOSemSim", "enrichplot", "ggtree",
+    "aplot", "AnnotationDbi", "GO.db", "qvalue"
 )
 # txdbmaker 仅在 Bioc >= 3.21 (R >= 4.5) 存在；旧版 GenomicFeatures 自带 makeTxDbFromGFF
 if (!is.na(BIOC_VERSION_NUM) && BIOC_VERSION_NUM >= 3.21) {

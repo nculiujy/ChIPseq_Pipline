@@ -8,7 +8,7 @@
 #     ├ analysis/              CHIPSEQ_CONDA_ENV    分析  prefix env
 #     ├ data/                  CHIPSEQ_DATA         用户数据根（配置/参考/结果/logs/marker）
 #     ├ pkgs/                  CONDA_PKGS_DIRS      conda 包缓存（不写 $CONDA_ROOT/pkgs）
-#     ├ Rlib/                  CHIPSEQ_R_LIB        R 用户库（不写 ~/R/...-library）
+#     ├ analysis/lib/R/library/ CHIPSEQ_R_LIB  R 包库（与 workflow 中 CONDA_PREFIX/lib/R/library 同步）
 #     └ cache/pip/             PIP_CACHE_DIR        pip 缓存
 #   ~/.local/bin/chipseq-*                     软链接，卸载时一并删
 #   ~/.conda/environments.txt                   conda -p 会静默追加，调后清
@@ -116,9 +116,9 @@ provision_analysis_online() {
     _chipseq_export_isolation_env
     if [ -d "$env_root/conda-meta" ]; then
         log "分析环境已存在 → 执行 update（补缺）"
-        "$inst" env update -p "$env_root" -f "$yml" || die "$inst env update 失败"
+        "$inst" env update -y -p "$env_root" -f "$yml" </dev/null || die "$inst env update 失败"
     else
-        "$inst" env create -p "$env_root" -f "$yml" || die "$inst env create 失败"
+        "$inst" env create -y -p "$env_root" -f "$yml" </dev/null || die "$inst env create 失败"
     fi
     _chipseq_sanitize_environments_txt
     echo "$env_root" > "$DATA_DIR/analysis_env"
@@ -163,7 +163,7 @@ runtime_run() {
         export CHIPSEQ_DATA="$DATA_DIR"
         export CHIPSEQ_REPO="$repo"
         export CHIPSEQ_RUNTIME_DIR="${CHIPSEQ_RUNTIME_DIR:-$repo/.chipseq-runtime}"
-        export CHIPSEQ_R_LIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_RUNTIME_DIR/Rlib}"
+        export CHIPSEQ_R_LIB="${CHIPSEQ_R_LIB:-$analysis/lib/R/library}"
         export R_LIBS_USER="${R_LIBS_USER:-$CHIPSEQ_R_LIB}"
         # 后台运行；用 setsid 让它脱离终端
         setsid nohup "$launcher/bin/streamlit" run streamlit_app/app.py \
@@ -268,8 +268,10 @@ _has_local_env_tarball() {
 }
 
 # 幂等补齐 R 包（best-effort）。
-# 约定：分析环境不含 R（environment.yml 故意去掉 r-base），这里直接调 PATH 上的
-# 系统 Rscript；install_R_packages.R 自己会探可写 lib、选 Bioc 版本、txdbmaker 条件安装。
+# R 选取优先级：
+#   1) $CHIPSEQ_CONDA_ENV/bin/Rscript（分析环境自带 r-base，与 workflow 统一）
+#   2) PATH 上的 Rscript（系统 R，兼容旧行为）
+# R 库目标：$CHIPSEQ_R_LIB（默认 = 分析环境的 lib/R/library，workflow 里硬编码读取）
 _install_R_packages_best_effort() {
     if [ "${CHIPSEQ_SKIP_R:-0}" = "1" ]; then
         log "CHIPSEQ_SKIP_R=1 → 跳过 R 包补齐"
@@ -281,18 +283,37 @@ _install_R_packages_best_effort() {
         warn "未找到 $r_script，跳过 R 包补齐"
         return 0
     fi
-    local rscript_bin
-    rscript_bin="$(command -v Rscript 2>/dev/null || true)"
+    _chipseq_export_isolation_env
+    local rscript_bin=""
+    if [ -x "$CHIPSEQ_CONDA_ENV/bin/Rscript" ]; then
+        rscript_bin="$CHIPSEQ_CONDA_ENV/bin/Rscript"
+    else
+        rscript_bin="$(command -v Rscript 2>/dev/null || true)"
+    fi
     if [ -z "$rscript_bin" ]; then
-        warn "未检测到 Rscript（分析环境不含 R、系统也未装）→ 跳过 R 包补齐"
-        warn "可先装系统 R，随后手动：Rscript $r_script"
+        warn "未检测到 Rscript（分析环境含 r-base 或系统 R 都没）→ 跳过 R 包补齐"
+        warn "可先建分析环境或装系统 R，随后手动：Rscript $r_script"
         return 0
     fi
     log "补齐 R 包（幂等；已就位秒过；首次可能几分钟）: $rscript_bin"
-    # 确保项目内 Rlib 存当，并把 R_LIBS_USER 锁到项目内
-    _chipseq_export_isolation_env
-    NONINTERACTIVE=1 "$rscript_bin" "$r_script" \
-        || warn "R 包安装/校验有告警；可稍后手动重试：$rscript_bin $r_script"
+    log "  R 库目标: $CHIPSEQ_R_LIB"
+    # 在 runtime/cache 下执行：
+    #   1) 不在仓库根 → 不加载 .Rprofile 中的 renv 激活（避免“已装但加载失败”的
+    #      假阳性：BiocManager::install 不递归修 enrichplot 类旧包的 ggtree 依赖）
+    #   2) cache 可写且专属，避免基坐环境 /tmp 只读或 TMPDIR 不存在时 fatal
+    local r_workdir="$CHIPSEQ_RUNTIME_DIR/cache"
+    mkdir -p "$r_workdir"
+    (
+        cd "$r_workdir" && \
+        PATH="$CHIPSEQ_CONDA_ENV/bin:$PATH" \
+        TMPDIR="$r_workdir" \
+        CONDA_PREFIX="$CHIPSEQ_CONDA_ENV" \
+        R_LIBS_USER="$CHIPSEQ_R_LIB" \
+        R_LIBS="" \
+        R_PROFILE="" R_PROFILE_USER="" \
+        NONINTERACTIVE=1 \
+        "$rscript_bin" "$r_script"
+    ) || warn "R 包安装/校验有告警；可稍后手动重试：$rscript_bin $r_script"
 }
 
 # 建分析环境 + 补 R 包，不碰启动器（供 bootstrap --full 直接调用）

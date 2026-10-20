@@ -14,7 +14,7 @@
 #   CHIPSEQ_DATA         数据目录（默认 <runtime>/data）
 #   CHIPSEQ_LAUNCH_ENV   启动器 prefix（默认 <runtime>/launch）
 #   CHIPSEQ_CONDA_ENV    分析 prefix （默认 <runtime>/analysis）
-#   CHIPSEQ_R_LIB        R 用户库   （默认 <runtime>/Rlib）
+#   CHIPSEQ_R_LIB        R 包库     （默认 <runtime>/analysis/lib/R/library）
 #   CHIPSEQ_RUNTIME      强制指定运行时（跳过探测）
 #   CHIPSEQ_IMAGE        OCI 镜像地址
 #   CHIPSEQ_SIF_URI      Apptainer .sif 下载地址
@@ -187,10 +187,11 @@ cat <<EOF
  运行时:        $RUNTIME
  项目内目录:    $CHIPSEQ_RUNTIME_DIR
    ├─ launch/    启动器 prefix env
-   ├─ analysis/  分析 prefix env
+   ├─ analysis/  分析 prefix env（含 r-base + compilers）
+   │   └─ lib/R/library/  R 包库（ChIPseeker/clusterProfiler/ggtree…）
    ├─ data/      数据目录（配置/参考/结果）
    ├─ pkgs/      conda 包缓存（隔离）
-   ├─ Rlib/      R 用户库（隔离）
+   ├─ cache/     pip 缓存 + install.packages 临时目录
    └─ bin/       CLI 实体（~/.local/bin 中为软链接）
  CLI 目录:      $BIN_DIR（软链接到 项目内 bin/）
 

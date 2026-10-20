@@ -52,7 +52,10 @@ CHIPSEQ_RUNTIME_DIR="${CHIPSEQ_RUNTIME_DIR:-${CHIPSEQ_REPO:+$CHIPSEQ_REPO/.chips
 CHIPSEQ_DEFAULT_DATA_DIR="${CHIPSEQ_DATA:-$CHIPSEQ_RUNTIME_DIR/data}"
 CHIPSEQ_DEFAULT_LAUNCH_ENV="${CHIPSEQ_LAUNCH_ENV:-$CHIPSEQ_RUNTIME_DIR/launch}"
 CHIPSEQ_DEFAULT_ANALYSIS_ENV="${CHIPSEQ_CONDA_ENV:-$CHIPSEQ_RUNTIME_DIR/analysis}"
-CHIPSEQ_DEFAULT_RLIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_RUNTIME_DIR/Rlib}"
+# R 库默认写到分析环境的 site-library（workflow/scripts/*.R 里 5_1_gsea.R 硬编码
+# 读 `$CONDA_PREFIX/lib/R/library`），写到那里 = 跟 conda env 同命同终。
+# 如果分析环境尚未创建（bootstrap 早期步骤），仍可手动设 CHIPSEQ_R_LIB 到临时位置。
+CHIPSEQ_DEFAULT_RLIB="${CHIPSEQ_R_LIB:-$CHIPSEQ_DEFAULT_ANALYSIS_ENV/lib/R/library}"
 CHIPSEQ_DEFAULT_PKGS="${CHIPSEQ_RUNTIME_DIR}/pkgs"
 CHIPSEQ_DEFAULT_ENVS="${CHIPSEQ_RUNTIME_DIR}/envs"
 CHIPSEQ_DEFAULT_PIP_CACHE="${CHIPSEQ_RUNTIME_DIR}/cache/pip"
@@ -69,7 +72,7 @@ _chipseq_export_isolation_env() {
     export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-$CHIPSEQ_DEFAULT_PKGS}"
     export CONDA_ENVS_DIRS="${CONDA_ENVS_DIRS:-$CHIPSEQ_DEFAULT_ENVS}"
     export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$CHIPSEQ_DEFAULT_PIP_CACHE}"
-    # 若用户 shell 里已设 R_LIBS_USER，尊重之；否则指向项目内 Rlib
+    # 若用户 shell 里已设 R_LIBS_USER，尊重之；否则指向分析环境的 lib/R/library
     export R_LIBS_USER="${R_LIBS_USER:-$CHIPSEQ_R_LIB}"
     mkdir -p "$CHIPSEQ_RUNTIME_DIR" "$CHIPSEQ_DATA" \
              "$CHIPSEQ_DEFAULT_PKGS" "$CHIPSEQ_DEFAULT_ENVS" \
@@ -289,7 +292,7 @@ usage() {
   CHIPSEQ_DATA       数据目录（默认 <runtime>/data）
   CHIPSEQ_CONDA_ENV  分析环境 prefix（默认 <runtime>/analysis）
   CHIPSEQ_LAUNCH_ENV 启动器环境 prefix（默认 <runtime>/launch）
-  CHIPSEQ_R_LIB      R 用户库（默认 <runtime>/Rlib）
+  CHIPSEQ_R_LIB      R 包库（默认 <runtime>/analysis/lib/R/library）
   NO_COLOR           设置后禁用彩色输出
 EOF
 }

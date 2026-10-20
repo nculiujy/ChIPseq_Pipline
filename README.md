@@ -97,11 +97,11 @@ chipseq-app-uninstall --all        = --data + --purge-legacy
 ├── .snakemake/                     Snakemake 内部缓存
 └── .chipseq-runtime/               本应用安装的一切（.gitignore）
     ├── launch/                     启动器 prefix env（python + streamlit + pyyaml）
-    ├── analysis/                   分析 prefix env（生信命令行工具，不含 R）
+    ├── analysis/                   分析 prefix env（生信命令行 + r-base + compilers）
+    │   └── lib/R/library/          R 包库（ChIPseeker/clusterProfiler/ggtree…）
     ├── data/                       用户数据（config / references / annotations / results / logs）
     ├── pkgs/                       conda 包缓存（不写 $CONDA_ROOT/pkgs）
-    ├── Rlib/                       R 用户库（不写 ~/R/...-library）
-    ├── cache/pip/                  pip 缓存
+    ├── cache/                      pip 缓存 + install.packages 临时目录
     └── bin/ lib/ runtime/ assets/  CLI 实体与共享脚本
 ```
 
@@ -110,7 +110,7 @@ HOME 侧只碰两个地方：
 - `~/.local/bin/chipseq-app*` — 7 个软链接（卸载会自动删）
 - `~/.conda/environments.txt` — conda `-p` 会静默追加；本项目在安装/卸载/更新后自动清除相关行
 
-分析环境故意不含 R。`Rscript` 走系统 R（一般管理员装的 R 4.4.x），避免一个精简 `r-base` 遮蔽系统那个装满 ChIPseeker 等包的 R。缺包用系统 `Rscript workflow/env/install_R_packages.R` 补，会装到 `<repo>/.chipseq-runtime/Rlib/`。
+R 包写到 `analysis/lib/R/library/`（workflow 中 `4_2`/`5_1` 都会硬指向这个位置）。`environment.yml` 里显式声明了 `compilers`（gcc/g++/gfortran），install.packages 能直接编译。缺包时手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`。
 
 ## 遇到问题
 
@@ -120,11 +120,11 @@ HOME 侧只碰两个地方：
 | `chipseq-app: command not found` | 上面那个 `export PATH=...` 没生效；执行后 `source ~/.bashrc` |
 | 打不开 `localhost:8501` | `chipseq-app-status` 看进程；SSH 隧道断了重连 |
 | `chipseq-app-update all` 慢 | 经典 conda 求解慢。装 mamba（`conda install -n base -c conda-forge mamba`），或 `conda config --set solver libmamba`，或用离线包（见下） |
-| 分析环境已建但监测显示缺 R 包 | 正常：分析环境不含 R。用系统 `Rscript workflow/env/install_R_packages.R` 补；`txdbmaker` 在 Bioc<3.21 是可选，不装不影响 |
+| 监测页显示缺 R 包 | 手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`；`txdbmaker` 在 Bioc<3.21 不存在，install_R_packages.R 会自动跳过 |
 | 启动后 Xshell 弹自带火狐、延迟高 | 关 Xshell 的 X11 转发；临时绕过 `chipseq-app --no-browser` |
 | 分析中途报错 | `chipseq-app-logs`，或运行管理页看 Snakemake 日志（在 `logs/`） |
 | 从旧版本升级（环境在 `~/.local/chipseq-*` / 数据在 `~/.chipseq-pipeline`） | `bootstrap.sh` 会提示迁移。推荐：`mv ~/.local/chipseq-launch <repo>/.chipseq-runtime/launch && mv ~/.local/chipseq-env <repo>/.chipseq-runtime/analysis && mv ~/.chipseq-pipeline <repo>/.chipseq-runtime/data`；确认新版能跑后再 `chipseq-app-uninstall --purge-legacy` 收尾 |
-| 不想污染 HOME，但项目所在盘空间不够 | 把仓库整个搬到大盘；或临时 `export CHIPSEQ_RUNTIME_DIR=/scratch/$USER/chipseq-runtime` 后再跑 bootstrap，一切写入（env/pkgs/Rlib/data）都会落到该目录 |
+| 不想污染 HOME，但项目所在盘空间不够 | 把仓库整个搬到大盘；或临时 `export CHIPSEQ_RUNTIME_DIR=/scratch/$USER/chipseq-runtime` 后再跑 bootstrap，一切写入（env/pkgs/R 库/data）都会落到该目录 |
 
 其他问题提 GitHub Issues。
 

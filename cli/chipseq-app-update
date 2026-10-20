@@ -34,7 +34,7 @@ case "${1:-}" in
   CHIPSEQ_DATA         数据目录（默认 <runtime>/data）
   CHIPSEQ_CONDA_ENV    分析 prefix（默认 <runtime>/analysis）
   CHIPSEQ_LAUNCH_ENV   启动器 prefix（默认 <runtime>/launch）
-  CHIPSEQ_R_LIB        R 用户库（默认 <runtime>/Rlib）
+  CHIPSEQ_R_LIB        R 包库（默认 <runtime>/analysis/lib/R/library）
   CHIPSEQ_SKIP_R=1     跳过 R 包补齐步骤
   CHIPSEQ_R_ANNO=1     一并预装 TxDb/OrgDb 注释数据库
   CHIPSEQ_CRAN_MIRROR  自定义 CRAN 镜像

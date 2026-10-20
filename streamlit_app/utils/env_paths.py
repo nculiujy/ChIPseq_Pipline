@@ -7,7 +7,8 @@ env_paths.py — 统一的"分析工具定向"层（launcher / analysis 双 pref
     ├ launch/                       CHIPSEQ_LAUNCH_ENV   启动器 prefix env
     ├ analysis/                     CHIPSEQ_CONDA_ENV    分析  prefix env
     ├ data/                         CHIPSEQ_DATA         用户数据根
-    ├ pkgs/  Rlib/  cache/pip/      隔离的包缓存 / R 库 / pip 缓存
+    ├ pkgs/  cache/                隔离的 conda 包缓存 / pip 缓存 + install.packages 临时目录
+    ├ analysis/lib/R/library/      CHIPSEQ_R_LIB      R 包库（与 workflow 中 CONDA_PREFIX/lib/R/library 同步）
     └ bin/ lib/ runtime/ assets/    CLI 实体
 
 标记文件：

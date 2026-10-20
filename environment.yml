@@ -4,10 +4,11 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  # 仅命令行 / 流程工具。R 运行时（含 ChIPseeker、clusterProfiler 等包）刻意不装在这里，
-  # 由系统 / 管理员基线的 R（如 R 4.4.1）提供——避免分析环境里的精简 r-base 生成
-  # chipseq-env/bin/Rscript 而遮蔽系统那个已装满包的 R。详见 README《R 安装指南》。
-  # 同理不装 phantompeakqualtools（它会把 r-base 拖进来）；SPP 仅为 4_1 的可选步骤，缺失会跳过。
+  # 仅命令行 / 流程工具。R 包（ChIPseeker、clusterProfiler 等）不写在这里，
+  # 由 install_R_packages.R 写到 <analysis>/lib/R/library（与 workflow 中
+  # CONDA_PREFIX/lib/R/library 硬指向保持同步）。
+  # r-base 由 macs2/picard 传递引入；为了 install.packages 能编译，额外拉 compilers
+  # 将 x86_64-conda-linux-gnu-{cc,cxx,gfortran} 装到同一个 prefix 里。
   - python=3.9
   - snakemake
   - samtools
@@ -23,3 +24,5 @@ dependencies:
   - poppler
   - pdf2image
   - perl-xml-simple
+  - compilers
+  - make

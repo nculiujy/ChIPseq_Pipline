@@ -3,7 +3,7 @@
 #
 # 默认删除（保留用户数据）：
 #   - <repo>/.chipseq-runtime/ 除 data/ 之外的所有子目录
-#       launch/  analysis/  pkgs/  Rlib/  cache/  bin/  lib/  runtime/  assets/
+#       launch/  analysis/  pkgs/  cache/  bin/  lib/  runtime/  assets/
 #   - ~/.local/bin/chipseq-app*    软链接（或旧版真实文件）
 #   - ~/.conda/environments.txt 中属于本项目的行
 #
