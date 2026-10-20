@@ -25,7 +25,11 @@ import streamlit as st
 # 设计令牌 —— 与 .streamlit/config.toml 的 [theme] 保持一致
 # ---------------------------------------------------------------------------
 THEME_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+/* 故意不用外网字体 @import：CSS 中的 @import 是阻塞渲染的。客户端连不上
+   fonts.googleapis.com（国内 / 受限网络常见，TCP 会长时间挂起而非快速失败）时，
+   排在它后面的整张主题 <style> 迟迟不生效 → 页面长时间一片空白（DOM 有内容但不显）。
+   --ux-sans / --ux-mono 已带系统字体回退，去掉 @import 后自动用本地字体栈，视觉几乎一致
+   且不再依赖外网。若确需 Inter/JetBrains Mono，请 self-host 到 static/ 再用 <link> 异步加载。 */
 
 :root {
   --ux-bg: #F6F7F9;
