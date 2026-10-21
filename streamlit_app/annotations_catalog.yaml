@@ -79,9 +79,9 @@ species:
           filename: "hg38.fa.gz"
           size_mb: 950
         gff:
-          url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/genes/hg38.ncbiRefSeq.gff3.gz"
-          filename: "hg38.ncbiRefSeq.gff3.gz"
-          size_mb: 60
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/genes/hg38.ncbiRefSeq.gtf.gz"
+          filename: "hg38.ncbiRefSeq.gtf.gz"
+          size_mb: 39
 
   # ==================== 小鼠 ====================
   GRCm39:
@@ -108,9 +108,9 @@ species:
           filename: "mm39.fa.gz"
           size_mb: 800
         gff:
-          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm39/bigZips/genes/mm39.ncbiRefSeq.gff3.gz"
-          filename: "mm39.ncbiRefSeq.gff3.gz"
-          size_mb: 55
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm39/bigZips/genes/mm39.ncbiRefSeq.gtf.gz"
+          filename: "mm39.ncbiRefSeq.gtf.gz"
+          size_mb: 29
 
   mm10:
     display_name: "小鼠 Mus musculus (mm10, 旧版)"
@@ -126,9 +126,9 @@ species:
           filename: "mm10.fa.gz"
           size_mb: 800
         gff:
-          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/genes/mm10.ncbiRefSeq.gff3.gz"
-          filename: "mm10.ncbiRefSeq.gff3.gz"
-          size_mb: 50
+          url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/genes/mm10.ncbiRefSeq.gtf.gz"
+          filename: "mm10.ncbiRefSeq.gtf.gz"
+          size_mb: 26
 
   # ==================== 大豆 ====================
   Glycine_max_v4:
@@ -141,13 +141,13 @@ species:
       Ensembl_Plants_61:
         label: "Ensembl Plants Release 61 (2024)"
         fasta:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/glycine_max/dna/Glycine_max.Glycine_max_v4.0.dna.toplevel.fa.gz"
-          filename: "Glycine_max.Glycine_max_v4.0.dna.toplevel.fa.gz"
-          size_mb: 300
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/glycine_max/dna/Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
+          filename: "Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
+          size_mb: 274
         gff:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/glycine_max/Glycine_max.Glycine_max_v4.0.61.gff3.gz"
-          filename: "Glycine_max.Glycine_max_v4.0.61.gff3.gz"
-          size_mb: 40
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/glycine_max/Glycine_max.Glycine_max_v2.1.61.chr.gff3.gz"
+          filename: "Glycine_max.Glycine_max_v2.1.61.chr.gff3.gz"
+          size_mb: 13
 
   # ==================== 玉米 ====================
   Zea_mays_B73v5:

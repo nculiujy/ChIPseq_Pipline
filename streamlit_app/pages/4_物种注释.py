@@ -191,6 +191,40 @@ def render_catalog_tab() -> None:
                     st.error(f"启动失败: {e}")
 
 
+def _render_gff_patch(sid: str, entry: dict) -> None:
+    """只缺注释文件时的补救入口：不重下基因组、不重建索引。"""
+    sources = entry.get("sources") or {}
+    if not sources:
+        return
+    st.markdown("**补下注释文件**")
+    st.caption("只补 GFF/GTF，不重下基因组、不重建索引（human 重建一次要 1 小时）。"
+               "注意选与现有 FASTA **同一来源**的注释，否则染色体名对不上（chr1 vs 1）。")
+    src_ids = list(sources)
+    rec = entry.get("recommended_source")
+    choice = st.selectbox(
+        "注释来源", src_ids,
+        index=src_ids.index(rec) if rec in src_ids else 0,
+        key=f"gffpatch_{sid}",
+    )
+    gff = (sources[choice] or {}).get("gff") or {}
+    gff_url = gff.get("url", "")
+    if not gff_url:
+        st.warning("该下载源没有配置注释地址")
+        return
+    st.code(gff_url, language="text")
+    st.caption(f"约 {gff.get('size_mb', '?')} MB · 保存为 `{gff.get('filename', '')}`")
+    if st.button("补下这个注释文件", key=f"gffpatch_btn_{sid}", type="primary"):
+        spec = _build_spec(sid, entry, choice, sources[choice], 1)
+        spec.gff_only = True
+        try:
+            st_info = am.start_task(spec)
+            st.session_state["active_task"] = st_info["task_id"]
+            st.toast(f"已启动补下任务: {sid}", icon="")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"启动失败: {e}")
+
+
 def _build_spec(sid: str, entry: dict, src_id: str, src: dict, threads: int) -> am.TaskSpec:
     fasta = src.get("fasta") or {}
     gff = src.get("gff") or {}
@@ -463,6 +497,8 @@ def render_existing_tab() -> None:
 
             if status.complete:
                 _render_apply_button(sid, entry, status, scope="exist")
+            elif status.missing == ["gff"]:
+                _render_gff_patch(sid, entry)
 
 
 # ---------- 主布局 ----------

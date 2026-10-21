@@ -31,11 +31,11 @@ from typing import Any, Dict, Optional
 
 STAGES = [
     "init",
+    "download_gff",
     "download_fasta",
     "decompress_fasta",
     "samtools_faidx",
     "bowtie2_build",
-    "download_gff",
     "verify",
     "done",
 ]
@@ -126,6 +126,26 @@ def _download(url: str, dest: Path, sha256_expected: Optional[str] = None,
         except _Aria2Unavailable as e:
             _update(message=f"aria2c 不可用（{e}）→ 回退单连接下载")
     _download_urllib(url, part, dest, sha256_expected, chunk_size)
+
+
+def _http_status(url: str, timeout: float = 20.0) -> int:
+    """取 URL 的 HTTP 状态码（跟随重定向）；拿不到返 0。
+
+    curl 优先的理由同 _remote_size：该网络下 Python 的 TLS 握手会被拦。
+    """
+    curl = shutil.which("curl")
+    if curl:
+        try:
+            out = subprocess.run(
+                [curl, "-sIL", "-o", "/dev/null", "-w", "%{http_code}",
+                 "--max-time", str(int(timeout)), url],
+                capture_output=True, text=True, timeout=timeout + 3,
+            ).stdout.strip()
+            if out.isdigit():
+                return int(out)
+        except Exception:  # noqa: BLE001 —— 探测失败不影响下载
+            pass
+    return 0
 
 
 def _remote_size(url: str, timeout: float = 6.0) -> int:
@@ -422,74 +442,89 @@ def run_task(spec: Dict[str, Any]) -> None:
     fai_final = target_dir / f"{genome_prefix}.fa.fai"
     gff_final = target_dir / spec["gff_filename"]
 
+    gff_only = bool(spec.get("gff_only"))
+
     # ---------- Stage 1: init ----------
     _set_stage("init", message=f"目标目录: {target_dir}", progress=0.0)
+    if not gff_only:
+        # 先探两个源：注释 URL 失效（404）必须在下载 950MB 基因组之前就报出来
+        for label, u in (("FASTA", spec["fasta_url"]), ("注释", spec["gff_url"])):
+            code = _http_status(u)
+            if code in (403, 404, 410):
+                raise RuntimeError(
+                    f"{label}下载源不可用（HTTP {code}）: {u}\n"
+                    f"请换个下载源，或修正 annotations_catalog.yaml 里的地址")
+            if code == 0:
+                _update(message=f"{label}源预检失败（网络/证书），继续尝试下载")
     _check_cancelled()
 
-    # ---------- Stage 2: download_fasta ----------
-    _set_stage("download_fasta", message=f"下载 FASTA: {spec['fasta_url']}")
-    fasta_download = target_dir / spec["fasta_filename"]
-    _download(spec["fasta_url"], fasta_download, spec.get("fasta_sha256"))
-    _check_cancelled()
-
-    # ---------- Stage 3: decompress_fasta ----------
-    _set_stage("decompress_fasta", message="准备 FASTA")
-    if fasta_download.name.endswith(".gz"):
-        if not fasta_final.exists() or fasta_final.stat().st_size == 0:
-            _decompress_gz(fasta_download, fasta_final)
-        else:
-            _update(progress=1.0, message=f"{fasta_final.name} 已存在，跳过解压")
-        # 删掉 .gz 节省空间（保留可选：磁盘紧张时删）
-        if not spec.get("keep_gz", True):
-            fasta_download.unlink(missing_ok=True)
-    else:
-        # 非 gz 直接改名/软链
-        if fasta_download.resolve() != fasta_final.resolve():
-            shutil.copyfile(fasta_download, fasta_final)
-    _check_cancelled()
-
-    # ---------- Stage 4: samtools faidx ----------
-    _set_stage("samtools_faidx", message="建立 FASTA 索引 (.fai)")
-    if fai_final.exists():
-        _update(progress=1.0, message=f"{fai_final.name} 已存在，跳过")
-    else:
-        if shutil.which("samtools"):
-            _run(["samtools", "faidx", str(fasta_final)], "samtools_faidx",
-                 progress_markers=None)
-        else:
-            # 兜底：python 自建 fai（简化实现，仅用于 bowtie2 无需精确）
-            _update(message="samtools 不可用，跳过 faidx（不影响 bowtie2 比对）", progress=1.0)
-    _check_cancelled()
-
-    # ---------- Stage 5: bowtie2_build ----------
-    _set_stage("bowtie2_build", message=f"bowtie2-build (threads={threads})，大基因组可能需要几十分钟")
-    bt2_expected = target_dir / f"{genome_prefix}.1.bt2"
-    if bt2_expected.exists():
-        _update(progress=1.0, message="bowtie2 索引已存在，跳过")
-    else:
-        if not shutil.which("bowtie2-build"):
-            raise RuntimeError("bowtie2-build 命令未找到；请确认 conda 环境已激活")
-        index_prefix_path = str(target_dir / genome_prefix)
-        # bowtie2-build 会打印阶段信息，我们抓关键字更新进度
-        markers = {
-            "Settings": 0.05,
-            "Output will be": 0.10,
-            "Reading": 0.15,
-            "  1/": 0.20, "  2/": 0.35, "  3/": 0.50, "  4/": 0.65,
-            "Building": 0.70,
-            "Done": 0.99,
-        }
-        _run(
-            ["bowtie2-build", "--threads", str(threads), str(fasta_final), index_prefix_path],
-            "bowtie2_build", progress_markers=markers,
-        )
-        _update(progress=1.0, message="bowtie2 索引构建完成")
-    _check_cancelled()
-
-    # ---------- Stage 6: download_gff ----------
+    # ---------- Stage 2: download_gff ----------
+    # 注释文件最小（几十 MB），排在基因组之前下：源失效几秒内就暴露，
+    # 而不是等 bowtie2 把索引建完（人类约 1 小时）才发现缺 GFF。
     _set_stage("download_gff", message=f"下载注释: {spec['gff_url']}")
     _download(spec["gff_url"], gff_final, spec.get("gff_sha256"))
     _check_cancelled()
+
+    if not gff_only:
+        # ---------- Stage 3: download_fasta ----------
+        _set_stage("download_fasta", message=f"下载 FASTA: {spec['fasta_url']}")
+        fasta_download = target_dir / spec["fasta_filename"]
+        _download(spec["fasta_url"], fasta_download, spec.get("fasta_sha256"))
+        _check_cancelled()
+
+        # ---------- Stage 4: decompress_fasta ----------
+        _set_stage("decompress_fasta", message="准备 FASTA")
+        if fasta_download.name.endswith(".gz"):
+            if not fasta_final.exists() or fasta_final.stat().st_size == 0:
+                _decompress_gz(fasta_download, fasta_final)
+            else:
+                _update(progress=1.0, message=f"{fasta_final.name} 已存在，跳过解压")
+            # 删掉 .gz 节省空间（保留可选：磁盘紧张时删）
+            if not spec.get("keep_gz", True):
+                fasta_download.unlink(missing_ok=True)
+        else:
+            # 非 gz 直接改名/软链
+            if fasta_download.resolve() != fasta_final.resolve():
+                shutil.copyfile(fasta_download, fasta_final)
+        _check_cancelled()
+
+        # ---------- Stage 5: samtools faidx ----------
+        _set_stage("samtools_faidx", message="建立 FASTA 索引 (.fai)")
+        if fai_final.exists():
+            _update(progress=1.0, message=f"{fai_final.name} 已存在，跳过")
+        else:
+            if shutil.which("samtools"):
+                _run(["samtools", "faidx", str(fasta_final)], "samtools_faidx",
+                     progress_markers=None)
+            else:
+                # 兜底：python 自建 fai（简化实现，仅用于 bowtie2 无需精确）
+                _update(message="samtools 不可用，跳过 faidx（不影响 bowtie2 比对）", progress=1.0)
+        _check_cancelled()
+
+        # ---------- Stage 6: bowtie2_build ----------
+        _set_stage("bowtie2_build", message=f"bowtie2-build (threads={threads})，大基因组可能需要几十分钟")
+        bt2_expected = target_dir / f"{genome_prefix}.1.bt2"
+        if bt2_expected.exists():
+            _update(progress=1.0, message="bowtie2 索引已存在，跳过")
+        else:
+            if not shutil.which("bowtie2-build"):
+                raise RuntimeError("bowtie2-build 命令未找到；请确认 conda 环境已激活")
+            index_prefix_path = str(target_dir / genome_prefix)
+            # bowtie2-build 会打印阶段信息，我们抓关键字更新进度
+            markers = {
+                "Settings": 0.05,
+                "Output will be": 0.10,
+                "Reading": 0.15,
+                "  1/": 0.20, "  2/": 0.35, "  3/": 0.50, "  4/": 0.65,
+                "Building": 0.70,
+                "Done": 0.99,
+            }
+            _run(
+                ["bowtie2-build", "--threads", str(threads), str(fasta_final), index_prefix_path],
+                "bowtie2_build", progress_markers=markers,
+            )
+            _update(progress=1.0, message="bowtie2 索引构建完成")
+        _check_cancelled()
 
     # ---------- Stage 7: verify ----------
     _set_stage("verify", message="校验产物完整性")

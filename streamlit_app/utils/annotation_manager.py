@@ -63,6 +63,8 @@ class TaskSpec:
     gff_sha256: Optional[str] = None
     bowtie2_threads: int = 4
     keep_gz: bool = True                  # 是否保留 .gz（不占多余空间）
+    # 只补下注释文件（FASTA 和索引已存在时用），不会重下基因组、不重建索引
+    gff_only: bool = False
     # 完成后写回 config.yaml 用（worker 不写，UI 侧调用 apply_to_config 时写）
     default_txdb_pkg: Optional[str] = None
     default_orgdb_pkg: Optional[str] = None
