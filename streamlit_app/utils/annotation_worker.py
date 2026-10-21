@@ -97,14 +97,45 @@ def _human(n: float) -> str:
 
 class _Aria2Unavailable(RuntimeError):
     """aria2c 存在但完全跑不动（0 字节 + 非 0 退出码）→ 回退单连接 urllib。"""
+class _CurlUnavailable(RuntimeError):
+    """curl 存在但完全跑不动（0 字节 + 非 0 退出码）→ 回退单连接 urllib。"""
+
+
+def _find_aria2() -> Optional[str]:
+    """找 aria2c：先看 PATH，再试常见安装位置。
+
+    conda -p 环境里的 aria2 不一定在启动器的 PATH 上（PATH 只是被前置，不是重置），
+    所以额外按 CHIPSEQ_CONDA_ENV / CONDA_PREFIX / 当前解释器前缀去找一遍。
+    """
+    found = shutil.which("aria2c")
+    if found:
+        return found
+    cands = []
+    for env in (os.environ.get("CHIPSEQ_CONDA_ENV"), os.environ.get("CONDA_PREFIX"),
+                sys.prefix, os.path.dirname(os.path.dirname(sys.executable))):
+        if env:
+            cands.append(Path(env) / "bin" / "aria2c")
+    cands += [
+        Path("/usr/bin/aria2c"),
+        Path("/usr/local/bin/aria2c"),
+        Path.home() / "miniconda3" / "bin" / "aria2c",
+        Path.home() / "anaconda3" / "bin" / "aria2c",
+    ]
+    for c in cands:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
 
 
 def _download(url: str, dest: Path, sha256_expected: Optional[str] = None,
-              chunk_size: int = 1024 * 512) -> None:
-    """下载分发：优先 aria2c 多连接分段，缺失/失败则回退单连接 urllib。
+              chunk_size: int = 1024 * 512, attempts: int = 3) -> None:
+    """下载分发：aria2c → curl → urllib，逐级回退。
 
-    跨境外链（Ensembl/NCBI/UCSC）单 TCP 连接受高延迟 RTT 限制，实测约 0.4MB/s；
-    换成 16 连接分段可到 0.7~2.4MB/s（同机同文件多次实测，随网络波动）。
+    为什么要三级：跨境外链（Ensembl/NCBI/UCSC）上，单 TCP 连接受高延迟 RTT 限制
+    （urllib 实测 0.3MB/s），且不少网络还会干扰 Python 的 TLS 握手，让 urllib 直接
+    报 `_ssl.c:999 handshake operation timed out`——而 curl/aria2 用系统 OpenSSL
+    握手正常。同一份 54MB 的 GTF 实测：aria2c 4.8s / curl 6.0s / urllib 174.6s。
+    网络类错误会带 .part 重试 attempts 次（断点续传）。
     dest 是最终文件名；下载中写 dest.with_suffix(dest.suffix + '.part')。
     若最终文件已存在且 sha256 匹配（或未提供 sha256），跳过下载。
     """
@@ -118,14 +149,65 @@ def _download(url: str, dest: Path, sha256_expected: Optional[str] = None,
             return
         dest.unlink()   # 校验失败，重新下载
 
-    aria2 = shutil.which("aria2c")
-    if aria2:
+    aria2 = _find_aria2()
+    curl = shutil.which("curl")
+    last: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
         try:
-            _download_aria2(aria2, url, part, dest, sha256_expected)
+            if aria2:
+                try:
+                    _download_aria2(aria2, url, part, dest, sha256_expected)
+                    return
+                except _Aria2Unavailable as e:
+                    _update(message=f"aria2c 不可用（{e}）→ 改用 curl")
+                    aria2 = None
+            if curl:
+                try:
+                    _download_curl(curl, url, part, dest, sha256_expected)
+                    return
+                except _CurlUnavailable as e:
+                    _update(message=f"curl 不可用（{e}）→ 回退单连接 urllib")
+                    curl = None
+            _download_urllib(url, part, dest, sha256_expected, chunk_size)
             return
-        except _Aria2Unavailable as e:
-            _update(message=f"aria2c 不可用（{e}）→ 回退单连接下载")
-    _download_urllib(url, part, dest, sha256_expected, chunk_size)
+        except Exception as e:      # noqa: BLE001 —— 下面按类型决定要不要重试
+            last = e
+            if not _looks_network(e) or attempt >= attempts:
+                break
+            wait = 5 * attempt
+            _update(message=f"下载中断（{e}），{wait}s 后重试 {attempt}/{attempts - 1}"
+                            f"（.part 保留，断点续传）")
+            time.sleep(wait)
+
+    if last is None:                       # 理论不可达
+        raise RuntimeError(f"下载失败: {url}")
+    if _looks_network(last):
+        raise RuntimeError(f"{last}{_network_hint(url)}") from last
+    raise last
+
+
+def _looks_network(e: Exception) -> bool:
+    """是不是值得重试的网络类错误。取消信号和 sha256 不匹配都不重试。"""
+    msg = str(e)
+    if msg.strip() == "cancelled":
+        return False
+    return any(k in msg for k in (
+        "网络错误", "handshake", "timed out", "timeout", "Connection", "连接",
+        "SSL", "下载中断", "reset", "Reset", "EOF", "Incomplete",
+    ))
+
+
+def _network_hint(url: str) -> str:
+    """给用户看的排障建议，避免只甩一个 TLS 报错出去。"""
+    name = url.rsplit("/", 1)[-1] or "download.gz"
+    return (
+        "\n可能原因与对策：\n"
+        "  1) 该网络会干扰 Python 的 TLS 握手（实测 curl/aria2 能通、urllib 直接超时）"
+        "→ 装 aria2 走多连接：conda install -p <analysis> -c conda-forge aria2\n"
+        "  2) 有代理的话：export https_proxy=http://host:port 后重启应用（aria2/urllib 都认）\n"
+        f"  3) 或手动补下：curl -L -C - -o {name} {url}\n"
+        "     （放到目标目录下即可，重跑任务会自动跳过已存在文件）"
+    )
 
 
 def _http_status(url: str, timeout: float = 20.0) -> int:
@@ -187,6 +269,8 @@ def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
         "--file-allocation=none", "--auto-file-renaming=false",
         "--allow-overwrite=true", "--summary-interval=0",
         "--console-log-level=error",
+        # 握手/连接受阻时自己重试，比外层重试更细粒度
+        "--max-tries=5", "--retry-wait=3", "--timeout=60", "--connect-timeout=30",
         "-d", str(part.parent), "-o", part.name, url,
     ]
     # 大小探测放后台线程：探测超时绝不能挡在下载前面（曾因 HEAD 挂满 30s，
@@ -202,6 +286,25 @@ def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
             downloaded_bytes=part.stat().st_size if part.exists() else 0,
             total_bytes=0, speed_bps=0, eta_sec=0)
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    total_bytes = _watch_download_proc(proc, part, dest, size_box)
+
+    got = part.stat().st_size if part.exists() else 0
+    if proc.returncode != 0:
+        if got == 0:
+            raise _Aria2Unavailable(f"退出码 {proc.returncode}")
+        raise RuntimeError(
+            f"aria2c 下载中断（退出码 {proc.returncode}，已下载 {_human(got)}）: {url}")
+
+    _finalize_download(part, dest, sha256_expected, got, total_bytes)
+
+
+def _watch_download_proc(proc: "subprocess.Popen[Any]", part: Path, dest: Path,
+                         size_box: Dict[str, int]) -> int:
+    """轮询下载子进程写出的 part 大小来刷进度；返回探测到的总大小（可能为 0）。
+
+    子进程退出、出错或被取消（_check_cancelled 抛异常）时都会走到 finally 终止子进程，
+    不会留下孤儿。
+    """
     window: list[tuple[float, int]] = []
     last_ui = 0.0
     total_bytes = 0
@@ -240,14 +343,12 @@ def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+    return total_bytes
 
-    got = part.stat().st_size if part.exists() else 0
-    if proc.returncode != 0:
-        if got == 0:
-            raise _Aria2Unavailable(f"退出码 {proc.returncode}")
-        raise RuntimeError(
-            f"aria2c 下载中断（退出码 {proc.returncode}，已下载 {_human(got)}）: {url}")
 
+def _finalize_download(part: Path, dest: Path, sha256_expected: Optional[str],
+                       got: int, total_bytes: int) -> None:
+    """校验（可选）→ 清 aria2 控制文件 → part 改名成最终文件。"""
     if sha256_expected:
         _update(message=f"校验 sha256: {dest.name}", progress=1.0)
         actual = _sha256(part)
@@ -260,6 +361,45 @@ def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
     os.replace(part, dest)
     _update(downloaded_bytes=got, total_bytes=got or total_bytes, progress=1.0,
             message=f"{dest.name} 下载完成 ({_human(dest.stat().st_size)})")
+
+
+def _download_curl(curl: str, url: str, part: Path, dest: Path,
+                   sha256_expected: Optional[str]) -> None:
+    """curl 单连接下载：aria2 装不上时的二级回退。
+
+    单独存在这条路径的理由——有些网络会干扰 Python 的 TLS 握手（urllib 直接超时，
+    报 _ssl.c:999 handshake operation timed out），而 curl 用系统 OpenSSL 握手正常。
+    速度不如 16 连接的 aria2，但保证「不额外装东西也能把文件下下来」。
+    """
+    cmd = [curl, "-L", "--fail", "-sS", "-o", str(part),
+           "--retry", "5", "--retry-delay", "3", "--connect-timeout", "30",
+           "--speed-time", "180", "--speed-limit", "1024"]
+    if part.exists() and part.stat().st_size > 0:
+        cmd += ["-C", "-"]              # 断点续传
+    cmd.append(url)
+
+    size_box: Dict[str, int] = {}
+
+    def _probe() -> None:
+        size_box["n"] = _remote_size(url)
+
+    threading.Thread(target=_probe, daemon=True, name="remote-size").start()
+
+    _update(message=f"下载 {dest.name}（curl）",
+            downloaded_bytes=part.stat().st_size if part.exists() else 0,
+            total_bytes=0, speed_bps=0, eta_sec=0)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    total_bytes = _watch_download_proc(proc, part, dest, size_box)
+
+    got = part.stat().st_size if part.exists() else 0
+    if proc.returncode != 0:
+        err = (proc.stderr.read() if proc.stderr else "").strip().splitlines()
+        detail = err[-1] if err else f"退出码 {proc.returncode}"
+        if got == 0:
+            raise _CurlUnavailable(detail)
+        raise RuntimeError(f"curl 下载中断（{detail}，已下载 {_human(got)}）: {url}")
+
+    _finalize_download(part, dest, sha256_expected, got, total_bytes)
 
 
 def _download_urllib(url: str, part: Path, dest: Path,
