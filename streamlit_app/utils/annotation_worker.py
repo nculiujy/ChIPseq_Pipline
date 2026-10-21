@@ -17,10 +17,12 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -93,12 +95,18 @@ def _human(n: float) -> str:
     return f"{n:.1f} PB"
 
 
+class _Aria2Unavailable(RuntimeError):
+    """aria2c 存在但完全跑不动（0 字节 + 非 0 退出码）→ 回退单连接 urllib。"""
+
+
 def _download(url: str, dest: Path, sha256_expected: Optional[str] = None,
               chunk_size: int = 1024 * 512) -> None:
-    """
-    带断点续传的流式下载，同时更新全局状态的 progress / speed / eta。
-    dest 是最终文件名；下载中会写到 dest.with_suffix(dest.suffix + '.part')。
-    如果最终文件已存在且 sha256 匹配（或 sha256 为空），跳过下载。
+    """下载分发：优先 aria2c 多连接分段，缺失/失败则回退单连接 urllib。
+
+    跨境外链（Ensembl/NCBI/UCSC）单 TCP 连接受高延迟 RTT 限制，实测约 0.4MB/s；
+    换成 16 连接分段可到 0.7~2.4MB/s（同机同文件多次实测，随网络波动）。
+    dest 是最终文件名；下载中写 dest.with_suffix(dest.suffix + '.part')。
+    若最终文件已存在且 sha256 匹配（或未提供 sha256），跳过下载。
     """
     part = dest.with_suffix(dest.suffix + ".part")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +118,134 @@ def _download(url: str, dest: Path, sha256_expected: Optional[str] = None,
             return
         dest.unlink()   # 校验失败，重新下载
 
+    aria2 = shutil.which("aria2c")
+    if aria2:
+        try:
+            _download_aria2(aria2, url, part, dest, sha256_expected)
+            return
+        except _Aria2Unavailable as e:
+            _update(message=f"aria2c 不可用（{e}）→ 回退单连接下载")
+    _download_urllib(url, part, dest, sha256_expected, chunk_size)
+
+
+def _remote_size(url: str, timeout: float = 6.0) -> int:
+    """探测远端文件大小；拿不到返 0（进度退化为只显示已下载量）。
+
+    优先用 curl：跨国镜像站对 Python 的 TLS 指纹不友好，urllib 的 HEAD 会一路挂到
+    超时（实测 Ensembl/NCBI/UCSC 三个站点均握手失败，curl 约 0.9s 成功）。
+    无论走哪条路都只给 6s，且调用方把它放在后台线程里，不允许拖慢真正要下的数据。
+    """
+    deadline = timeout
+    curl = shutil.which("curl")
+    if curl:
+        try:
+            out = subprocess.run(
+                [curl, "-sIL", "--max-time", str(int(deadline)), url],
+                capture_output=True, text=True, timeout=deadline + 3,
+            ).stdout
+            # 跟随重定向后有多段响应头，取最后一个 Content-Length
+            sizes = re.findall(r"(?im)^content-length:\s*(\d+)\s*$", out)
+            if sizes:
+                return int(sizes[-1])
+        except Exception:  # noqa: BLE001 —— 探测失败不影响下载
+            pass
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        req.add_header("User-Agent", "ChIPseq-Pipeline-AnnotationDownloader/1.0")
+        with urllib.request.urlopen(req, timeout=deadline) as r:
+            n = r.headers.get("Content-Length")
+            return int(n) if n else 0
+    except Exception:      # noqa: BLE001 —— 拿不到大小不影响下载
+        return 0
+
+
+def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
+                    sha256_expected: Optional[str]) -> None:
+    """aria2c 多连接分段下载；-c 断点续传，进度靠轮询 part 大小计算（不解析终端输出）。"""
+    cmd = [
+        aria2, "-c", "-x16", "-s16", "-k1M",
+        "--file-allocation=none", "--auto-file-renaming=false",
+        "--allow-overwrite=true", "--summary-interval=0",
+        "--console-log-level=error",
+        "-d", str(part.parent), "-o", part.name, url,
+    ]
+    # 大小探测放后台线程：探测超时绝不能挡在下载前面（曾因 HEAD 挂满 30s，
+    # 让 9MB 的文件从 7s 变成 48s）。没拿到之前进度就先只显示已下载量。
+    size_box: Dict[str, int] = {}
+
+    def _probe() -> None:
+        size_box["n"] = _remote_size(url)
+
+    threading.Thread(target=_probe, daemon=True, name="remote-size").start()
+
+    _update(message=f"下载 {dest.name}（aria2c 16 连接）",
+            downloaded_bytes=part.stat().st_size if part.exists() else 0,
+            total_bytes=0, speed_bps=0, eta_sec=0)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    window: list[tuple[float, int]] = []
+    last_ui = 0.0
+    total_bytes = 0
+    try:
+        while True:
+            _check_cancelled()
+            now = time.time()
+            if not total_bytes:
+                total_bytes = size_box.get("n", 0)
+            cur = part.stat().st_size if part.exists() else 0
+            window.append((now, cur))
+            while window and window[0][0] < now - 5.0:
+                window.pop(0)
+            if proc.poll() is not None:
+                break
+            if now - last_ui > 0.3:
+                span = window[-1][0] - window[0][0]
+                speed = (window[-1][1] - window[0][1]) / span if span > 0.5 else 0.0
+                prog = (cur / total_bytes) if total_bytes else 0.0
+                eta = int((total_bytes - cur) / speed) if speed > 1 and total_bytes else 0
+                msg = f"下载 {dest.name}: {_human(cur)}"
+                if total_bytes:
+                    msg += f" / {_human(total_bytes)} ({prog*100:.1f}%)"
+                if speed > 1:
+                    msg += f" @ {_human(speed)}/s"
+                if eta > 0:
+                    msg += f" ETA {eta}s"
+                _update(downloaded_bytes=cur, total_bytes=total_bytes,
+                        speed_bps=int(speed), eta_sec=eta, progress=prog, message=msg)
+                last_ui = now
+            time.sleep(0.2)
+    finally:
+        if proc.poll() is None:          # 取消/异常 → 别留孤儿进程
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    got = part.stat().st_size if part.exists() else 0
+    if proc.returncode != 0:
+        if got == 0:
+            raise _Aria2Unavailable(f"退出码 {proc.returncode}")
+        raise RuntimeError(
+            f"aria2c 下载中断（退出码 {proc.returncode}，已下载 {_human(got)}）: {url}")
+
+    if sha256_expected:
+        _update(message=f"校验 sha256: {dest.name}", progress=1.0)
+        actual = _sha256(part)
+        if actual != sha256_expected.lower():
+            part.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"sha256 不匹配 (期望 {sha256_expected[:12]}..., 实际 {actual[:12]}...)")
+
+    Path(str(part) + ".aria2").unlink(missing_ok=True)   # aria2 控制文件
+    os.replace(part, dest)
+    _update(downloaded_bytes=got, total_bytes=got or total_bytes, progress=1.0,
+            message=f"{dest.name} 下载完成 ({_human(dest.stat().st_size)})")
+
+
+def _download_urllib(url: str, part: Path, dest: Path,
+                     sha256_expected: Optional[str],
+                     chunk_size: int = 1024 * 512) -> None:
+    """单连接流式下载（aria2c 缺失时的回退路径，逻辑与旧版一致）。"""
     # 断点续传：part 文件已存在则从末尾继续
     resume_from = part.stat().st_size if part.exists() else 0
 

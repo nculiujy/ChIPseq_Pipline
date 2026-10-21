@@ -21,6 +21,12 @@ dependencies:
   - pdf2image
   - perl-xml-simple
 
+  # ---------- 注释资源下载 ----------
+  # aria2：物种注释（Ensembl/NCBI/UCSC）走多连接分段下载。跨境外链单连接受 RTT 限制
+  # 只有 0.4MB/s 量级，多连接可到 0.7~2.4MB/s；缺失时 annotation_worker 会自动回退
+  # 单连接 urllib，但那条路在部分网络下连 TLS 握手都过不去。
+  - aria2
+
   # ---------- R 运行时 + 流程用到的 R 包 ----------
   # 全部走 bioconda/conda-forge 的预编译二进制：conda env create/update 一条命令装齐，
   # 不需要 gcc/gfortran，也不依赖访问 bioconductor.org 现编源码。

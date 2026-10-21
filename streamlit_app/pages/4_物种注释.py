@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -102,6 +103,13 @@ def render_catalog_tab() -> None:
 
     st.subheader("内置物种")
     st.caption("点击展开选择下载源；下载 + 索引构建全部在本机后台运行，可切到「任务面板」查看进度")
+
+    # 跨境外链单连接受 RTT 限制很慢，有 aria2 才能走多连接分段
+    if shutil.which("aria2c"):
+        st.caption("下载器：aria2c（16 连接分段，支持断点续传）")
+    else:
+        st.caption("下载器：单连接 urllib（未检测到 aria2c，速度慢很多）"
+                   "；装一下可提速：`conda install -p <analysis> -c conda-forge aria2`")
 
     # 已存在的物种优先展示
     all_status = {sid: am.scan_species(ANNO_DIR, sid) for sid in SPECIES_DB}
