@@ -46,11 +46,17 @@ cat(sprintf("[R] 安装目标 lib = %s\n", LIB))
 cat(sprintf("[R] R 版本 = %s.%s\n", R.version$major, R.version$minor))
 
 # ---------- 2. R 版本 → Bioc 版本自动映射 ----------
+# 对应关系以 BiocManager 内置版本表为准（BiocManager:::.version_map）：
+#   R 4.2 → 3.16, 4.3 → 3.18, 4.4 → 3.20, 4.5 → 3.22, 4.6 → 3.23(release)
+# 注意 R 4.6 曾是 3.22，那是错的：BiocManager 会直接报
+#   "Bioconductor version '3.22' requires R version '4.5'; use `version = '3.23'`"
 rv <- getRversion()
-BIOC_VERSION <- if (rv >= "4.6") {
-    "3.22"
+BIOC_VERSION <- if (rv >= "4.7") {
+    NA_character_            # 未知的未来版本 → 交给 BiocManager 自己选 release
+} else if (rv >= "4.6") {
+    "3.23"
 } else if (rv >= "4.5") {
-    "3.21"
+    "3.22"
 } else if (rv >= "4.4") {
     "3.20"
 } else if (rv >= "4.3") {
@@ -73,10 +79,57 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
     install.packages("BiocManager", repos = CRAN_MIRROR, lib = LIB, quiet = TRUE)
 }
 if (!is.na(BIOC_VERSION)) {
-    try(
+    # 不要用 try(..., silent=TRUE) 静默吞掉：锁定失败会退化为「用当前 R 的默认版本」，
+    # 之前的静默版本让人只看到「缺包」而看不到这一步已经报错。
+    tryCatch(
         BiocManager::install(version = BIOC_VERSION, ask = FALSE, update = FALSE),
-        silent = TRUE
+        error = function(e) {
+            cat(sprintf("[R] [WARN] 锁定 Bioc %s 失败：%s\n", BIOC_VERSION,
+                        conditionMessage(e)))
+            cat("[R] [WARN] 回退为 BiocManager 按当前 R 自动选择的版本继续\n")
+        }
     )
+}
+
+# ---------- 3.5 编译工具链自检 ----------
+# conda 版 r-base 的 Makeconf 里 CC = x86_64-conda-linux-gnu-cc。若环境里只有
+# gcc_impl_* 而没有 compilers/gcc 元包，这条命令根本不存在，于是**所有**含
+# C/C++/Fortran 的包都会 "had non-zero exit status"，而日志里只有一堆编译失败，
+# 看不出根因（Bioconductor 的 rtracklayer / GenomicFeatures / ChIPseeker /
+# clusterProfiler 恰好全在这条链上）。这里提前显式告警。
+.cc_of <- function(which = "CC") {
+    out <- tryCatch(
+        system2(file.path(R.home("bin"), "R"), c("CMD", "config", which),
+                stdout = TRUE, stderr = FALSE),
+        error = function(e) character(0)
+    )
+    if (!length(out)) return("")
+    sub("\\s.*$", "", out[1])
+}
+.missing_cc <- character(0)
+# 不只看 PATH：手动跑脚本时 analysis/bin 可能不在 PATH 里，也要看 conda prefix
+.has_cmd <- function(cmd) {
+    if (!nzchar(cmd)) return(TRUE)
+    if (nzchar(Sys.which(cmd))) return(TRUE)
+    cand <- c(
+        file.path(Sys.getenv("CONDA_PREFIX"), "bin", cmd),
+        file.path(R.home("bin"), cmd),
+        file.path(dirname(dirname(R.home())), "bin", cmd)
+    )
+    any(nzchar(cand) & file.exists(cand))
+}
+for (wl in c("CC", "CXX", "FC")) {
+    cc <- .cc_of(wl)
+    if (!.has_cmd(cc)) .missing_cc <- c(.missing_cc, cc)
+}
+if (length(.missing_cc)) {
+    cat("[R] [WARN] R 配置的编译器不存在:", paste(unique(.missing_cc), collapse = ", "), "\n")
+    cat("[R] [WARN] 含 C/C++/Fortran 代码的包会全部安装失败（non-zero exit status）\n")
+    cat("[R] [WARN] 补装编译器后重试（environment.yml 已含 compilers / make）:\n")
+    cat("[R] [WARN]   conda env update -p <analysis prefix> -f <仓库>/environment.yml\n")
+    cat("[R] [WARN]   Rscript workflow/env/install_R_packages.R\n")
+} else if (.has_cmd(.cc_of("CC"))) {
+    cat(sprintf("[R] 编译工具链就绪: %s\n", .cc_of("CC")))
 }
 
 has_pkg <- function(p) requireNamespace(p, quietly = TRUE)
