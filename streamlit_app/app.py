@@ -38,9 +38,10 @@ from utils.ui_theme import (  # noqa: E402
     render_html_list,
 )
 from utils import runtime as rt  # noqa: E402
+from utils.version import APP_FULL_NAME  # noqa: E402
 
 st.set_page_config(
-    page_title="ChIPseq Pipeline",
+    page_title=APP_FULL_NAME,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -75,7 +76,7 @@ except Exception:  # noqa: BLE001
     _foot = None
 render_sidebar("home", running=_run_text, kind="run" if running else "idle", footer=_foot)
 
-page_header("ChIPseq Pipeline 总览", "当前项目是否可运行、进行到哪一步、下一步做什么")
+page_header(f"{APP_FULL_NAME} 总览", "当前项目是否可运行、进行到哪一步、下一步做什么")
 
 # ---------------------------------------------------------------------------
 # 全局状态条（长时间任务的全局反馈，避免重复点击运行）

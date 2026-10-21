@@ -18,7 +18,9 @@ if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
 
-st.set_page_config(page_title="结果预览", layout="wide")
+from utils.version import APP_FULL_NAME  # noqa: E402
+
+st.set_page_config(page_title=f"结果预览 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("preview")
 page_header("结果预览", "浏览分析产出：比对统计、Peak 注释、热图、富集与 Motif")

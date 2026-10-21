@@ -20,6 +20,18 @@ need_cmd() {
 }
 
 # ---------- 全局常量 ----------
+
+# 从唯一版本源（streamlit_app/utils/version.py）读项目完整名，如 ChIPseq_Pipline_v1.0。
+# 读不到时回落 "unknown"，不让 --version 因为文件缺失直接报错。
+chipseq_version() {
+    local f="${CHIPSEQ_REPO:-}/streamlit_app/utils/version.py"
+    [ -f "$f" ] || { echo "unknown"; return; }
+    local name v
+    name=$(sed -n 's/^APP_NAME *= *"\([^"]*\)".*/\1/p' "$f" | head -1)
+    v=$(sed -n 's/^APP_VERSION *= *"\([^"]*\)".*/\1/p' "$f" | head -1)
+    echo "${name:-ChIPseq_Pipline}_v${v:-unknown}"
+}
+
 CHIPSEQ_APP_NAME="chipseq-pipeline"
 CHIPSEQ_CONTAINER_NAME="chipseq-pipeline"
 CHIPSEQ_DEFAULT_PORT=8501
@@ -396,6 +408,7 @@ usage() {
   --runtime NAME     强制指定运行时 (apptainer|podman|docker|conda)
   --no-browser       即使有桌面也不自动打开浏览器
   --pull             启动前强制拉取最新镜像/环境
+  -v, --version      显示项目版本
   -h, --help         显示本帮助
 
 环境变量:

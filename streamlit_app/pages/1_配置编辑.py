@@ -31,7 +31,9 @@ from utils.ui_theme import (  # noqa: E402
 )
 from utils import runtime as rt  # noqa: E402
 
-st.set_page_config(page_title="配置编辑", layout="wide")
+from utils.version import APP_FULL_NAME  # noqa: E402
+
+st.set_page_config(page_title=f"配置编辑 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("config")
 page_header("配置编辑", "可视化编辑 config.yaml 与 metadata.csv")

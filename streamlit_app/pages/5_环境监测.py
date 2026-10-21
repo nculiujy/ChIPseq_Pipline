@@ -41,7 +41,9 @@ from utils.ui_theme import (  # noqa: E402
     status_bar,
 )
 
-st.set_page_config(page_title="环境监测", layout="wide")
+from utils.version import APP_FULL_NAME  # noqa: E402
+
+st.set_page_config(page_title=f"环境监测 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("env")
 page_header(

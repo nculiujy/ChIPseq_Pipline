@@ -28,7 +28,9 @@ if str(_APP_DIR) not in sys.path:
 from utils import annotation_manager as am  # noqa: E402
 from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
 
-st.set_page_config(page_title="物种注释", layout="wide")
+from utils.version import APP_FULL_NAME  # noqa: E402
+
+st.set_page_config(page_title=f"物种注释 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("annotation")
 page_header("物种注释", "从公共数据库下载基因组 FASTA + GFF/GTF，本地构建 bowtie2 索引，一键写入 config.yaml")

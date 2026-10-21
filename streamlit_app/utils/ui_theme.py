@@ -21,6 +21,8 @@ import html as _html
 
 import streamlit as st
 
+from utils.version import APP_NAME, APP_VERSION
+
 # ---------------------------------------------------------------------------
 # 设计令牌 —— 与 .streamlit/config.toml 的 [theme] 保持一致
 # ---------------------------------------------------------------------------
@@ -339,6 +341,9 @@ hr { border: none !important; height: 1px !important; background: var(--ux-borde
   color: #fff; display: inline-flex; align-items: center; justify-content: center;
   font-weight: 800; font-size: .78rem; letter-spacing: -.03em; flex: none; }
 .ux-brand-name { font-weight: 750; font-size: .98rem; color: var(--ux-text); letter-spacing: -.01em; line-height: 1.15; }
+.ux-brand-ver { display: inline-block; margin-left: .36rem; padding: .05rem .3rem;
+  border-radius: 5px; background: var(--ux-accent-soft); color: var(--ux-accent);
+  font-size: .63rem; font-weight: 700; letter-spacing: .01em; vertical-align: middle; }
 .ux-brand-sub { font-size: .72rem; color: var(--ux-subtle); }
 .ux-nav { display: flex; flex-direction: column; gap: 2px; margin: .15rem 0 .4rem 0; }
 .ux-nav-group { font-size: .68rem; font-weight: 700; letter-spacing: .08em; color: var(--ux-subtle);
@@ -702,7 +707,8 @@ def render_sidebar(current: str, running: str | None = None,
     st.sidebar.markdown(
         '<div class="ux-brand">'
         '<span class="ux-brand-logo">ChIP</span>'
-        f'<div><div class="ux-brand-name">ChIPseq Pipeline</div>'
+        f'<div><div class="ux-brand-name">{_html.escape(APP_NAME)}'
+        f'<span class="ux-brand-ver">v{_html.escape(APP_VERSION)}</span></div>'
         f'<div class="ux-brand-sub">{dot}{_html.escape(brand_sub)}</div></div></div>',
         unsafe_allow_html=True,
     )

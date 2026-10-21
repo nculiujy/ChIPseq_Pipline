@@ -1,6 +1,6 @@
-# ChIPseq Pipeline
+# ChIPseq_Pipline v1.0
 
-ChIP-seq / CUT&Tag 数据分析流程。Snakemake + Streamlit，浏览器操作。所有安装产物（conda 环境、包缓存、R 库、数据）都封装在项目仓库内的 `.chipseq-runtime/`，不污染你 HOME 里的 conda / R / pip。
+ChIP-seq / CUT&Tag 数据分析流程。当前版本 **v1.0**（版本号唯一来源：`streamlit_app/utils/version.py`）。Snakemake + Streamlit，浏览器操作。所有安装产物（conda 环境、包缓存、R 库、数据）都封装在项目仓库内的 `.chipseq-runtime/`，不污染你 HOME 里的 conda / R / pip。
 
 ## 安装
 

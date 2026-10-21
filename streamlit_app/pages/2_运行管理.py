@@ -34,7 +34,9 @@ from utils.ui_theme import (  # noqa: E402
 from utils import runtime as rt  # noqa: E402
 from utils import env_paths  # noqa: E402
 
-st.set_page_config(page_title="运行管理", layout="wide")
+from utils.version import APP_FULL_NAME  # noqa: E402
+
+st.set_page_config(page_title=f"运行管理 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("run")
 page_header("运行管理", "监控流程状态、触发运行、查看实时日志")

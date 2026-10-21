@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
         --runtime=*)  RUNTIME_OVERRIDE="${1#*=}"; shift ;;
         --no-browser) NO_BROWSER=1; shift ;;
         --pull)       FORCE_PULL=1; shift ;;
+        -v|--version) echo "$(chipseq_version)"; exit 0 ;;
         -h|--help)    usage; exit 0 ;;
         *)            die "未知参数 '$1'；-h 查看帮助" ;;
     esac
@@ -39,6 +40,7 @@ if [ -n "$RUNTIME_OVERRIDE" ]; then
 else
     RUNTIME=$(read_runtime "$DATA_DIR")
 fi
+log "版本: $(chipseq_version)"
 log "运行时: $RUNTIME"
 log "数据目录: $DATA_DIR"
 
