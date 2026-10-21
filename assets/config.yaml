@@ -1,4 +1,6 @@
-picard_dir: /home/public_software_annotation/software/picard-2.18.2
+# 首次启动时本文件会被复制到 <repo>/config/config.yaml，由用户在「配置编辑」页填写。
+# 各项保留的是默认算法参数，只有与具体机器/实验相关的项留空。
+picard_dir: ''
 threads: 10
 macs2_peak_type: narrow
 macs2_cutoff_type: pvalue
@@ -32,15 +34,8 @@ deeptools:
   bed_source: union_peaks
   custom_bed_files: {}
   gtf_files: {}
-  comparisons:
-  - name: rep1vsrep2
-    groups:
-    - rep1
-    - rep2
-  - name: rep1vsrep3
-    groups:
-    - rep1
-    - rep3
+  # 形如 {name: A_vs_B, groups: [A, B]}，group 需与 metadata.csv 的 group 列一致
+  comparisons: []
   replicate_qc:
     enabled: true
     plot_correlation: true
@@ -60,20 +55,15 @@ gsea:
   max_gs_size: 500
   top_n: 50
   promoter_only: false
-projects:
-- species: TAIR10
-  experiment: 314Com5
-  rawdata_dir: workflow/resources/TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427
-  index_dir: workflow/anno/TAIR10/bowtie2_index_TAIR/TAIR10_Chr
-  txdb: TxDb.Athaliana.BioMart.plantsmart28
-  orgdb: org.At.tair.db
-  modules:
-    1_download: false
-    2_QC: false
-    3_ChIPseq: true
-    4_analyse: true
-    5_gsea: true
-    6_motif: true
+# 在「配置编辑」页添加项目后会自动写入，结构示例：
+# - species: TAIR10
+#   experiment: my_experiment
+#   rawdata_dir: workflow/resources/TAIR10/my_rawdata
+#   index_dir: workflow/anno/TAIR10/bowtie2_index_TAIR10/TAIR10_Chr
+#   txdb: TxDb.Athaliana.BioMart.plantsmart28
+#   orgdb: org.At.tair.db
+#   modules: {1_download: false, 2_QC: true, 3_ChIPseq: true, 4_analyse: true, 5_gsea: true, 6_motif: true}
+projects: []
 consensus_peaks:
   min_overlap: 2
   min_fraction: 0.5

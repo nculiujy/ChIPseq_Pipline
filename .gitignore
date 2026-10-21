@@ -15,17 +15,21 @@ workflow/anno/Bowtie2anno_GRCh38/*
 !workflow/anno/Bowtie2anno_GRCh38/.gitkeep
 
 # ---------- 由 UI（🧬 物种注释页）下载 / 本地构建的注释文件（体积大，不入 git）----------
+# 物种目录下的内容一律按需下载（序列、索引、说明文件），只保留目录自身的 README.md
+workflow/anno/*/
+!workflow/anno/*/README.md
 # bowtie2 索引目录（任意物种下的 bowtie2_index_*/）
 workflow/anno/*/bowtie2_index*/
-# 基因组 / 注释 / faidx 等常见大文件（.gz 已在下面全局忽略）
-workflow/anno/*/*.fa
-workflow/anno/*/*.fna
-workflow/anno/*/*.fai
-workflow/anno/*/*.bt2
-workflow/anno/*/*.gff
-workflow/anno/*/*.gff3
-workflow/anno/*/*.gtf
-workflow/anno/*/*.2bit
+# 基因组 / 注释 / faidx 等常见大文件（任意层级）；.gz 已在下面全局忽略
+workflow/anno/**/*.fa
+workflow/anno/**/*.fasta
+workflow/anno/**/*.fna
+workflow/anno/**/*.fai
+workflow/anno/**/*.bt2
+workflow/anno/**/*.gff
+workflow/anno/**/*.gff3
+workflow/anno/**/*.gtf
+workflow/anno/**/*.2bit
 # 物种注释下载任务的运行时状态与断点续传中间文件
 workflow/anno/tasks/
 workflow/anno/*/*.part
@@ -33,6 +37,11 @@ workflow/anno/*/*.download
 # Glycine_max_v4 目录只保留 README
 workflow/anno/Glycine_max_v4/*
 !workflow/anno/Glycine_max_v4/README.md
+
+# ---------- 用户自己的项目配置 ----------
+# 首次启动时由 assets/ 下的模板生成，每个人的 config 都带本机路径与自己的样本，不入库。
+config/*
+!config/.gitkeep
 
 # 分析结果（可重新生成）
 result/*

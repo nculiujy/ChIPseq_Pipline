@@ -26,6 +26,19 @@ CHIPSEQ_RUNTIME=conda ./bootstrap.sh --full
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
+## 首次使用：配置你自己的项目
+
+仓库里**不含任何项目数据或配置**——没有 `config/`、没有基因组/注释文件、没有原始数据、没有分析结果。这些都由每个使用者自己生成：
+
+1. `./bootstrap.sh` 首次运行会把干净模板（`assets/config.yaml`、`assets/metadata.csv`）复制到 `config/`，此时 `projects` 为空；
+2. 打开面板，在 **⚙️ 配置编辑** 页填写：
+   - **Picard 路径**（`picard_dir`）——填你自己机器上的路径，留空则用环境里的 `picard` 命令
+   - **项目**：物种、实验名、原始数据目录、bowtie2 索引前缀、TxDb/OrgDb
+   - **样本表**（`metadata.csv`）：IP 样本、Input、分组
+3. 基因组与 bowtie2 索引在 **🧬 物种注释** 页按需下载（几百 MB ～ 数 GB，不入 git）。
+
+`config/`、`workflow/anno/`、`workflow/resources/`、`result/`、`logs/` 均在 `.gitignore` 中，你自己的配置和数据不会被误提交。
+
 ## 启动
 
 ```bash
@@ -106,7 +119,7 @@ chipseq-app-uninstall --all        = --data + --purge-legacy
 ```
 <repo>/                             仓库本体
 ├── bootstrap.sh
-├── config/                         开发用默认配置
+├── config/                         你自己的项目配置（首次启动由模板生成，不入 git）
 ├── workflow/anno/                  基因组注释 + bowtie2 索引
 ├── workflow/resources/             FASTQ 原始数据
 ├── result/                         分析结果

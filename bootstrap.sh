@@ -137,6 +137,7 @@ case "$RUNTIME" in
 esac
 
 init_data_dir "$DATA_DIR" "$HERE/assets"
+seed_repo_config "$HERE" "$HERE/assets"
 echo "$RUNTIME" > "$DATA_DIR/runtime"
 
 # conda 后端需要仓库路径（不用 bind mount）

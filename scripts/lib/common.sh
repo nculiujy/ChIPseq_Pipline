@@ -118,6 +118,21 @@ init_data_dir() {
     fi
 }
 
+# seed_repo_config <repo> <assets_dir>
+# App 实际读的是 <repo>/config/（runtime.py 的 BASE_DIR/config），不是数据目录下的那份。
+# 首次使用（刚 clone、还没有 config）时从 assets/ 模板播种；已存在则绝不覆盖。
+seed_repo_config() {
+    local repo="$1" assets="${2:-}"
+    [ -n "$repo" ] && [ -d "$repo" ] || return 0
+    mkdir -p "$repo/config"
+    if [ -n "$assets" ] && [ -d "$assets" ]; then
+        [ -f "$repo/config/config.yaml"  ] || cp "$assets/config.yaml"  "$repo/config/" 2>/dev/null || true
+        [ -f "$repo/config/metadata.csv" ] || cp "$assets/metadata.csv" "$repo/config/" 2>/dev/null || true
+    fi
+    # config/ 内容本身被 .gitignore 忽略，靠它保住空目录
+    touch "$repo/config/.gitkeep"
+}
+
 # ---------- 运行时读取 ----------
 # read_runtime <data_dir> -> echo runtime name (apptainer|podman|docker|conda)
 read_runtime() {
