@@ -4,11 +4,7 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  # 仅命令行 / 流程工具。R 包（ChIPseeker、clusterProfiler 等）不写在这里，
-  # 由 install_R_packages.R 写到 <analysis>/lib/R/library（与 workflow 中
-  # CONDA_PREFIX/lib/R/library 硬指向保持同步）。
-  # r-base 由 macs2/picard 传递引入；为了 install.packages 能编译，额外拉 compilers
-  # 将 x86_64-conda-linux-gnu-{cc,cxx,gfortran} 装到同一个 prefix 里。
+  # ---------- 命令行 / 流程工具 ----------
   - python=3.9
   - snakemake
   - samtools
@@ -24,5 +20,30 @@ dependencies:
   - poppler
   - pdf2image
   - perl-xml-simple
+
+  # ---------- R 运行时 + 流程用到的 R 包 ----------
+  # 全部走 bioconda/conda-forge 的预编译二进制：conda env create/update 一条命令装齐，
+  # 不需要 gcc/gfortran，也不依赖访问 bioconductor.org 现编源码。
+  # 曾经把这些移出去、改成 install_R_packages.R 从源码编译，结果是：缺编译器就一片
+  # "had non-zero exit status"，而该步失败只 warn，bootstrap --full 看着成功实则缺包。
+  # 注意：bioconductor-* 按 r45 构建，求解器会把 r-base 定在 4.5.x（Bioc 3.22）。
+  - r-base
+  - r-optparse
+  - r-yaml
+  - r-rcolorbrewer
+  - r-ggplot2
+  - r-dplyr
+  - r-pheatmap
+  - r-ggrepel
+  - r-readr
+  - r-stringr
+  - bioconductor-chipseeker
+  - bioconductor-rtracklayer
+  - bioconductor-genomicfeatures
+  - bioconductor-genomicranges
+  - bioconductor-clusterprofiler
+  - bioconductor-txdbmaker    # Bioc>=3.21 起 makeTxDbFromGFF 从 GenomicFeatures 拆出
+
+  # ---------- 编译工具链（留给临时 install.packages 用，非必需）----------
   - compilers
   - make

@@ -128,7 +128,9 @@ HOME 侧只碰两个地方：
 - `~/.local/bin/chipseq-app*` — 7 个软链接（卸载会自动删）
 - `~/.conda/environments.txt` — conda `-p` 会静默追加；本项目在安装/卸载/更新后自动清除相关行
 
-R 包写到 `analysis/lib/R/library/`（workflow 中 `4_2`/`5_1` 都会硬指向这个位置）。`environment.yml` 里显式声明了 `compilers`（gcc/g++/gfortran），install.packages 能直接编译。缺包时手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`。
+R 运行时和流程用到的 R 包（ChIPseeker / rtracklayer / GenomicFeatures / GenomicRanges / clusterProfiler / txdbmaker + 9 个 CRAN 包）**都写在 `environment.yml` 里**，走 bioconda/conda-forge 预编译二进制，`conda env create` 一条命令装齐，不需要编译器、也不用现编源码。`install_R_packages.R` 保留作兜底：环境已齐时秒过，只有真缺包时才回退到源码安装。
+
+> 注：`bioconductor-*` 是按 r45 构建的，求解器会把 `r-base` 定在 **4.5.x（Bioc 3.22）**；`environment.yml` 里的 `compilers` 仅留给临时 `install.packages` 使用，非必需。
 
 ## 遇到问题
 
@@ -138,7 +140,7 @@ R 包写到 `analysis/lib/R/library/`（workflow 中 `4_2`/`5_1` 都会硬指向
 | `chipseq-app: command not found` | 上面那个 `export PATH=...` 没生效；执行后 `source ~/.bashrc` |
 | 打不开 `localhost:8501` | 先看启动时打印的「局域网访问」URL，用服务器 IP 而不是 localhost（localhost 永远指你自己本机）；`chipseq-app-status` 看进程；确认没跑 `--private`（那会只绑 127.0.0.1）；服务器在公网则重做 SSH 隧道 |
 | `chipseq-app-update all` 慢 | 经典 conda 求解慢。装 mamba（`conda install -n base -c conda-forge mamba`），或 `conda config --set solver libmamba`，或用离线包（见下） |
-| 监测页显示缺 R 包 | 手动补：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`；`txdbmaker` 在 Bioc<3.21 不存在，install_R_packages.R 会自动跳过 |
+| 监测页显示缺 R 包 | 先确认环境是**最新 `environment.yml`** 建的（`git pull` 后跑 `chipseq-app-update all`，R 包由 conda 一次性装齐）。若仍缺（旧环境/手动改动导致），可只补 R：`bash -c 'source scripts/lib/common.sh && _chipseq_export_isolation_env && source runtime/conda.sh && _install_R_packages_best_effort'`。若日志里出现 `x86_64-conda-linux-gnu-cc: command not found`，是环境缺编译器（源码回退路径），补 `conda env update -p <analysis> -f environment.yml` 即可 |
 | 启动后 Xshell 弹自带火狐、延迟高 | 关 Xshell 的 X11 转发；临时绕过 `chipseq-app --no-browser` |
 | `--tunnel` 报找不到 cloudflared | 按上面 `wget` 下载 `cloudflared-linux-amd64` 到仓库根目录并 `chmod +x`；或 `export CHIPSEQ_CLOUDFLARED=/绝对路径`。云服务器连不上 GitHub 时，本地下好再传上去 |
 | 分析中途报错 | `chipseq-app-logs`，或运行管理页看 Snakemake 日志（在 `logs/`） |
