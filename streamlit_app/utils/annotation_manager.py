@@ -26,6 +26,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils import runtime as _rt
+
 
 # ---------- 常量 ----------
 STAGES: List[str] = [
@@ -283,12 +285,26 @@ class SpeciesStatus:
     size_bytes: int = 0
     complete: bool = False
     missing: List[str] = field(default_factory=list)
+    # species_id 可能是个参考变体（TAIR10__Ensembl_Plants_63）：
+    # species_base 记物种本名，source_id 记它用的是哪个数据库源
+    species_base: str = ""
+    source_id: str = ""
 
 
-def scan_species(anno_root: str | Path, species_id: str) -> SpeciesStatus:
-    """扫描某个物种目录，判断 bowtie2 索引 + FASTA + GFF 是否齐全。"""
+def scan_species(
+    anno_root: str | Path,
+    species_id: str,
+    source_id: str = "",
+    species_base: str = "",
+) -> SpeciesStatus:
+    """扫描某个物种/变体目录，判断 bowtie2 索引 + FASTA + GFF 是否齐全。"""
     root = Path(anno_root) / species_id
-    st = SpeciesStatus(species_id=species_id, anno_root=str(anno_root))
+    st = SpeciesStatus(
+        species_id=species_id,
+        anno_root=str(anno_root),
+        species_base=species_base or _rt.variant_species(species_id),
+        source_id=source_id or _rt.split_variant(species_id)[1],
+    )
     if not root.is_dir():
         st.missing = ["species_dir"]
         return st
@@ -370,6 +386,124 @@ def scan_species(anno_root: str | Path, species_id: str) -> SpeciesStatus:
 
     st.complete = not st.missing
     return st
+
+
+def scan_variant(anno_root: str | Path, species_id: str, source_id: str) -> SpeciesStatus:
+    """扫某个「物种 + 数据库来源」变体。
+
+    同一物种的多个源各建一个目录（TAIR10__Ensembl_Plants_63 /
+    TAIR10__NCBI_RefSeq_TAIR10.1 …），互不覆盖，结果目录也自然分开。
+    """
+    vid = _rt.variant_id(species_id, source_id)
+    return scan_species(anno_root, vid, source_id=source_id, species_base=species_id)
+
+
+def list_legacy_index_dirs(anno_root: str | Path, species_id: str) -> List[str]:
+    """老结构里挤在物种目录下的 bowtie2_index_* 子目录。
+
+    早期版本没有变体概念，同一物种的几套索引都建在 workflow/anno/<物种>/ 下，
+    目录名是手起的。把这些列出来给用户挂到对应源上迁移。
+    """
+    root = Path(anno_root) / species_id
+    if not root.is_dir():
+        return []
+    return sorted(
+        d.name for d in root.iterdir()
+        if d.is_dir() and d.name.lower().startswith("bowtie2")
+    )
+
+
+# 目录名关键词 → 源 ID 关键词。只是预选，用户可改：手起的目录名不可能全对得上。
+_LEGACY_SOURCE_HINTS = (
+    (("ensembl",), ("ensembl",)),
+    (("refseq", "ncbi_ref"), ("refseq",)),
+    (("genbank", "gca"), ("genbank",)),
+    (("ucsc", "hg", "mm"), ("ucsc",)),
+    (("legume", "soybase", "wm82"), ("legumeinfo",)),
+)
+
+
+def guess_source_for_dir(sources: Dict[str, Any], dir_name: str) -> str:
+    """老索引目录名 → catalog 源 ID 的模糊匹配，对不上返回空串。"""
+    low = str(dir_name or "").lower()
+    if not low or not sources:
+        return ""
+    # 1. 目录名里直接出现源 ID
+    for src_id in sources:
+        if src_id.lower() in low:
+            return src_id
+    # 2. 靠关键词猜
+    for dir_needles, src_needles in _LEGACY_SOURCE_HINTS:
+        if not any(n in low for n in dir_needles):
+            continue
+        for src_id in sources:
+            if any(n in src_id.lower() for n in src_needles):
+                return src_id
+    return ""
+
+
+def migrate_legacy_index(
+    anno_root: str | Path, species_id: str, legacy_dir: str, source_id: str
+) -> Dict[str, str]:
+    """把老的 workflow/anno/<物种>/<索引目录> 搬到变体目录下。
+
+    只移动位置，不改名里面任何文件：老目录的索引前缀千奇百怪（TAIR10_Chr、
+    TAIR10.1 …），但 scan_species 是从 *.1.bt2 反推前缀的，搬过去照样认得出来。
+    也不复制：索引动辄几十 GB，搬比拷快。
+    """
+    root = Path(anno_root)
+    src = root / species_id / legacy_dir
+    if not src.is_dir():
+        raise FileNotFoundError(f"源目录不存在: {src}")
+    # 没有来源就没法拼变体 ID，目标会落回源目录内部，到时候 move 自己搬自己
+    if not str(source_id or "").strip():
+        raise ValueError("必须指定数据库来源")
+
+    vid = _rt.variant_id(species_id, source_id)
+    dst_root = root / vid
+    dst = dst_root / f"bowtie2_index_{vid}"
+    if dst.exists():
+        raise FileExistsError(f"目标已存在，不覆盖: {dst}")
+
+    dst_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+
+    # 老物种目录搬空后删掉，否则「已配置」里会挂着一个空壳物种
+    legacy_root = root / species_id
+    try:
+        if legacy_root.is_dir() and not any(legacy_root.iterdir()):
+            legacy_root.rmdir()
+    except OSError:
+        pass
+
+    return {"variant_id": vid, "source_id": source_id, "from": str(src), "to": str(dst)}
+
+
+def repoint_index_dir(config_path: str | Path, old_sub: str, new_sub: str) -> List[str]:
+    """把 config.yaml 里 index_dir 含 old_sub 的项目改写成 new_sub。
+
+    索引搬家后不同步改 config，项目就会指向一个不存在的路径，跑到 3_ChIPseq 才报错。
+    返回被改到的项目（物种/实验），供 UI 提示。
+    """
+    import yaml  # 延迟导入
+
+    cfg_path = Path(config_path)
+    if not cfg_path.is_file():
+        return []
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    changed: List[str] = []
+    for p in cfg.get("projects") or []:
+        idx = str(p.get("index_dir") or "")
+        if old_sub and old_sub in idx:
+            p["index_dir"] = idx.replace(old_sub, new_sub)
+            changed.append(f"{p.get('species')}/{p.get('experiment')}")
+
+    if changed:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return changed
 
 
 def human_size(n: int | float) -> str:

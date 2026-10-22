@@ -91,6 +91,36 @@ def is_safe_name(name: str) -> bool:
     return bool(name) and sanitize_name(name) == name
 
 
+# ---------- 参考变体（物种 + 数据库来源 + 版本） ----------
+# 同一物种可以并存多套参考：拟南芥的 Ensembl / RefSeq / GenBank 三份，index 与
+# 注释各不相同，seqid 体系互不兼容。用 `<物种>__<源>` 把它们分开，这个 ID 会直接
+# 进 result 与 logs 的目录名，跑完一眼能看出结果是用哪个库哪一版做的。
+#
+# 约定：物种名与源 ID 里都不出现双下划线，所以第一个 `__` 永远是分隔符。
+VARIANT_SEP = "__"
+
+
+def variant_id(species: str, source: str) -> str:
+    """拼参考变体 ID，例：TAIR10 + Ensembl_Plants_63 → TAIR10__Ensembl_Plants_63。"""
+    sp = str(species or "").strip()
+    src = str(source or "").strip()
+    return f"{sp}{VARIANT_SEP}{src}" if src else sp
+
+
+def split_variant(vid: str) -> tuple[str, str]:
+    """拆回 (物种, 来源)；不带后缀的老名字返回 (原名, "")。"""
+    s = str(vid or "").strip()
+    if VARIANT_SEP in s:
+        sp, src = s.split(VARIANT_SEP, 1)
+        return sp, src
+    return s, ""
+
+
+def variant_species(vid: str) -> str:
+    """变体对应的物种基础名，用来定位 workflow/resources/<物种>/<实验>/。"""
+    return split_variant(vid)[0]
+
+
 # 原始数据目录里留一张便签：空目录在文件管理器里看不出用途，
 # 有了它用户就知道 fastq 往哪放、放完下一步该去哪个页面。
 _RESOURCES_NOTE = """\
@@ -115,10 +145,18 @@ _RESOURCES_NOTE = """\
 """
 
 
-def project_dirs(species: str, experiment: str) -> dict[str, Path]:
-    """一个项目会用到的三个目录：原始数据 / 结果 / 日志。"""
+def project_dirs(
+    species: str, experiment: str, base_species: str = ""
+) -> dict[str, Path]:
+    """一个项目会用到的三个目录：原始数据 / 结果 / 日志。
+
+    species 可能是「物种__来源」的参考变体（TAIR10__Ensembl_Plants_63）：
+    结果与日志按变体分开，原始数据仍按物种走——同一批 fastq 换套注释重跑时
+    不用再复制一份几百 GB 的数据。base_species 留空则三处全用 species。
+    """
+    raw_sp = base_species or species
     return {
-        "rawdata": RESOURCES_DIR / species / experiment,
+        "rawdata": RESOURCES_DIR / raw_sp / experiment,
         "result": RESULT_DIR / species / experiment,
         "logs": LOGS_DIR / species / experiment,
     }
@@ -133,7 +171,10 @@ def _rel_path(p: Path) -> str:
 
 
 def ensure_project_dirs(
-    species: str, experiment: str, rawdata_dir: str = ""
+    species: str,
+    experiment: str,
+    rawdata_dir: str = "",
+    base_species: str = "",
 ) -> dict[str, object]:
     """按 species/experiment 预建原始数据、结果、日志目录。
 
@@ -141,6 +182,9 @@ def ensure_project_dirs(
     直接拖进去；显式给了别的路径（比如数据在另一块盘）就只建那一处，
     不再多建一个空目录。物种层与实验层两级都建：同一物种跑第二个实验时
     两份原始数据互不干扰。
+
+    species 若是「物种__来源」的参考变体，base_species 传物种基础名：
+    原始数据落在物种目录下（多套注释共用一份 fastq），结果和日志按变体分开。
 
     返回 {"dirs": {key: 路径}, "created": [...], "existed": [...]}，
     其中 created/existed 是相对仓库根的路径，供 UI 直接展示。
@@ -150,8 +194,9 @@ def ensure_project_dirs(
     if not sp or not exp:
         raise ValueError("物种名与实验名都不能为空")
 
+    raw_sp = sanitize_name(base_species) or variant_species(sp) or sp
     custom_raw = (rawdata_dir or "").strip()
-    dirs = project_dirs(sp, exp)
+    dirs = project_dirs(sp, exp, raw_sp)
     if custom_raw:
         p = Path(custom_raw)
         dirs["rawdata"] = p if p.is_absolute() else BASE_DIR / p
@@ -170,7 +215,7 @@ def ensure_project_dirs(
     if not custom_raw and dirs["rawdata"].is_dir():
         note = dirs["rawdata"] / "README.txt"
         if not note.exists():
-            note.write_text(_RESOURCES_NOTE.format(species=sp, experiment=exp), encoding="utf-8")
+            note.write_text(_RESOURCES_NOTE.format(species=raw_sp, experiment=exp), encoding="utf-8")
 
     return {
         "dirs": {k: _rel_path(v) for k, v in dirs.items()},

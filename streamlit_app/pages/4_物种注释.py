@@ -66,7 +66,8 @@ def render_header() -> None:
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     c1.metric("注释目录", str(ANNO_DIR).replace(str(BASE_DIR) + "/", ""))
     c2.metric("可用空间", f"{total_gb:.1f} GB")
-    c3.metric("Catalog 物种", len(SPECIES_DB))
+    n_sources = sum(len((e.get("sources") or {})) for e in SPECIES_DB.values())
+    c3.metric("Catalog", f"{len(SPECIES_DB)} 物种", f"{n_sources} 个参考变体", delta_color="off")
 
     missing = [k for k, v in deps.items() if not v]
     with c4:
@@ -99,13 +100,159 @@ def species_badge(status: am.SpeciesStatus) -> tuple[str, str]:
     return ("不完整", "error")
 
 
+def _render_legacy_merge(sid: str, entry: dict) -> None:
+    """把老结构里挤在物种目录下的索引挂到具体来源上。
+
+    早期版本没有变体概念，拟南芥的几套索引都建在 workflow/anno/TAIR10/ 下，
+    目录名手起（bowtie2_index_TAIR / _Ensembl / _ncbi …）。这些索引几十 GB，
+    重下不划算，所以给个入口把它们搬到 workflow/anno/<物种>__<源>/ 下。
+    """
+    legacy = am.list_legacy_index_dirs(ANNO_DIR, sid)
+    sources = entry.get("sources") or {}
+    if not legacy or not sources:
+        return
+
+    with st.container(border=True):
+        st.markdown(f"**旧结构索引 {len(legacy)} 个**（未归入任何来源）")
+        st.caption(
+            "这些目录建在 `workflow/anno/" + sid + "/` 下，没有来源标记，所以无法区分结果。"
+            "选好对应的数据库源后搬过去，搬完就能在下方按来源直接应用；移动不改名、不复制。"
+        )
+        src_ids = list(sources.keys())
+        for d in legacy:
+            guess = am.guess_source_for_dir(sources, d)
+            c1, c2, c3 = st.columns([3, 3, 1])
+            with c1:
+                st.markdown(f"`{d}`")
+                # 目录名里带 tair 但没有对应源的老目录，靠猜必然错，留空让人选
+                if not guess:
+                    st.caption("看不出对应哪个源，请手动选")
+            with c2:
+                target = st.selectbox(
+                    "归到哪个源", src_ids,
+                    index=src_ids.index(guess) if guess in src_ids else 0,
+                    format_func=lambda x, _s=sources: _s[x].get("label", x),
+                    key=f"mig_src_{sid}_{d}",
+                )
+            with c3:
+                if st.button("迁移", key=f"mig_go_{sid}_{d}"):
+                    try:
+                        info = am.migrate_legacy_index(ANNO_DIR, sid, d, target)
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"迁移失败: {e}")
+                    else:
+                        # 旧 index_dir 指向已搬走的目录，不同步改就会到比对阶段才报错
+                        changed = am.repoint_index_dir(
+                            CONFIG_PATH,
+                            f"workflow/anno/{sid}/{d}",
+                            f"workflow/anno/{info['variant_id']}/{Path(info['to']).name}",
+                        )
+                        msg = f"`{d}` → `{info['variant_id']}`"
+                        if changed:
+                            msg += "；已同步更新项目 " + "、".join(f"`{c}`" for c in changed)
+                        st.session_state["_anno_flash"] = msg
+                        st.rerun()
+
+
+def _render_source_block(
+    sid: str, entry: dict, src_id: str, src: dict, status: am.SpeciesStatus
+) -> None:
+    """一个数据库来源 = 一个参考变体，各自一套索引、各自一套结果目录。"""
+    vid = rt.variant_id(sid, src_id)
+    badge, _ = species_badge(status)
+
+    with st.container(border=True):
+        st.markdown(
+            f"**{src.get('label', src_id)}**  ·  `{vid}`  ·  {badge}"
+        )
+
+        if status.exists:
+            if status.bowtie2_dir:
+                st.caption(
+                    f"索引 `{status.bowtie2_dir}/` · 前缀 `{status.index_prefix}` · "
+                    f"{am.human_size(status.size_bytes)}"
+                )
+            if status.fasta_path:
+                st.caption(f"FASTA `{Path(status.fasta_path).name}`")
+            if status.gff_path:
+                st.caption(f"注释 `{Path(status.gff_path).name}`")
+            if status.missing:
+                st.warning(f"缺失: {', '.join(status.missing)}")
+
+        if status.complete:
+            _render_apply_button(vid, entry, status, base_species=sid)
+            # 重建表单默认收起：URL 很长，已经就绪的变体多半只是来应用的
+            if st.checkbox("重建这套索引（会覆盖现有）", key=f"rebuild_{vid}"):
+                _render_download_form(sid, entry, src_id, src, status)
+            return
+
+        # 不完整：补 GFF 能救的就只补注释，不要重下基因组
+        if status.missing == ["gff"]:
+            _render_gff_patch(vid, entry, src_id=src_id)
+            st.divider()
+        _render_download_form(sid, entry, src_id, src, status)
+
+
+def _render_download_form(
+    sid: str, entry: dict, src_id: str, src: dict, status: am.SpeciesStatus
+) -> None:
+    """下载 / 建索引表单：URL、估算大小、线程数、启动按钮。"""
+    vid = rt.variant_id(sid, src_id)
+    fasta = src.get("fasta") or {}
+    gff = src.get("gff") or {}
+    fasta_size = fasta.get("size_mb", 0)
+    gff_size = gff.get("size_mb", 0)
+    genome_mb = entry.get("genome_size_mb") or 0
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**基因组 FASTA**")
+        st.code(fasta.get("url", ""), language="text")
+        st.caption(f"约 {fasta_size} MB · 保存为 `{fasta.get('filename', '')}`")
+    with c2:
+        st.markdown("**注释 GFF/GTF**")
+        st.code(gff.get("url", ""), language="text")
+        st.caption(f"约 {gff_size} MB · 保存为 `{gff.get('filename', '')}`")
+
+    total_mb = fasta_size + gff_size
+    st.info(
+        f"总下载量约 **{total_mb} MB**；bowtie2-build 需额外 **{genome_mb * 3} MB** 磁盘。"
+        "构建耗时与基因组大小成正比：酵母 ~1 分钟，人类 ~30-60 分钟。"
+    )
+
+    threads = st.slider(
+        "bowtie2-build 线程数", 1, min(32, (os.cpu_count() or 4)),
+        value=min(8, os.cpu_count() or 4), key=f"thr_{vid}",
+    )
+
+    # 能走到这里说明上面已经勾过「重建这套索引」，不再叠一层确认
+    label = "重新下载并覆盖" if status.complete else "开始下载并构建索引"
+    if st.button(label, key=f"go_{vid}", type="primary"):
+        spec = _build_spec(vid, entry, src_id, src, threads)
+        try:
+            st_info = am.start_task(spec)
+            st.session_state["active_task"] = st_info["task_id"]
+            st.toast(f"任务已启动: {vid}", icon="")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"启动失败: {e}")
+
+
 def render_catalog_tab() -> None:
     if not SPECIES_DB:
         st.warning(f"catalog 为空或未找到: {CATALOG_PATH}")
         return
 
+    flash = st.session_state.pop("_anno_flash", None)
+    if flash:
+        st.success(flash)
+
     st.subheader("内置物种")
-    st.caption("点击展开选择下载源；下载 + 索引构建全部在本机后台运行，可切到「任务面板」查看进度")
+    st.caption(
+        "同一物种可以并存多套数据库 / 版本，每套各建一份索引。"
+        "应用到 config.yaml 后项目的 species 会写成 `<物种>__<来源>`，"
+        "结果落在 `result/<物种>__<来源>/<实验>/`，一眼能看出用的是哪一套。"
+    )
 
     # 跨境外链单连接受 RTT 限制很慢，有 aria2 才能走多连接分段
     if shutil.which("aria2c"):
@@ -114,104 +261,62 @@ def render_catalog_tab() -> None:
         st.caption("下载器：单连接 urllib（未检测到 aria2c，速度慢很多）"
                    "；装一下可提速：`conda install -p <analysis> -c conda-forge aria2`")
 
-    # 已存在的物种优先展示
-    all_status = {sid: am.scan_species(ANNO_DIR, sid) for sid in SPECIES_DB}
-    order = sorted(SPECIES_DB.keys(), key=lambda s: (all_status[s].complete, s))
+    # 已就绪的物种 / 变体优先展示
+    ready: dict = {}
+    for sid, entry in SPECIES_DB.items():
+        for src_id in (entry.get("sources") or {}):
+            ready[(sid, src_id)] = am.scan_variant(ANNO_DIR, sid, src_id)
+
+    order = sorted(
+        SPECIES_DB.keys(),
+        key=lambda s: (
+            -sum(1 for (sp, _x), stt in ready.items() if sp == s and stt.complete),
+            s,
+        ),
+    )
 
     for sid in order:
         entry = SPECIES_DB[sid]
-        status = all_status[sid]
-        badge, color = species_badge(status)
-        genome_mb = entry.get("genome_size_mb") or 0
         sources = entry.get("sources", {}) or {}
-        recommended = entry.get("recommended_source") or (next(iter(sources)) if sources else "")
+        genome_mb = entry.get("genome_size_mb") or 0
+        n_ready = sum(1 for src_id in sources if ready[(sid, src_id)].complete)
+        head = f"{n_ready}/{len(sources)} 源就绪" if sources else "无下载源"
 
-        header = f"{badge}  **{entry.get('display_name', sid)}**  ·  `{sid}`  ·  ~{genome_mb} MB"
+        header = (
+            f"**{head}**  ·  {entry.get('display_name', sid)}  ·  `{sid}`  ·  ~{genome_mb} MB"
+        )
         with st.expander(header, expanded=False):
-            # 已存在信息
-            if status.exists:
-                st.markdown(f"**目录**: `{ANNO_DIR / sid}`")
-                if status.bowtie2_dir:
-                    st.markdown(f"**索引目录**: `{status.bowtie2_dir}/`  ·  **前缀**: `{status.index_prefix}`  ·  **大小**: {am.human_size(status.size_bytes)}")
-                if status.fasta_path:
-                    st.markdown(f"**FASTA**: `{Path(status.fasta_path).name}`")
-                if status.gff_path:
-                    st.markdown(f"**注释**: `{Path(status.gff_path).name}`")
-                if status.missing:
-                    st.warning(f"缺失: {', '.join(status.missing)}")
-                if status.complete:
-                    _render_apply_button(sid, entry, status)
-                    st.divider()
-
-            # 源选择
+            _render_legacy_merge(sid, entry)
             if not sources:
                 st.info("catalog 中无下载源，请用「自定义物种」标签页手填 URL")
                 continue
-
-            src_ids = list(sources.keys())
-            default_idx = src_ids.index(recommended) if recommended in src_ids else 0
-            src_id = st.selectbox(
-                "下载源",
-                src_ids,
-                index=default_idx,
-                # 默认参数把 sources 绑死到本轮循环：写成裸 lambda 会捕获循环变量，
-                # 等 widget 状态被重新序列化时 sources 已变成最后一个物种的，
-                # 拿本物种的 src_id 去查就 KeyError。
-                format_func=lambda x, _s=sources: f"{_s[x].get('label', x)}  ({x})",
-                key=f"src_{sid}",
-            )
-            src = sources[src_id]
-            fasta_size = (src.get("fasta") or {}).get("size_mb", 0)
-            gff_size = (src.get("gff") or {}).get("size_mb", 0)
-
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**基因组 FASTA**")
-                st.code((src.get("fasta") or {}).get("url", ""), language="text")
-                st.caption(f"约 {fasta_size} MB · 保存为 `{(src.get('fasta') or {}).get('filename', '')}`")
-            with c2:
-                st.markdown("**注释 GFF/GTF**")
-                st.code((src.get("gff") or {}).get("url", ""), language="text")
-                st.caption(f"约 {gff_size} MB · 保存为 `{(src.get('gff') or {}).get('filename', '')}`")
-
-            total_mb = fasta_size + gff_size
-            st.info(f"总下载量约 **{total_mb} MB**；bowtie2-build 需额外 **{genome_mb * 3} MB** 磁盘（索引+中间文件）。构建耗时与基因组大小成正比：酵母 ~1 分钟，人类 ~30-60 分钟。")
-
-            threads = st.slider("bowtie2-build 线程数", 1, min(32, (os.cpu_count() or 4)), value=min(8, os.cpu_count() or 4), key=f"thr_{sid}")
-
-            if status.complete:
-                label = "重新下载并覆盖"
-                confirm = st.checkbox("我确认要覆盖已有索引", key=f"ovr_{sid}")
-            else:
-                label = "开始下载并构建索引"
-                confirm = True
-
-            if st.button(label, key=f"go_{sid}", type="primary", disabled=not confirm):
-                spec = _build_spec(sid, entry, src_id, src, threads)
-                try:
-                    st_info = am.start_task(spec)
-                    st.session_state["active_task"] = st_info["task_id"]
-                    st.toast(f"任务已启动: {sid}", icon="")
-                    st.rerun()
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"启动失败: {e}")
+            for src_id, src in sources.items():
+                _render_source_block(sid, entry, src_id, src, ready[(sid, src_id)])
 
 
-def _render_gff_patch(sid: str, entry: dict) -> None:
-    """只缺注释文件时的补救入口：不重下基因组、不重建索引。"""
+def _render_gff_patch(vid: str, entry: dict, src_id: str = "") -> None:
+    """只缺注释文件时的补救入口：不重下基因组、不重建索引。
+
+    src_id 给定时锁定同一个源（catalog 里每个变体就是单一源）；
+    「已配置」页扫到的不带源标记的老目录才需要手动选。
+    """
     sources = entry.get("sources") or {}
     if not sources:
         return
     st.markdown("**补下注释文件**")
     st.caption("只补 GFF/GTF，不重下基因组、不重建索引（human 重建一次要 1 小时）。"
                "注意选与现有 FASTA **同一来源**的注释，否则染色体名对不上（chr1 vs 1）。")
-    src_ids = list(sources)
-    rec = entry.get("recommended_source")
-    choice = st.selectbox(
-        "注释来源", src_ids,
-        index=src_ids.index(rec) if rec in src_ids else 0,
-        key=f"gffpatch_{sid}",
-    )
+    if src_id and src_id in sources:
+        choice = src_id
+        st.caption(f"沿用本变体的源：`{src_id}`")
+    else:
+        src_ids = list(sources)
+        rec = entry.get("recommended_source")
+        choice = st.selectbox(
+            "注释来源", src_ids,
+            index=src_ids.index(rec) if rec in src_ids else 0,
+            key=f"gffpatch_{vid}",
+        )
     gff = (sources[choice] or {}).get("gff") or {}
     gff_url = gff.get("url", "")
     if not gff_url:
@@ -219,25 +324,26 @@ def _render_gff_patch(sid: str, entry: dict) -> None:
         return
     st.code(gff_url, language="text")
     st.caption(f"约 {gff.get('size_mb', '?')} MB · 保存为 `{gff.get('filename', '')}`")
-    if st.button("补下这个注释文件", key=f"gffpatch_btn_{sid}", type="primary"):
-        spec = _build_spec(sid, entry, choice, sources[choice], 1)
+    if st.button("补下这个注释文件", key=f"gffpatch_btn_{vid}", type="primary"):
+        spec = _build_spec(vid, entry, choice, sources[choice], 1)
         spec.gff_only = True
         try:
             st_info = am.start_task(spec)
             st.session_state["active_task"] = st_info["task_id"]
-            st.toast(f"已启动补下任务: {sid}", icon="")
+            st.toast(f"已启动补下任务: {vid}", icon="")
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"启动失败: {e}")
 
 
-def _build_spec(sid: str, entry: dict, src_id: str, src: dict, threads: int) -> am.TaskSpec:
+def _build_spec(vid: str, entry: dict, src_id: str, src: dict, threads: int) -> am.TaskSpec:
+    """变体 ID 就是下载目录名：worker 建 workflow/anno/<变体>/{bowtie2_index_<变体>}/。"""
     fasta = src.get("fasta") or {}
     gff = src.get("gff") or {}
     return am.TaskSpec(
         task_id=am.new_task_id(),
-        species_id=sid,
-        display_name=entry.get("display_name", sid),
+        species_id=vid,
+        display_name=entry.get("display_name", rt.variant_species(vid)),
         source_id=src_id,
         anno_root=str(ANNO_DIR),
         fasta_url=fasta.get("url", ""),
@@ -254,12 +360,23 @@ def _build_spec(sid: str, entry: dict, src_id: str, src: dict, threads: int) -> 
     )
 
 
-def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope: str = "cat") -> None:
+def _render_apply_button(
+    vid: str,
+    entry: dict,
+    status: am.SpeciesStatus,
+    base_species: str = "",
+    scope: str = "cat",
+) -> None:
     """完整状态下的「应用到 config.yaml」按钮 + 表单。
-    scope 区分不同 tab（cat=物种 catalog / exist=已配置），避免同物种在两处同时出现时 key 冲突。
+
+    vid 是参考变体（TAIR10__Ensembl_Plants_63），会直接写进 config 的 species：
+    结果目录自然分家。base_species 是物种本名，原始数据仍按物种存放。
+    scope 区分不同 tab（cat=物种 catalog / exist=已配置），避免同一变体在两处同时
+    出现时 key 冲突。
     """
-    key_prefix = f"apply_{scope}_{sid}"
-    if st.button(f"应用到 config.yaml ({sid})", key=f"{key_prefix}_btn"):
+    base = base_species or rt.variant_species(vid)
+    key_prefix = f"apply_{scope}_{vid}"
+    if st.button(f"应用到 config.yaml ({vid})", key=f"{key_prefix}_btn"):
         st.session_state[f"{key_prefix}_open"] = True
 
     # 刚写入的项目：把三个目录摆出来。配置完下一步就是往原始数据目录里放 fastq，
@@ -280,28 +397,31 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
     if st.session_state.get(f"{key_prefix}_open"):
         with st.form(f"{key_prefix}_form"):
             experiment = st.text_input(
-                "experiment 名称", value=sid.lower(), key=f"{key_prefix}_exp",
-                help="会拼进 result/<物种>/<实验> 与 logs/<物种>/<实验>；带空格会自动转成下划线",
+                "experiment 名称", value=base.lower(), key=f"{key_prefix}_exp",
+                help=f"会拼进 result/{vid}/<实验> 与 logs/{vid}/<实验>；带空格会自动转成下划线",
             )
             # 表单内改实验名不会触发 rerun，所以这里只给模板不填具体值；
             # 真正建目录一律以提交时的实验名为准。
             rawdata = st.text_input(
                 "rawdata_dir (FASTQ 目录，留空自动创建)",
                 value="",
-                placeholder=f"workflow/resources/{sid}/<实验名>",
+                placeholder=f"workflow/resources/{base}/<实验名>",
                 key=f"{key_prefix}_raw",
-                help="留空则按上面的实验名建 workflow/resources/<物种>/<实验名>/；"
-                     "数据在另一块盘时填绝对路径，那就不再建默认目录",
+                help=f"留空则按上面的实验名建 workflow/resources/{base}/<实验名>/；"
+                     "同一物种的几套参考共用一份 fastq，不用重复拷",
             )
             st.caption(
                 "提交时按上面填的实验名建好："
-                f"`workflow/resources/{sid}/<实验名>/`(放 fastq) · "
-                f"`result/{sid}/<实验名>/` · `logs/{sid}/<实验名>/`"
+                f"`workflow/resources/{base}/<实验名>/`(放 fastq) · "
+                f"`result/{vid}/<实验名>/` · `logs/{vid}/<实验名>/`"
             )
 
             # index_dir：相对项目根
             rel_target = Path(status.bowtie2_dir or "")
-            index_dir_rel = f"workflow/anno/{sid}/{rel_target}/{status.index_prefix}" if status.index_prefix else ""
+            index_dir_rel = (
+                f"workflow/anno/{vid}/{rel_target}/{status.index_prefix}"
+                if status.index_prefix else ""
+            )
             st.text_input("index_dir (相对项目根)", value=index_dir_rel, disabled=True, key=f"{key_prefix}_idx")
 
             # txdb 选择
@@ -329,17 +449,20 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
                     try:
                         # 先把目录建好，再把路径写进 config：rawdata_dir 不再是空字符串，
                         # 用户在配置编辑页能看到数据该放哪，4_1 之前的规则也不用猜。
-                        info = rt.ensure_project_dirs(sid, exp, rawdata.strip())
+                        # 结果/日志按变体分（vid），原始数据仍按物种走（base）。
+                        info = rt.ensure_project_dirs(
+                            vid, exp, rawdata.strip(), base_species=base
+                        )
                         am.apply_to_config(
                             CONFIG_PATH,
-                            species_id=sid,
+                            species_id=vid,
                             experiment=exp,
                             index_dir=index_dir_rel,
                             txdb=txdb_value,
                             orgdb=orgdb.strip(),
                             rawdata_dir=str(info["rawdata_dir"]),
                         )
-                        info["species"] = sid
+                        info["species"] = vid
                         info["experiment"] = exp
                         st.session_state[f"{key_prefix}_done"] = info
                         st.session_state[f"{key_prefix}_open"] = False
@@ -352,11 +475,15 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
 def render_custom_tab() -> None:
     st.subheader("自定义物种")
     st.caption("catalog 里没有的物种，或想用自己服务器上的镜像时填这里")
+    st.info(
+        "同一物种要多套版本时，把来源/版本写进 ID（如 `Solanum_SL4_ensembl`、`Solanum_SL4_ncbi`），"
+        "结果目录会按 ID 自动分开。ID 里不要用双下划线 `__`：那是内置物种「物种 + 来源」的分隔符。"
+    )
 
     with st.form("custom_species_form"):
         c1, c2 = st.columns(2)
         with c1:
-            sid = st.text_input("物种 ID（用作目录名，例: Solanum_lycopersicum_SL4）", placeholder="Species_name", key="cus_sid")
+            sid = st.text_input("物种 ID（用作目录名，例: Solanum_lycopersicum_SL4）", placeholder="Species_name", key="cus_sid", help="会同时作为 workflow/anno/<ID>/ 与 result/<ID>/<实验>/ 的名字；不要包含 `__`")
             display = st.text_input("显示名", placeholder="番茄 Solanum lycopersicum (SL4.0)", key="cus_display")
         with c2:
             genome_mb = st.number_input("基因组大小 (MB, 用于估算)", min_value=1, max_value=200000, value=500, key="cus_genome_mb")
@@ -521,12 +648,19 @@ def render_existing_tab() -> None:
         return
 
     for d in subdirs:
-        sid = d.name
-        status = am.scan_species(ANNO_DIR, sid)
+        vid = d.name
+        base, src_id = rt.split_variant(vid)
+        status = am.scan_species(ANNO_DIR, vid, source_id=src_id, species_base=base)
         badge, _ = species_badge(status)
-        entry = SPECIES_DB.get(sid, {})
-
-        header = f"{badge}  **{entry.get('display_name', sid)}**  ·  `{sid}`  ·  {am.human_size(status.size_bytes)}"
+        entry = SPECIES_DB.get(base, {})
+        # 变体目录名里已经含了源，但源 ID 不好看，catalog 里有 label 就用 label
+        src_label = ((entry.get("sources") or {}).get(src_id) or {}).get("label", src_id)
+        name = entry.get("display_name", base)
+        header = (
+            f"{badge}  **{name}**  ·  `{vid}`"
+            + (f"  ·  {src_label}" if src_id else "")
+            + f"  ·  {am.human_size(status.size_bytes)}"
+        )
         with st.expander(header, expanded=False):
             if status.bowtie2_dir:
                 st.markdown(f"**索引目录**: `{status.bowtie2_dir}/`")
@@ -539,11 +673,16 @@ def render_existing_tab() -> None:
                 st.caption(f"bt2 文件: {', '.join(status.bt2_files)}")
             if status.missing:
                 st.warning(f"缺失: {', '.join(status.missing)}")
+            if not src_id and status.exists:
+                st.caption(
+                    "这个目录名不带数据库来源，所以结果目录也只能叫 `" + vid + "`。"
+                    "想按来源区分的话，到「物种 catalog」里把它迁移到某个源上。"
+                )
 
             if status.complete:
-                _render_apply_button(sid, entry, status, scope="exist")
+                _render_apply_button(vid, entry, status, base_species=base, scope="exist")
             elif status.missing == ["gff"]:
-                _render_gff_patch(sid, entry)
+                _render_gff_patch(vid, entry, src_id=src_id)
 
 
 # ---------- 主布局 ----------

@@ -224,6 +224,15 @@ def get_species_dirs():
     ])
 
 
+def species_label(name):
+    """下拉框展示名：变体目录显示成「物种 · 来源」，让人一眼看出用的是哪套参考。
+
+    值仍然是目录名（TAIR10__Ensembl_Plants_63），只改显示。
+    """
+    sp, src = rt.split_variant(name)
+    return f"{sp} · {src}" if src else name
+
+
 def get_bowtie2_dirs(species):
     """获取指定物种目录下 bowtie2 开头的文件夹"""
     species_dir = os.path.join(ANNO_DIR, species)
@@ -239,14 +248,18 @@ FASTQ_EXTS = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
 
 
 def get_rawdata_candidates(species):
-    """列出 workflow/resources/<species>/ 下可作为 rawdata_dir 的实验目录。
+    """列出 workflow/resources/<物种>/ 下可作为 rawdata_dir 的实验目录。
 
     约定：原始 fastq 直接放在 workflow/resources/<物种>/<实验目录>/ 这一层，
     由用户自行放入（参考 .../TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427/）。
     因此只列一级子目录，并统计本层 fastq 数，用于提示数据是否已就位。
 
+    传进来的是参考变体（TAIR10__Ensembl_Plants_63）时按物种本名找：fastq 是
+    跟物种走的，同一批数据换套注释重跑不该再复制一份。
+
     返回 [(相对仓库根的路径, fastq 数), ...]，按路径排序。
     """
+    species = rt.variant_species(species) or species
     base = os.path.join(RESOURCES_DIR, species)
     if not os.path.isdir(base):
         return []
@@ -796,6 +809,7 @@ with tab2:
                     available_species,
                     index=sp_idx,
                     key=f"sp_{i}",
+                    format_func=species_label,
                 )
 
                 st.text_input(
@@ -931,7 +945,9 @@ with tab2:
     if not available_species_new:
         available_species_new = ["TAIR10", "Glycine_max_v4", "homo", "mouse"]
 
-    new_species = st.selectbox("物种", available_species_new, key="new_sp")
+    new_species = st.selectbox(
+        "物种", available_species_new, key="new_sp", format_func=species_label
+    )
 
     # 新项目：Bowtie2 索引目录选择
     new_bt2_dirs = get_bowtie2_dirs(new_species)
@@ -986,7 +1002,7 @@ with tab2:
     new_rawdata = st.text_input(
         "原始数据目录（可手动修改）",
         key="new_raw_val",
-        placeholder=f"workflow/resources/{new_species}/<实验目录>",
+        placeholder=f"workflow/resources/{rt.variant_species(new_species) or new_species}/<实验目录>",
         help="数据不在项目内时可填绝对路径",
     )
 
