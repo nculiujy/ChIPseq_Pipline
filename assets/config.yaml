@@ -1,6 +1,5 @@
 # 首次启动时本文件会被复制到 <repo>/config/config.yaml，由用户在「配置编辑」页填写。
 # 各项保留的是默认算法参数，只有与具体机器/实验相关的项留空。
-picard_dir: ''
 threads: 10
 macs2_peak_type: narrow
 macs2_cutoff_type: pvalue

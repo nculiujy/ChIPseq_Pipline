@@ -29,7 +29,6 @@ from utils.ui_theme import (  # noqa: E402
     list_row,
     render_html_list,
 )
-from utils import picard  # noqa: E402
 from utils import runtime as rt  # noqa: E402
 
 from utils.version import APP_FULL_NAME  # noqa: E402
@@ -285,21 +284,6 @@ with tab1:
     st.subheader("基本参数")
     col1, col2 = st.columns(2)
     with col1:
-        # 带 key 才能在「获取 Picard」下载完后把新路径回填进输入框
-        if "cfg_picard_dir" not in st.session_state:
-            st.session_state["cfg_picard_dir"] = config.get("picard_dir", "")
-        # 回填必须发生在控件实例化之前：对已渲染的 widget 改 session_state 会报
-        # StreamlitAPIException，所以下载时只存一个 pending，由下一轮 rerun 在这里落实。
-        _pending_picard = st.session_state.pop("_picard_pending_dir", None)
-        if _pending_picard is not None:
-            st.session_state["cfg_picard_dir"] = _pending_picard
-        picard_dir = st.text_input(
-            "Picard 路径",
-            key="cfg_picard_dir",
-            help="填「包含 picard.jar 的目录」（脚本自己拼 picard.jar）；"
-                 "路径为空或 jar 不存在时，回退到环境里的 picard 命令。"
-                 "没有 jar 可直接用下方的「获取 Picard」下载",
-        )
         threads = st.number_input("并行线程数", min_value=1, max_value=64, value=config.get("threads", 8))
     with col2:
         norm_method = st.selectbox(
@@ -307,68 +291,6 @@ with tab1:
             ["BPM", "RPKM", "CPM", "RPGC", "None"],
             index=["BPM", "RPKM", "CPM", "RPGC", "None"].index(config.get("normalization_method", "BPM")),
         )
-
-    with st.expander("获取 Picard（联网下载 picard.jar）", expanded=False):
-        st.caption(
-            "步骤 1 去重需要 Picard：优先用上面 `Picard 路径` 下的 `picard.jar`，"
-            "找不到就回退到环境里的 `picard` 命令（conda 装的那份自带 Java）。"
-            "这里直接从 GitHub Releases 下官方 jar，下完自动把路径填进上面的输入框。"
-        )
-        _jars = picard.scan_jars(picard_dir)
-        if _jars:
-            _kind_tag = {"config": "配置指定", "vendor": "本项目下载", "conda": "环境自带"}
-            st.markdown("**本机已找到的 picard.jar**")
-            for _j in _jars:
-                st.markdown(
-                    f"- `{_j['path']}` · {_j['size_mb']:.1f} MB · "
-                    f"{_kind_tag.get(_j['kind'], _j['kind'])}"
-                )
-        else:
-            st.caption("本机暂未找到可用的 picard.jar，环境里也没有 picard 命令。")
-
-        if not picard.has_java():
-            st.warning(
-                "没检测到 `java` 命令，光有 jar 也跑不起来。"
-                "可先装 JRE，或改用环境自带的 `picard`（conda 那份自带 openjdk）。"
-            )
-
-        _pc1, _pc2, _pc3 = st.columns([2, 1, 1])
-        with _pc1:
-            _pv = st.selectbox(
-                "Picard 版本", list(picard.RELEASES),
-                index=list(picard.RELEASES).index(picard.DEFAULT_VERSION),
-                key="picard_ver",
-                help=f"默认 {picard.DEFAULT_VERSION}，与 environment.yml 里 conda 装的版本对齐",
-            )
-        with _pc2:
-            _dl = st.button("下载", key="picard_dl", use_container_width=True)
-        with _pc3:
-            _rm = st.button("删除已下载", key="picard_rm", use_container_width=True)
-
-        if _dl:
-            _bar = st.progress(0.0, text="准备下载…")
-
-            def _on_progress(frac, cur, total):
-                _bar.progress(min(frac, 1.0),
-                              text=f"{cur / 1048576:.1f} / {total / 1048576:.1f} MB")
-
-            _ok, _msg, _jar = picard.download(_pv, progress_cb=_on_progress)
-            if _ok:
-                st.session_state["_picard_pending_dir"] = str(picard.vendor_dir())
-                st.session_state["_cfg_flash"] = (
-                    "success", f"{_msg}。Picard 路径已填入上方，点底部「保存配置」后生效。")
-                st.rerun()
-            else:
-                _bar.empty()
-                st.error(_msg)
-
-        if _rm:
-            _ok, _msg = picard.remove_local_jar()
-            if _ok:
-                st.session_state["_cfg_flash"] = ("success", _msg)
-                st.rerun()
-            else:
-                st.error(_msg)
 
     st.subheader("MACS2 Peak Calling 参数")
     col1, col2, col3 = st.columns(3)
@@ -610,7 +532,6 @@ with tab1:
     if st.button("保存全局配置", type="primary", key="save_global"):
         # 重新读取最新 config，避免覆盖其他 Tab 的修改
         new_config = load_config()
-        new_config["picard_dir"] = picard_dir
         new_config["threads"] = int(threads)
         new_config["normalization_method"] = norm_method
         new_config["macs2_peak_type"] = peak_type

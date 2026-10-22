@@ -18,7 +18,8 @@ GetOptions(
     "help!"          => \$help,
 );
 
-# picarddir 非必填：留空则用环境里的 picard 命令（conda 装的那份自带 openjdk）
+# picarddir 非必填，也不由 snakemake 传入：环境里的 picard 已经够用（conda 那份自带 java）。
+# 保留这个参数只是给手动调用留个逃生口，例如环境里确实没有 picard 时指到自备 jar。
 die "用法: perl 3_1_ChIPseq.pl --inputdir <dir> --outputdir <dir> --indexdir <dir> [--picarddir <dir>] --threads <num> [--single_end]\n"
     if $help || !$inputdir || !$outputdir || !$indexdir || !$threads;
 

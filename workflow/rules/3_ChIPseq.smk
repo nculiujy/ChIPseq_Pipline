@@ -36,7 +36,6 @@ rule ChIPseq_step1:
     params:
         index_dir = lambda wildcards: [p["index_dir"] for p in config["projects"] if p["species"] == wildcards.species and p["experiment"] == wildcards.experiment][0],
         fqdir = get_fq_input_dir,
-        picard_dir = config.get("picard_dir", ""),
         threads = config["threads"]
     shell:
         """
@@ -44,7 +43,6 @@ rule ChIPseq_step1:
             --inputdir "{params.fqdir}" \
             --outputdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
             --indexdir "{params.index_dir}" \
-            --picarddir "{params.picard_dir}" \
             --threads {params.threads} > "{log}" 2>&1
             
         touch "{output}"

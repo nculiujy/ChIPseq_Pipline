@@ -32,9 +32,6 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 1. `./bootstrap.sh` 首次运行会把干净模板（`assets/config.yaml`、`assets/metadata.csv`）复制到 `config/`，此时 `projects` 为空；
 2. 打开面板，在 **⚙️ 配置编辑** 页填写：
-   - **Picard 路径**（`picard_dir`）——填自己机器上**包含 `picard.jar` 的目录**（脚本自己拼 `picard.jar`）。
-     懒得自己找的话，展开该输入框下方的 **「获取 Picard（联网下载 picard.jar）」**，选版本点下载即可，下完自动回填路径。
-     留空、或填的目录里没有 `picard.jar`、或机器上没有 `java` 时，自动回退到环境里的 `picard` 命令（conda 那份自带 openjdk）。
    - **项目**：物种、实验名、原始数据目录、bowtie2 索引前缀、TxDb/OrgDb
    - **样本表**（`metadata.csv`）：IP 样本、Input、分组
 3. 基因组与 bowtie2 索引在 **🧬 物种注释** 页按需下载（几百 MB ～ 数 GB，不入 git）。
