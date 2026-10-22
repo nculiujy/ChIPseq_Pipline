@@ -59,8 +59,16 @@ else
     if ! "$inst" install -n base -c conda-forge conda-pack -y; then
         die "安装 conda-pack 失败。请手动执行 'pip install conda-pack' 或 '$inst install -n base -c conda-forge conda-pack' 后重试"
     fi
-    command -v conda-pack >/dev/null 2>&1 || die "安装后仍找不到 conda-pack 命令"
-    PACK=(conda-pack)
+    # 刚装到 base 的 conda-pack 不一定在当前 PATH（激活的是别的环境时尤其如此），
+    # 直接到 base 的 bin 下取绝对路径，别依赖 command -v。
+    if command -v conda-pack >/dev/null 2>&1; then
+        PACK=(conda-pack)
+    else
+        base_bin="$(conda info --base 2>/dev/null || true)/bin"
+        [ -x "$base_bin/conda-pack" ] || die "conda-pack 已安装但找不到可执行入口（预期 $base_bin/conda-pack）"
+        log "conda-pack 在 $base_bin（不在 PATH，使用绝对路径）"
+        PACK=("$base_bin/conda-pack")
+    fi
 fi
 
 # ---------- 3. 打包 ----------
