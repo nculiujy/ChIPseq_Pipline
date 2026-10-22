@@ -131,11 +131,41 @@ species:
           size_mb: 26
 
   # ==================== 大豆 ====================
-  # 注意：Ensembl Plants 不收大豆 v4 —— 那边至今只有 Glycine_max_v2.1（Wm82.a2.v1，2014）。
-  # 真正的 v4 是 Wm82.a4.v1（JGI 2019），只发在 SoyBase / LegumeInfo 的 data store 里，
-  # 所以这里走 LegumeInfo 的 gnm4（= a4.v1）基因组 + gnm4.ann1 注释，别再换回 Ensembl。
+  # 版本谱系（gnm 号 = 组装号，对应 SoyBase/JGI 的 a 号）：
+  #   gnm2 = Wm82.a2.v1（JGI 2014）
+  #   gnm4 = Wm82.a4.v1（JGI 2019，PacBio + optical map）—— 长期以来的主流参考
+  #   gnm6 = Wm82.a6.v1（JGI 2024，Wm82-ISU-01 单倍型，Espina et al. Plant J 120:1221）
+  # 这三个版本的 gene ID 与染色体命名互不兼容，所以各占一个物种条目，
+  # 不能当成“同版本的多库副本”塞进同一个 sources 里。
+  #
+  # 未收录 gnm5（Garg et al. 2023）：染色体前缀是 Chr01-Chr20，
+  # 而 gnm2/gnm4/gnm6 都是 Gm01-Gm20（Ensembl 那版是 1-20），
+  # 混进来容易在 ChIPseeker / deeptools 里跟上下游工具打架。
+  #
+  # Ensembl Plants 至今（release-63，2026）只收 gnm2，不收 gnm4/gnm6，
+  # 所以 v2 条目只有一个源。每个源内部的 FASTA 与 GFF 必须同源，
+  # 否则染色体名对不上（Gm01 vs 1 vs NC_016088.x）。
+
+  Glycine_max_v2:
+    display_name: "大豆 Glycine max (Wm82.a2.v1，2014)"
+    genome_size_mb: 970
+    default_txdb_pkg: null          # 无 Bioconductor 官方包，用 GFF 文件
+    default_orgdb_pkg: ""           # 无官方 OrgDb；GSEA 会跳过
+    recommended_source: "Ensembl_Plants_63"
+    sources:
+      Ensembl_Plants_63:
+        label: "Ensembl Plants Release 63 (2026)"
+        fasta:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-63/fasta/glycine_max/dna/Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
+          filename: "Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
+          size_mb: 274
+        gff:
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-63/gff3/glycine_max/Glycine_max.Glycine_max_v2.1.63.gff3.gz"
+          filename: "Glycine_max.Glycine_max_v2.1.63.gff3.gz"
+          size_mb: 13
+
   Glycine_max_v4:
-    display_name: "大豆 Glycine max (Wm82.a4.v1)"
+    display_name: "大豆 Glycine max (Wm82.a4.v1，2019)"
     genome_size_mb: 1025
     default_txdb_pkg: null          # 无 Bioconductor 官方包，用 GFF 文件
     default_orgdb_pkg: ""           # 无官方 OrgDb；GSEA 会跳过
@@ -151,6 +181,34 @@ species:
           url: "https://data.legumeinfo.org/Glycine/max/annotations/Wm82.gnm4.ann1.T8TQ/glyma.Wm82.gnm4.ann1.T8TQ.gene_models_main.gff3.gz"
           filename: "glyma.Wm82.gnm4.ann1.T8TQ.gene_models_main.gff3.gz"
           size_mb: 18
+      NCBI_RefSeq_v4:
+        label: "NCBI RefSeq GCF_000004515.6 (v4.0，RS_2025_01 重注释)"
+        fasta:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/004/515/GCF_000004515.6_Glycine_max_v4.0/GCF_000004515.6_Glycine_max_v4.0_genomic.fna.gz"
+          filename: "GCF_000004515.6_Glycine_max_v4.0_genomic.fna.gz"
+          size_mb: 282
+        gff:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/004/515/GCF_000004515.6_Glycine_max_v4.0/GCF_000004515.6_Glycine_max_v4.0_genomic.gff.gz"
+          filename: "GCF_000004515.6_Glycine_max_v4.0_genomic.gff.gz"
+          size_mb: 18
+
+  Glycine_max_v6:
+    display_name: "大豆 Glycine max (Wm82.a6.v1，2024 单倍型)"
+    genome_size_mb: 1010
+    default_txdb_pkg: null          # 无 Bioconductor 官方包，用 GFF 文件
+    default_orgdb_pkg: ""           # 无官方 OrgDb；GSEA 会跳过
+    recommended_source: "LegumeInfo_Wm82_gnm6"
+    sources:
+      LegumeInfo_Wm82_gnm6:
+        label: "LegumeInfo / SoyBase Wm82.gnm6 (JGI 2024)"
+        fasta:
+          url: "https://data.legumeinfo.org/Glycine/max/genomes/Wm82.gnm6.S97D/glyma.Wm82.gnm6.S97D.genome_main.fna.gz"
+          filename: "glyma.Wm82.gnm6.S97D.genome_main.fna.gz"
+          size_mb: 243
+        gff:
+          url: "https://data.legumeinfo.org/Glycine/max/annotations/Wm82.gnm6.ann1.PKSW/glyma.Wm82.gnm6.ann1.PKSW.gene_models_main.gff3.gz"
+          filename: "glyma.Wm82.gnm6.ann1.PKSW.gene_models_main.gff3.gz"
+          size_mb: 16
 
   # ==================== 玉米 ====================
   Zea_mays_B73v5:

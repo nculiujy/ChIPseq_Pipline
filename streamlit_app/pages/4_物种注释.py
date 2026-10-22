@@ -153,7 +153,10 @@ def render_catalog_tab() -> None:
                 "下载源",
                 src_ids,
                 index=default_idx,
-                format_func=lambda x: f"{sources[x].get('label', x)}  ({x})",
+                # 默认参数把 sources 绑死到本轮循环：写成裸 lambda 会捕获循环变量，
+                # 等 widget 状态被重新序列化时 sources 已变成最后一个物种的，
+                # 拿本物种的 src_id 去查就 KeyError。
+                format_func=lambda x, _s=sources: f"{_s[x].get('label', x)}  ({x})",
                 key=f"src_{sid}",
             )
             src = sources[src_id]
