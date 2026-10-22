@@ -62,7 +62,8 @@ gsea:
 #   index_dir: workflow/anno/TAIR10/bowtie2_index_TAIR10/TAIR10_Chr
 #   txdb: TxDb.Athaliana.BioMart.plantsmart28
 #   orgdb: org.At.tair.db
-#   modules: {1_download: false, 2_QC: true, 3_ChIPseq: true, 4_analyse: true, 5_gsea: true, 6_motif: true}
+#   modules: {1_download: false, 2_QC: true, 3_ChIPseq: true, 4_analyse: true, 5_gsea: true, 6_motif: false}
+#   （6_motif 需要 MEME suite；它未随环境安装，确定要做 motif 分析时再加，见「环境监测」页说明）
 projects: []
 consensus_peaks:
   min_overlap: 2

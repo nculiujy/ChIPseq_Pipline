@@ -118,16 +118,20 @@ _groups: dict[str, list] = {}
 for row in report["tools"]:
     _groups.setdefault(row["group"], []).append(row)
 for gname, rows in _groups.items():
-    st.markdown(f"**{gname}**")
+    _opt = any(x.get("optional") for x in rows)
+    st.markdown(f"**{gname}**" + ("（可选，未装不影响主流程）" if _opt else ""))
     render_html_list([
         list_row(
             main=name,
             sub=(f"v{version}" if version else ("已装（版本未知）" if present else "未找到"))
                 + (f" · {path}" if path else ""),
-            right_html=pill("就位" if present else "缺失", "ok" if present else "err"),
+            right_html=(pill("就位", "ok") if present
+                        else pill("可选·未装", "idle") if optional
+                        else pill("缺失", "err")),
         )
-        for name, present, version, path in (
-            (x["name"], x["present"], x["version"], x["path"]) for x in rows
+        for name, present, version, path, optional in (
+            (x["name"], x["present"], x["version"], x["path"], x.get("optional"))
+            for x in rows
         )
     ])
 
@@ -181,3 +185,11 @@ if not report["ok"]:
     )
 else:
     st.success("所有核心命令与 R 包均已就位，可直接在「运行管理」页启动分析流程。")
+    if report.get("optional_tools_missing"):
+        st.info(
+            "可选工具未安装：" + ", ".join(report["optional_tools_missing"]) + "\n\n"
+            "它们只服务于 motif 分析（6_motif 模块），未启用该模块时不影响流程。需要时单独安装：\n\n"
+            f"`mamba install -p {meta['analysis_prefix']} -y -c bioconda meme`\n\n"
+            "注意：MEME suite 把 perl 钉在 5.32.1，与 r-base 4.6 冲突，可能连带降级 r-base，"
+            "建议确定要做 motif 后再装。"
+        )

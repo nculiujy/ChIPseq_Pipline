@@ -59,6 +59,12 @@ REQUIRED_TOOLS: List[tuple[str, List[tuple[str, List[str]]]]] = [
     ]),
 ]
 
+# 可选工具组：缺失**不**判「不满足」（与 OPTIONAL_R_BIOCG 同一套口径）。
+# MEME suite 的 meme 包把 perl 钉在 5.32.1，与 conda-forge 的 r-base 4.6 冲突，
+# 装它会连累 r-base 及约 10 个包降级，故不放进 environment.yml，按需单独装；
+# 只有启用 6_motif 模块时才需要。
+OPTIONAL_TOOL_GROUPS = {"motif (MEME suite)"}
+
 # R 必需包（CRAN）
 REQUIRED_R_CRAN: List[str] = [
     "optparse", "yaml", "RColorBrewer", "ggplot2", "dplyr",
@@ -118,6 +124,7 @@ def check_tools() -> List[Dict]:
             rows.append({
                 "group": group, "name": name, "present": present,
                 "path": path, "version": version,
+                "optional": group in OPTIONAL_TOOL_GROUPS,
             })
     return rows
 
@@ -220,7 +227,10 @@ def check_environment() -> Dict:
     tools = check_tools()
     r = check_r()
 
-    missing_tools = [t["name"] for t in tools if not t["present"]]
+    missing_tools = [t["name"] for t in tools
+                     if not t["present"] and not t.get("optional")]
+    optional_tools_missing = [t["name"] for t in tools
+                              if not t["present"] and t.get("optional")]
     missing_r = [p["name"] for p in r["packages"]
                  if not p["present"] and not p.get("optional")]
 
@@ -238,6 +248,7 @@ def check_environment() -> Dict:
         "tools": tools,
         "r": r,
         "missing_tools": missing_tools,
+        "optional_tools_missing": optional_tools_missing,
         "missing_r": missing_r,
         "ok": not missing_tools and r["available"] and not missing_r,
     }
