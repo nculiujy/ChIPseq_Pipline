@@ -513,12 +513,29 @@ except Exception:  # noqa: BLE001
     _cfg_mtime = "未知"
 
 _proj_options = [f"{p['species']} / {p['experiment']}" for p in projects]
-selected_idx = st.selectbox(
-    "选择要运行的管线（单管线模式，一次仅运行一个项目）",
-    range(len(projects)),
-    format_func=lambda i: _proj_options[i],
-    key="run_project_selector",
-) if projects else None
+
+# 选择区可以收起，把屏幕让给「运行前确认摘要」和实时日志。
+# 收起时 selectbox 不再渲染，而 widget 一旦不渲染 Streamlit 会清掉它的 state，
+# 所以另存一份到普通 key（run_selected_idx）里兜住当前选择。
+_panel_collapsed = st.session_state.get("run_panel_collapsed", False)
+
+if projects and _panel_collapsed:
+    selected_idx = st.session_state.get("run_selected_idx", 0)
+else:
+    selected_idx = st.selectbox(
+        "选择要运行的管线（单管线模式，一次仅运行一个项目）",
+        range(len(projects)),
+        format_func=lambda i: _proj_options[i],
+        key="run_project_selector",
+    ) if projects else None
+    if selected_idx is not None:
+        st.session_state["run_selected_idx"] = selected_idx
+        _spacer, _pick = st.columns([6, 1])
+        with _pick:
+            if st.button("收起 ▲", key="run_panel_collapse", use_container_width=True,
+                         help="收起选择区，把屏幕让给确认摘要和实时日志"):
+                st.session_state.run_panel_collapsed = True
+                st.rerun()
 
 if selected_idx is None:
     st.warning("config.yaml 中没有任何项目，请先在「配置编辑 → 项目管理」中添加。")
@@ -531,24 +548,37 @@ _other_projects = [f"{p['species']} / {p['experiment']}" for i, p in enumerate(p
 
 scope_title = "本次运行范围：" + _proj_options[selected_idx] + (
     f"（{len(_sel_enabled)} 个启用模块 / {len(_sel_targets)} 个目标）" if _sel_enabled else "（无启用模块）")
-section_title(scope_title)
-_scope_rows = [
-    list_row(
-        main=f"└ {rt.MODULE_LABELS.get(m, m)}（{m}）",
-        sub_html=code_html("、".join(t.format(s=_p_s, e=_p_e).split("/")[-1] for t in MODULE_TARGETS[m]),
-                           title="、".join(t.format(s=_p_s, e=_p_e) for t in MODULE_TARGETS[m])),
-    )
-    for m in _sel_enabled
-    for _p_s, _p_e in [(selected_proj["species"], selected_proj["experiment"])]
-]
-if _scope_rows:
-    render_html_list(_scope_rows)
+
+if _panel_collapsed:
+    # 收起态：只留一行摘要 + 展开按钮
+    _c_sum, _c_reopen = st.columns([6, 1])
+    with _c_sum:
+        st.markdown(f"**当前项目**：`{_proj_options[selected_idx]}` · "
+                    f"{len(_sel_enabled)} 个启用模块 / {len(_sel_targets)} 个目标")
+    with _c_reopen:
+        if st.button("更换 ▼", key="run_panel_expand", use_container_width=True,
+                     help="展开选择区，重新选择要运行的项目"):
+            st.session_state.run_panel_collapsed = False
+            st.rerun()
 else:
-    st.caption("该项目未启用任何模块")
-if _other_projects:
-    st.caption("不会被触发：" + "、".join(f"`{p}`" for p in _other_projects))
-st.caption(f"实际目标文件：`{' '.join(_sel_targets)}`" if len(_sel_targets) <= 6 else
-           f"共 {len(_sel_targets)} 个目标文件（Snakemake 仅构建该项目的 DAG）")
+    section_title(scope_title)
+    _scope_rows = [
+        list_row(
+            main=f"└ {rt.MODULE_LABELS.get(m, m)}（{m}）",
+            sub_html=code_html("、".join(t.format(s=_p_s, e=_p_e).split("/")[-1] for t in MODULE_TARGETS[m]),
+                               title="、".join(t.format(s=_p_s, e=_p_e) for t in MODULE_TARGETS[m])),
+        )
+        for m in _sel_enabled
+        for _p_s, _p_e in [(selected_proj["species"], selected_proj["experiment"])]
+    ]
+    if _scope_rows:
+        render_html_list(_scope_rows)
+    else:
+        st.caption("该项目未启用任何模块")
+    if _other_projects:
+        st.caption("不会被触发：" + "、".join(f"`{p}`" for p in _other_projects))
+    st.caption(f"实际目标文件：`{' '.join(_sel_targets)}`" if len(_sel_targets) <= 6 else
+               f"共 {len(_sel_targets)} 个目标文件（Snakemake 仅构建该项目的 DAG）")
 
 if not _sel_enabled:
     st.error("所选项目没有启用任何模块，请先到「配置编辑」中启用需要运行的阶段。")
