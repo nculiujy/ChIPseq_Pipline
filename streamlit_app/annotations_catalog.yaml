@@ -26,33 +26,55 @@ version: 1
 species:
 
   # ==================== 拟南芥 ====================
+  # 和大豆不同，拟南芥只有 TAIR10 一个公认组装（2010 至今未换代）。
+  # Col-CEN / Col-XJTU / Col-PEK 三个 T2T 组装质量更高，但没有配套 GFF
+  # 发到公共库，染色体长度也变了，接不进 bowtie2 + ChIPseeker 这条链，故不收。
+  #
+  # 三个源的基因组序列基本一致，差别在 seqid 体系和注释来源，
+  # 三者互不兼容，FASTA 与 GFF 必须成对使用：
+  #   Ensembl : 1 2 3 4 5 Mt Pt     + Araport11 派生注释（27,655 个编码基因）
+  #   RefSeq  : NC_003070.9 ...     + NCBI 重注释（33,468 个基因，含非编码）
+  #   GenBank : CP002684.1 ...      + TAIR 原始提交（33,056 个基因）
+  #
+  # 未收录的源：TAIR 官方 Araport11（arabidopsis.org 对匿名请求返回 403，
+  # 2022 起强制注册）、JGI Phytozome（登录页）、UCSC（不收拟南芥，araTha1 404）。
   TAIR10:
     display_name: "拟南芥 Arabidopsis thaliana (TAIR10)"
     genome_size_mb: 119
     default_txdb_pkg: "TxDb.Athaliana.BioMart.plantsmart28"
     default_orgdb_pkg: "org.At.tair.db"
-    recommended_source: "Ensembl_Plants_61"
+    recommended_source: "Ensembl_Plants_63"
     sources:
-      Ensembl_Plants_61:
-        label: "Ensembl Plants Release 61 (2024)"
+      Ensembl_Plants_63:
+        label: "Ensembl Plants Release 63"
         fasta:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/arabidopsis_thaliana/dna/Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-63/fasta/arabidopsis_thaliana/dna/Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
           filename: "Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
-          size_mb: 40
+          size_mb: 35
         gff:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/arabidopsis_thaliana/Arabidopsis_thaliana.TAIR10.61.gff3.gz"
-          filename: "Arabidopsis_thaliana.TAIR10.61.gff3.gz"
-          size_mb: 20
-      NCBI_RefSeq:
-        label: "NCBI RefSeq GCF_000001735.4"
+          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-63/gff3/arabidopsis_thaliana/Arabidopsis_thaliana.TAIR10.63.gff3.gz"
+          filename: "Arabidopsis_thaliana.TAIR10.63.gff3.gz"
+          size_mb: 9
+      NCBI_RefSeq_TAIR10.1:
+        label: "NCBI RefSeq GCF_000001735.4 (TAIR10.1)"
         fasta:
           url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1/GCF_000001735.4_TAIR10.1_genomic.fna.gz"
           filename: "GCF_000001735.4_TAIR10.1_genomic.fna.gz"
-          size_mb: 40
+          size_mb: 36
         gff:
           url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1/GCF_000001735.4_TAIR10.1_genomic.gff.gz"
           filename: "GCF_000001735.4_TAIR10.1_genomic.gff.gz"
-          size_mb: 25
+          size_mb: 21
+      NCBI_GenBank_TAIR10:
+        label: "NCBI GenBank GCA_000001735.1 (TAIR10)"
+        fasta:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/735/GCA_000001735.1_TAIR10/GCA_000001735.1_TAIR10_genomic.fna.gz"
+          filename: "GCA_000001735.1_TAIR10_genomic.fna.gz"
+          size_mb: 36
+        gff:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/735/GCA_000001735.1_TAIR10/GCA_000001735.1_TAIR10_genomic.gff.gz"
+          filename: "GCA_000001735.1_TAIR10_genomic.gff.gz"
+          size_mb: 18
 
   # ==================== 人类 ====================
   GRCh38:
