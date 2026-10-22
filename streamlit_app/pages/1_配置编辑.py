@@ -189,6 +189,27 @@ def build_pairs_from_samples(samples, existing=None) -> list:
     return rows
 
 
+def infer_row_projects(df_all, detected_by_project) -> list:
+    """老 metadata 没有 project 列时，按识别到的样本名反推每行属于哪个项目。
+
+    detected_by_project 是 {项目 ID: {样本名: "PE"/"SE"}}。只在一个项目的数据里
+    出现过的样本名才算数；同时命中多个项目说明名字撞了（各项目都用 IP2 很常见），
+    宁可留在「未分配」让人工确认，也不能张冠李戴。
+    """
+    names_by_pid = {pid: set(names) for pid, names in detected_by_project.items() if names}
+    owners = []
+    for _, row in df_all.iterrows():
+        ip = str(row.get("IP sample", "") or "").strip()
+        ctrl = str(row.get("Input", "") or "").strip()
+        # IP 名优先；对不上再用 Input 兜一次。多个项目共用同一个 Input 时会同时
+        # 命中，正好落到下面的多命中分支，不归任何一个。
+        hits = [pid for pid, names in names_by_pid.items() if ip and ip in names]
+        if not hits:
+            hits = [pid for pid, names in names_by_pid.items() if ctrl and ctrl in names]
+        owners.append(hits[0] if len(hits) == 1 else "")
+    return owners
+
+
 def get_species_dirs():
     """获取 workflow/anno/ 下的物种目录
 
@@ -1052,17 +1073,24 @@ with tab3:
         config_for_tab3 = load_config()
         projects_tab3 = config_for_tab3.get("projects", [])
 
+        # 每个项目实际有哪些 fastq，抽屉展示和归属推断都要用，先算一次
+        detected_by_proj = {
+            f"{p.get('species', '')}/{p.get('experiment', '')}": detect_fastq_samples(p)
+            for p in projects_tab3
+        }
+
         df_all = load_metadata()
         # 兼容旧格式：缺列就补齐，不能直接丢掉老数据
         if "group" not in df_all.columns:
             df_all["group"] = ""
         if "project" not in df_all.columns:
-            df_all["project"] = ""
-            # 老文件没有项目归属。只有唯一项目时直接认领，
-            # 多项目时下不去手，留给用户在「未分配」区手动归位。
+            # 老文件没有项目归属：先拿各项目实际有的 fastq 样本名去对，只对得上
+            # 一个项目的自动归位；剩下对不上的再看是不是只有唯一项目可无脑认领。
+            df_all["project"] = infer_row_projects(df_all, detected_by_proj)
             if len(projects_tab3) == 1:
                 _only = projects_tab3[0]
-                df_all["project"] = f"{_only['species']}/{_only['experiment']}"
+                _pid_only = f"{_only['species']}/{_only['experiment']}"
+                df_all["project"] = df_all["project"].replace("", _pid_only)
         df_all["project"] = df_all["project"].fillna("").astype(str).str.strip()
         df_all["group"] = df_all["group"].fillna("").astype(str).str.strip()
 
@@ -1093,7 +1121,7 @@ with tab3:
 
                 with st.expander(label, expanded=(n_filled > 0)):
                     # ---- 自动识别 fastq 样本名 ----
-                    detected = detect_fastq_samples(_proj)
+                    detected = detected_by_proj.get(pid) or {}
                     if detected:
                         n_pe = sum(1 for v in detected.values() if v == "PE")
                         st.caption(
