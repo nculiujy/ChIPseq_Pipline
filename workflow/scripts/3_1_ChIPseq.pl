@@ -18,8 +18,9 @@ GetOptions(
     "help!"          => \$help,
 );
 
-die "用法: perl 3_1_ChIPseq.pl --inputdir <dir> --outputdir <dir> --indexdir <dir> --picarddir <dir> --threads <num> [--single_end]\n"
-    if $help || !$inputdir || !$outputdir || !$indexdir || !$picarddir || !$threads;
+# picarddir 非必填：留空则用环境里的 picard 命令（conda 装的那份自带 openjdk）
+die "用法: perl 3_1_ChIPseq.pl --inputdir <dir> --outputdir <dir> --indexdir <dir> [--picarddir <dir>] --threads <num> [--single_end]\n"
+    if $help || !$inputdir || !$outputdir || !$indexdir || !$threads;
 
 make_path($outputdir) unless -d $outputdir;
 
@@ -27,6 +28,17 @@ sub log_message {
     my ($message) = @_;
     my $time = localtime->strftime('%Y-%m-%d %H:%M:%S');
     print "[$time] $message\n";
+}
+
+# 纯 Perl 的 PATH 查找，比 system("command -v ...") 轻，且每个子进程都要调一次
+sub find_in_path {
+    my ($cmd) = @_;
+    return 0 unless $ENV{PATH};
+    for my $d (split(/:/, $ENV{PATH})) {
+        next unless $d;
+        return 1 if -x "$d/$cmd";
+    }
+    return 0;
 }
 
 log_message("ChIP-seq 步骤1: 比对与去重 开始");
@@ -138,8 +150,13 @@ sub process_sample {
     system("samtools view -bS \"$accepted_sam\" -o \"$accepted_sorted_bam\" && samtools sort -@ $threads -o \"$accepted_sorted_bam\" \"$accepted_sorted_bam\"") == 0 or die "错误: SAMtools 失败 ($sample_id)\n";
 
     log_message("去除 PCR 复制: $sample_id");
-    my $picard_cmd = (-e "$picarddir/picard.jar") ? "java -Xmx15g -jar \"$picarddir/picard.jar\" MarkDuplicates" : "picard MarkDuplicates";
-    system("$picard_cmd I=\"$accepted_sorted_bam\" O=\"$accepted_unique_bam\" METRICS_FILE=\"$metrics_file\" REMOVE_DUPLICATES=true") == 0 or die "错误: Picard 失败 ($sample_id)\n";
+    # jar 存在且 java 在 PATH 里才走 -jar；否则回退到环境里的 picard 命令。
+    # 只判 jar 不判 java 的话，机器上没 JRE 时会在 system() 里报 command not found。
+    my $picard_jar = $picarddir ? "$picarddir/picard.jar" : "";
+    my $picard_cmd = ($picard_jar && -e $picard_jar && find_in_path('java'))
+        ? "java -Xmx15g -jar \"$picard_jar\" MarkDuplicates"
+        : "picard MarkDuplicates";
+    system($picard_cmd . " I=\"$accepted_sorted_bam\" O=\"$accepted_unique_bam\" METRICS_FILE=\"$metrics_file\" REMOVE_DUPLICATES=true") == 0 or die "错误: Picard 失败 ($sample_id)\n";
 
     system("samtools index \"$accepted_unique_bam\"") == 0 or die "错误: SAMtools index 失败 ($sample_id)\n";
 
