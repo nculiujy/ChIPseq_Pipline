@@ -66,6 +66,112 @@ def save_metadata(df):
     df.to_csv(METADATA_PATH, index=False)
 
 
+# ------------------------------------------------------------
+# 样本名识别（供「样本配对表」按项目自动填表）
+# ------------------------------------------------------------
+# 规则与 workflow/scripts/3_1_ChIPseq.pl 保持一致，顺序不能乱：
+# _1.clean.fq 必须排在 _1.fq 前面，否则 ".clean" 会被当成样本名的一部分。
+_SAMPLE_SUFFIX_RULES = (
+    (re.compile(r"^(.+)_1_val_1\.fq(?:\.gz)?$"), "_1_val_1.fq", "_2_val_2.fq"),
+    (re.compile(r"^(.+)_1_trimmed\.fq(?:\.gz)?$"), "_1_trimmed.fq", "_2_trimmed.fq"),
+    (re.compile(r"^(.+)_1\.clean\.fq(?:\.gz)?$"), "_1.clean.fq", "_2.clean.fq"),
+    (re.compile(r"^(.+)_1\.fastq(?:\.gz)?$"), "_1.fastq", "_2.fastq"),
+    (re.compile(r"^(.+)_1\.fq(?:\.gz)?$"), "_1.fq", "_2.fq"),
+)
+
+# 名字里带这些词的样本视为对照（Input / IgG / CK 等）
+_INPUT_HINTS = ("input", "inp", "ctrl", "control", "mock", "igg", "ck")
+
+
+def _is_input_sample(name: str) -> bool:
+    low = str(name).lower()
+    return any(h in low for h in _INPUT_HINTS)
+
+
+def _project_fastq_dirs(project: dict) -> list:
+    """项目可能存放 fastq 的目录，QC 产物优先于原始数据。"""
+    dirs = []
+    species = project.get("species", "")
+    experiment = project.get("experiment", "")
+    qc_dir = os.path.join(BASE_DIR, "result", species, experiment, "2_QC")
+    if os.path.isdir(qc_dir):
+        dirs.append(qc_dir)
+    raw = (project.get("rawdata_dir") or "").strip()
+    if raw:
+        p = raw if os.path.isabs(raw) else os.path.join(BASE_DIR, raw)
+        if os.path.isdir(p):
+            dirs.append(p)
+    return dirs
+
+
+def detect_fastq_samples(project: dict) -> dict:
+    """扫描项目的 fastq，返回 {样本名: "PE"/"SE"}。
+
+    只认 _1 结尾的 R1，剥掉配对后缀得到样本名（如 IP2_1.clean.fq.gz → IP2），
+    再看同目录下有没有对应的 _2 判断是否双端。
+    """
+    found = {}
+    patterns = ("*/*_1*.fq.gz", "*_1*.fq.gz", "*/*_1*.fq", "*_1*.fq",
+                "*/*_1*.fastq", "*_1*.fastq")
+    for d in _project_fastq_dirs(project):
+        for pat in patterns:
+            for path in sorted(glob.glob(os.path.join(d, pat))):
+                filename = os.path.basename(path)
+                for rx, r1_tail, r2_tail in _SAMPLE_SUFFIX_RULES:
+                    m = rx.match(filename)
+                    if not m:
+                        continue
+                    sample = m.group(1)
+                    mate = os.path.join(os.path.dirname(path), filename.replace(r1_tail, r2_tail))
+                    paired = os.path.exists(mate)
+                    # 同一批次里双端优先：先按 SE 记下，后面见到 PE 再覆盖
+                    if found.get(sample) != "PE":
+                        found[sample] = "PE" if paired else "SE"
+                    break
+        if found:
+            break  # 已找到就不再往下探第二个目录
+    return found
+
+
+def build_pairs_from_samples(samples, existing=None) -> list:
+    """把识别到的样本名转成 IP/Input 配对建议。
+
+    只在拿得准的时候自动填 Input：
+      1. 恰好一个对照样本 → 所有非对照样本都配它（最常见的多 IP 共用一 Input）；
+      2. 多个对照 → 按数字后缀对齐（IP2 ↔ INPUT2），对不上就留空。
+    Input 拿不准一律留空，避免张冠李戴。
+
+    existing 传入当前已配置的行时，同名 IP 的人工分组（group）原样保留：
+    重复分组只能靠人判断，重新识别时不应把它冲掉。
+    """
+    names = list(samples)
+    controls = [s for s in names if _is_input_sample(s)]
+    ips = [s for s in names if not _is_input_sample(s)]
+
+    old_group = {}
+    if existing is not None and len(existing):
+        for _, _r in existing.iterrows():
+            _ip = str(_r.get("IP sample", "") or "").strip()
+            _g = str(_r.get("group", "") or "").strip()
+            if _ip and _g:
+                old_group[_ip] = _g
+
+    rows = []
+    for ip in ips:
+        ctrl = ""
+        if len(controls) == 1:
+            ctrl = controls[0]
+        elif len(controls) > 1:
+            digits = re.sub(r"\D", "", ip)
+            if digits:
+                for cand in controls:
+                    if re.sub(r"\D", "", cand) == digits:
+                        ctrl = cand
+                        break
+        rows.append({"IP sample": ip, "Input": ctrl, "group": old_group.get(ip, "")})
+    return rows
+
+
 def get_species_dirs():
     """获取 workflow/anno/ 下的物种目录"""
     if not os.path.isdir(ANNO_DIR):
@@ -895,11 +1001,17 @@ with tab2:
             st.rerun()
 
 # ============================================================
-# Tab 3: 样本配对表
+# Tab 3: 样本配对表（按项目分抽屉）
 # ============================================================
 with tab3:
-    st.subheader("IP vs Input 样本配对表（含重复组）")
+    st.subheader("IP vs Input 样本配对表")
     st.caption(f"文件路径: `{METADATA_PATH}`")
+
+    # 保存按钮在页面底部，st.success 会被随后的 rerun 冲掉，
+    # 先存一下提示，下一轮在顶部补发。
+    _t3_flash = st.session_state.pop("_tab3_flash", None)
+    if _t3_flash:
+        st.success(_t3_flash)
 
     st.info(
         "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
@@ -908,40 +1020,124 @@ with tab3:
     )
 
     if os.path.exists(METADATA_PATH):
-        df = load_metadata()
-        # 兼容旧格式：如果没有 group 列，自动添加
-        if "group" not in df.columns:
-            df["group"] = ""
+        config_for_tab3 = load_config()
+        projects_tab3 = config_for_tab3.get("projects", [])
 
-        # 配置列顺序
-        col_order = ["IP sample", "Input", "group"]
-        df = df[[c for c in col_order if c in df.columns]]
+        df_all = load_metadata()
+        # 兼容旧格式：缺列就补齐，不能直接丢掉老数据
+        if "group" not in df_all.columns:
+            df_all["group"] = ""
+        if "project" not in df_all.columns:
+            df_all["project"] = ""
+            # 老文件没有项目归属。只有唯一项目时直接认领，
+            # 多项目时下不去手，留给用户在「未分配」区手动归位。
+            if len(projects_tab3) == 1:
+                _only = projects_tab3[0]
+                df_all["project"] = f"{_only['species']}/{_only['experiment']}"
+        df_all["project"] = df_all["project"].fillna("").astype(str).str.strip()
+        df_all["group"] = df_all["group"].fillna("").astype(str).str.strip()
 
-        edited_df = st.data_editor(
-            df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "IP sample": st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名"),
-                "Input": st.column_config.TextColumn("Input 对照", help="对照组样本名"),
-                "group": st.column_config.TextColumn(
-                    "重复组",
-                    help="相同组名的样本为生物学重复，留空表示独立分析",
-                ),
-            },
-            key="metadata_editor",
-        )
+        col_cfg = {
+            "IP sample": st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名"),
+            "Input": st.column_config.TextColumn("Input 对照", help="对照组样本名"),
+            "group": st.column_config.TextColumn(
+                "重复组",
+                help="相同组名的样本为生物学重复，留空表示独立分析",
+            ),
+        }
+        meta_cols = ["IP sample", "Input", "group"]
 
-        # 显示重复组统计
-        if "group" in edited_df.columns:
-            groups = edited_df["group"].dropna().replace("", pd.NA).dropna()
-            if len(groups) > 0:
-                group_counts = groups.value_counts()
-                st.markdown("**重复组统计：**")
-                for grp, cnt in group_counts.items():
-                    st.caption(f"  • `{grp}`: {cnt} 个样本对")
-            else:
-                st.caption("当前未设置重复组，所有样本对将独立分析")
+        if not projects_tab3:
+            st.warning("还没有配置任何项目。请先到「项目管理」页添加项目，本节会按项目自动分抽屉。")
+            edited_df = df_all[meta_cols].copy()
+            edited_df["project"] = ""
+        else:
+            edited_frames = []
+
+            for _proj in projects_tab3:
+                pid = f"{_proj.get('species', '')}/{_proj.get('experiment', '')}"
+                sub = df_all[df_all["project"] == pid][meta_cols].copy()
+                n_filled = int((sub["IP sample"].astype(str).str.strip() != "").sum())
+                grp_n = sub["group"].replace("", pd.NA).dropna().nunique()
+                status = f"{n_filled} 对" + (f" · {grp_n} 组" if grp_n else "")
+                label = f"**{pid}** · {status}" if n_filled else f"**{pid}** · 未配置"
+
+                with st.expander(label, expanded=(n_filled > 0)):
+                    # ---- 自动识别 fastq 样本名 ----
+                    detected = detect_fastq_samples(_proj)
+                    if detected:
+                        n_pe = sum(1 for v in detected.values() if v == "PE")
+                        st.caption(
+                            f"从 fastq 识别到 {len(detected)} 个样本（双端 {n_pe} 个）："
+                            + "、".join(f"`{s}`" for s in detected)
+                        )
+                        if st.button("按识别结果生成配对表", key=f"auto_{pid}"):
+                            rows = build_pairs_from_samples(detected, sub)
+                            if rows:
+                                # data_editor 不接受用 session_state 回填，只能换 key：
+                                # 存下识别结果 + 版本号 +1，下一轮渲染成一个全新控件，
+                                # 再把结果作为它的初始数据。
+                                st.session_state[f"_md_pending_{pid}"] = pd.DataFrame(rows, columns=meta_cols)
+                                st.session_state[f"md_ver_{pid}"] = st.session_state.get(f"md_ver_{pid}", 0) + 1
+                                st.rerun()
+                            else:
+                                st.warning("只识别到对照样本，没有可配对的 IP 样本")
+                    else:
+                        st.caption("未在项目数据目录中找到 fastq，无法自动识别样本名。")
+
+                    # 自动识别的结果要一直当成编辑器基线：data_editor 每次 rerun 都是
+                    # 「基线 + 增量修改」，基线要是换回 csv 里的旧行，回填就丢了。
+                    _ver = st.session_state.get(f"md_ver_{pid}", 0)
+                    _pending = st.session_state.pop(f"_md_pending_{pid}", None)
+                    if _pending is not None:
+                        st.session_state[f"_md_base_{pid}"] = _pending
+                    _base = st.session_state.get(f"_md_base_{pid}")
+                    if _base is None:
+                        _base = sub
+
+                    edf = st.data_editor(
+                        _base,
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        column_config=col_cfg,
+                        key=f"md_editor_{pid}_{_ver}",
+                    )
+
+                    # 重复组统计
+                    _g = edf["group"].fillna("").astype(str).str.strip()
+                    _g = _g[_g != ""]
+                    if len(_g):
+                        st.caption("重复组：" + "、".join(
+                            f"`{k}`({v})" for k, v in _g.value_counts().items()))
+                    else:
+                        st.caption("当前未设置重复组，所有样本对将独立分析")
+
+                _d = edf.copy()
+                _d["project"] = pid
+                edited_frames.append(_d)
+
+            # ---- 未分配的行（老数据/多项目时）----
+            _un = df_all[df_all["project"] == ""][meta_cols].copy()
+            if int((_un["IP sample"].astype(str).str.strip() != "").sum()) > 0:
+                with st.expander(f"未分配 · {len(_un)} 行", expanded=True):
+                    st.warning(
+                        "这些行没有项目归属，目前对所有项目生效。"
+                        "建议把它们在下方表里删除，再在对应项目的抽屉里重新录入。"
+                    )
+                    _un_edf = st.data_editor(
+                        _un, num_rows="dynamic", use_container_width=True,
+                        column_config=col_cfg, key="md_editor__unassigned",
+                    )
+                _u = _un_edf.copy()
+                _u["project"] = ""
+                edited_frames.append(_u)
+
+            edited_df = (
+                pd.concat(edited_frames, ignore_index=True)
+                if edited_frames
+                else pd.DataFrame(columns=meta_cols + ["project"])
+            )
+            edited_df = edited_df[meta_cols + ["project"]]
 
         # ---- Consensus Peaks 参数 ----
         st.markdown("---")
@@ -1055,8 +1251,15 @@ with tab3:
         # ---- 统一保存按钮 ----
         st.markdown("---")
         if st.button("保存本页所有设置", type="primary", key="save_tab3_all"):
-            # 1. 保存 metadata.csv
-            save_metadata(edited_df)
+            # 1. 保存 metadata.csv（带上 project 列，每个项目只写自己的行）
+            _out = edited_df.copy()
+            for _c in meta_cols + ["project"]:
+                if _c not in _out.columns:
+                    _out[_c] = ""
+                _out[_c] = _out[_c].fillna("").astype(str).str.strip()
+            # 丢掉空行（data_editor 加了一行却没填）
+            _out = _out[(_out["IP sample"] != "") | (_out["Input"] != "")]
+            save_metadata(_out[meta_cols + ["project"]])
 
             # 2. 重新读取最新 config，避免覆盖其他 Tab 的修改
             fresh_cfg = load_config()
@@ -1075,12 +1278,22 @@ with tab3:
             )
 
             save_config(fresh_cfg)
-            st.success("样本配对表、Consensus 参数、Comparisons 已全部保存！")
+
+            # 保存后彻底重置编辑器：清基线 + 换 key 丢弃增量，
+            # 下一轮直接从刚写好的 csv 重读，避免旧增量被二次施加
+            # （删行增量叠到新表上会直接吃掉一行）。
+            for _p in projects_tab3:
+                _pid = f"{_p.get('species', '')}/{_p.get('experiment', '')}"
+                st.session_state.pop(f"_md_base_{_pid}", None)
+                st.session_state[f"md_ver_{_pid}"] = st.session_state.get(f"md_ver_{_pid}", 0) + 1
+            st.session_state["_tab3_flash"] = "样本配对表、Consensus 参数、Comparisons 已全部保存！"
+            st.rerun()
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):
-            pd.DataFrame({"IP sample": [], "Input": [], "group": []}).to_csv(METADATA_PATH, index=False)
-            st.success("已创建空模板（含 group 列）")
+            pd.DataFrame({"IP sample": [], "Input": [], "group": [], "project": []}).to_csv(
+                METADATA_PATH, index=False)
+            st.success("已创建空模板（含 group 与 project 列）")
             st.rerun()
 
 # ============================================================

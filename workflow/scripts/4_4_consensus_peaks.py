@@ -32,10 +32,12 @@ def run_cmd(cmd, allow_fail=False):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate consensus peaks per replicate group")
-    parser.add_argument("--metadata", required=True, help="Path to metadata.csv (IP sample,Input,group)")
+    parser.add_argument("--metadata", required=True, help="Path to metadata.csv (IP sample,Input,group[,project])")
     parser.add_argument("--peakdir", required=True, help="Directory containing peak calling results")
     parser.add_argument("--bamdir", required=True, help="Directory containing BAM files (for bigwig)")
     parser.add_argument("--outdir", required=True, help="Output directory for consensus peaks")
+    parser.add_argument("--species", default=None, help="Species name, used to filter metadata by project")
+    parser.add_argument("--experiment", default=None, help="Experiment name, used to filter metadata by project")
     parser.add_argument("--min_overlap", type=int, default=2, help="Minimum number of replicates a peak must appear in (default: 2)")
     parser.add_argument("--min_fraction", type=float, default=0.5, help="Minimum reciprocal overlap fraction to consider two peaks as overlapping (default: 0.5)")
     parser.add_argument("--threads", type=int, default=8, help="Number of threads")
@@ -47,6 +49,12 @@ def main():
 
     # 读取 metadata
     df = pd.read_csv(args.metadata)
+
+    # project 列可选：缺失或为空的行视为“通用”，兼容老的两三列格式；
+    # 写了 project 的行只属于该项目，避免多项目共用一张表时把别人的样本也算进来。
+    if args.species is not None and "project" in df.columns:
+        _proj = df["project"].fillna("").astype(str).str.strip()
+        df = df[(_proj == "") | (_proj == f"{args.species}/{args.experiment}")]
 
     # 兼容性：如果没有 group 列，所有样本作为一个组
     if "group" not in df.columns:

@@ -60,56 +60,96 @@ rule analyse_peakcalling:
             --norm_method {params.norm_method} \
             --peak_type {params.peak_type} \
             {params.broad_cutoff_flag} \
+            --species "{wildcards.species}" \
+            --experiment "{wildcards.experiment}" \
             --threads {params.threads} > "{log}" 2>&1
         
         touch "{output}"
         """
 
 # 定义一个辅助函数，用于获取所有样本对名称
-def get_sample_pairs(metadata_file):
-    """解析 metadata.csv，支持 2 列 (IP,Input) 和 3 列 (IP,Input,group) 格式"""
+#
+# metadata.csv 可以有三种格式：
+#   2 列 (IP sample,Input)                   —— 最早的格式
+#   3 列 (IP sample,Input,group)              —— 增加重复组
+#   4 列 (IP sample,Input,group,project)      —— 增加项目归属，值形如 TAIR10/314Com5
+# project 列缺失或为空的行视为“通用”，对所有项目生效，因此老的两三列文件
+# 行为完全不变；一旦某行写了 project，它就只属于那一个项目，不会再串到其它项目里。
+def _project_matches(fields, idx_proj, species, experiment):
+    """判断一行 metadata 是否属于当前项目。没有 project 列或该列为空时一律放行。"""
+    if idx_proj is None or species is None:
+        return True
+    proj = fields[idx_proj].strip() if len(fields) > idx_proj else ""
+    return (not proj) or proj == f"{species}/{experiment}"
+
+
+def get_sample_pairs(metadata_file, species=None, experiment=None):
+    """解析 metadata.csv，返回属于指定项目的样本对名列表。"""
     pairs = []
     with open(metadata_file, 'r') as f:
-        next(f)  # skip header
+        header = [h.strip().lower() for h in next(f).split(',')]
+        idx_proj = header.index("project") if "project" in header else None
         for line in f:
-            if line.strip():
-                fields = line.strip().split(',')
-                treat = fields[0].strip() if len(fields) > 0 else ""
-                control = fields[1].strip() if len(fields) > 1 else ""
-                # 跳过空字段的行
-                if treat and control:
-                    pairs.append(f"{treat}_vs_{control}")
+            if not line.strip():
+                continue
+            fields = [x.strip() for x in line.rstrip('\n').split(',')]
+            treat = fields[0] if len(fields) > 0 else ""
+            control = fields[1] if len(fields) > 1 else ""
+            # 跳过空字段的行
+            if not treat or not control:
+                continue
+            if not _project_matches(fields, idx_proj, species, experiment):
+                continue
+            pairs.append(f"{treat}_vs_{control}")
     return pairs
 
 
-def get_replicate_groups(metadata_file):
+def get_replicate_groups(metadata_file, species=None, experiment=None):
     """
     解析 metadata.csv 的 group 列，返回 {group_name: [pair_name, ...]} 字典。
-    仅当 metadata 含第 3 列且 group 非空时生效。
+    仅当 metadata 含 group 列且 group 非空时生效。
     """
     groups = {}
     with open(metadata_file, 'r') as f:
-        header = next(f).strip().split(',')
-        has_group = len(header) >= 3
+        header = [h.strip().lower() for h in next(f).split(',')]
+        idx_proj = header.index("project") if "project" in header else None
+        if "group" in header:
+            idx_group = header.index("group")
+        elif len(header) >= 3 and idx_proj != 2:
+            # 老文件没写列名：第 3 列就是 group（但不能是 project 那一列）
+            idx_group = 2
+        else:
+            idx_group = None
+        has_group = idx_group is not None
         for line in f:
-            if line.strip():
-                fields = line.strip().split(',')
-                treat = fields[0].strip() if len(fields) > 0 else ""
-                control = fields[1].strip() if len(fields) > 1 else ""
-                # 跳过空字段或 None 值的行
-                if not treat or not control or treat.lower() == "none" or control.lower() == "none":
-                    continue
-                pair_name = f"{treat}_vs_{control}"
-                group = fields[2].strip() if has_group and len(fields) >= 3 else ""
-                # 跳过 group 为空或 None/nan 的行
-                if group and group.lower() not in ("none", "nan", ""):
-                    groups.setdefault(group, []).append(pair_name)
+            if not line.strip():
+                continue
+            fields = [x.strip() for x in line.rstrip('\n').split(',')]
+            treat = fields[0] if len(fields) > 0 else ""
+            control = fields[1] if len(fields) > 1 else ""
+            # 跳过空字段或 None 值的行
+            if not treat or not control or treat.lower() == "none" or control.lower() == "none":
+                continue
+            if not _project_matches(fields, idx_proj, species, experiment):
+                continue
+            pair_name = f"{treat}_vs_{control}"
+            group = fields[idx_group] if has_group and len(fields) > idx_group else ""
+            # 跳过 group 为空或 None/nan 的行
+            if group and group.lower() not in ("none", "nan", ""):
+                groups.setdefault(group, []).append(pair_name)
     return groups
 
 
-# 动态获取样本对和重复组
-SAMPLE_PAIRS = get_sample_pairs("config/metadata.csv")
-REPLICATE_GROUPS = get_replicate_groups("config/metadata.csv")
+# 注意：样本对不能在这里一次性算好再全局复用。
+# SAMPLE_PAIRS 曾经是模块级常量，导致所有项目共用同一份配对表；
+# 改成由 get_anno_targets 按 wildcards 现算，每个项目只会展开自己的 pair。
+def get_anno_targets(wildcards):
+    pairs = get_sample_pairs("config/metadata.csv", wildcards.species, wildcards.experiment)
+    return expand("result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_peak_anno.csv",
+                  species=wildcards.species,
+                  experiment=wildcards.experiment,
+                  pair=pairs)
+
 
 rule analyse_annoChIPPeaks_single:
     input:
@@ -134,13 +174,8 @@ rule analyse_annoChIPPeaks_single:
         """
 
 # 这里因为有 {pair} 通配符和 {species}/{experiment} 的组合，
-# 为了简化 DAG，我们需要明确告诉 snakemake expand 所有的 pair
-def get_anno_targets(wildcards):
-    return expand("result/{species}/{experiment}/4_analyse/annoChIPPeaks/{pair}/{pair}_peak_anno.csv",
-                  species=wildcards.species,
-                  experiment=wildcards.experiment,
-                  pair=SAMPLE_PAIRS)
-
+# 为了简化 DAG，需要明确告诉 snakemake expand 本项目自己的所有 pair
+# （get_anno_targets 已在前面定义，按 wildcards 实时读取 metadata）。
 rule analyse_annoChIPPeaks_all:
     input:
         # 依赖于所有 single 注释任务的完成
@@ -206,6 +241,8 @@ rule analyse_consensus_peaks:
             --peakdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
             --bamdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
             --outdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus" \
+            --species "{wildcards.species}" \
+            --experiment "{wildcards.experiment}" \
             --min_overlap {params.min_overlap} \
             --min_fraction {params.min_fraction} \
             --threads {params.threads} \
@@ -236,20 +273,9 @@ rule analyse_replicate_qc:
         with open(input.config, 'r') as f:
             cfg = yaml.safe_load(f)
 
-        # 解析重复组
-        groups = {}
-        with open(input.metadata, 'r') as f:
-            header = next(f).strip().split(',')
-            has_group = len(header) >= 3
-            for line in f:
-                if line.strip():
-                    fields = line.strip().split(',')
-                    treat = fields[0].strip()
-                    control = fields[1].strip()
-                    group = fields[2].strip() if has_group and len(fields) >= 3 else ""
-                    if group:
-                        pair_name = f"{treat}_vs_{control}"
-                        groups.setdefault(group, []).append(pair_name)
+        # 解析重复组：直接复用 get_replicate_groups，
+        # 它会自动只取属于当前项目的行（project 列缺省时行为与原来一致）。
+        groups = get_replicate_groups(input.metadata, wildcards.species, wildcards.experiment)
 
         if not groups:
             # 无重复组则直接完成

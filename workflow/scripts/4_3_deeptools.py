@@ -27,13 +27,20 @@ def run_cmd(cmd):
         sys.exit(1)
 
 
-def parse_metadata(metadata_file):
+def parse_metadata(metadata_file, species=None, experiment=None):
     """
     解析 metadata.csv，返回:
     - pairs: list of dict {treat, control, group}
     - group_map: dict {group_name: [list of IP sample names]}
+
+    metadata.csv 可带可选的 project 列（值形如 TAIR10/314Com5）：
+    project 为空的行走“通用”语义，对所有项目生效（兼容老的两三列格式）；
+    写了 project 的行只属于那一个项目，避免多项目共用一张表时互相污染。
     """
     df = pd.read_csv(metadata_file)
+    if species is not None and "project" in df.columns:
+        proj = df["project"].fillna("").astype(str).str.strip()
+        df = df[(proj == "") | (proj == f"{species}/{experiment}")]
     pairs = []
     group_map = defaultdict(list)
 
@@ -886,7 +893,7 @@ def main():
     dt_config = config.get("deeptools", {})
 
     # 解析 metadata
-    pairs, group_map = parse_metadata(args.metadata)
+    pairs, group_map = parse_metadata(args.metadata, args.species, args.experiment)
 
     if not pairs:
         print("[ERROR] No valid sample pairs in metadata")

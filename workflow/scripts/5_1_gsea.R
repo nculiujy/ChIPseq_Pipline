@@ -159,6 +159,17 @@ go_keytype <- if (startsWith(species_lower, "tair") || species_lower == "at" || 
 cat("读取 metadata:", opt$metadata, "\n")
 metadata <- read_csv(opt$metadata, show_col_types = FALSE)
 
+# metadata.csv 可带可选的 project 列（值形如 TAIR10/314Com5）。
+# project 为空的行走“通用”语义，兼容老的两三列格式；写了 project 的行只属于
+# 那一个项目，避免多项目共用一张表时把别人的样本也算进本项目。
+if ("project" %in% colnames(metadata)) {
+  this_project <- paste0(opt$species, "/", opt$experiment)
+  project_col <- trimws(as.character(metadata$project))
+  project_col[is.na(project_col)] <- ""
+  metadata <- metadata[project_col == "" | project_col == this_project, ]
+  cat("按项目过滤后保留", nrow(metadata), "行 (project =", this_project, ")\n")
+}
+
 # 确保有 group 列
 if (!"group" %in% colnames(metadata)) {
   cat("metadata 中无 group 列，将所有样本视为同一组\n")

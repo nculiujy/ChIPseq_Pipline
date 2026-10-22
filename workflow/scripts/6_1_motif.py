@@ -484,6 +484,14 @@ def main():
 
     # 读取 metadata，确定分析目标
     df = pd.read_csv(args.metadata)
+    # metadata.csv 可带可选的 project 列（值形如 TAIR10/314Com5）。
+    # project 为空的行走“通用”语义，兼容老的两三列格式；写了 project 的行只属于
+    # 那一个项目，避免多项目共用一张表时把别人的样本也算进本项目。
+    if "project" in df.columns and args.species:
+        proj = df["project"].fillna("").astype(str).str.strip()
+        this_project = f"{args.species}/{args.experiment}"
+        df = df[(proj == "") | (proj == this_project)]
+        print(f"[INFO] 按项目过滤后保留 {len(df)} 行 (project = {this_project})")
     if "group" not in df.columns:
         df["group"] = "all"
 

@@ -6,7 +6,7 @@ use File::Basename;
 use Time::Piece;
 
 # 参数变量
-my ($metadata_file, $bamdir, $outdir, $picture_dir, $genome, $qval, $threads, $cutoff_type, $norm_method, $peak_type, $broad_cutoff, $help);
+my ($metadata_file, $bamdir, $outdir, $picture_dir, $genome, $qval, $threads, $cutoff_type, $norm_method, $peak_type, $broad_cutoff, $species, $experiment, $help);
 GetOptions(
     'metadata=s'     => \$metadata_file,
     'bamdir=s'       => \$bamdir,
@@ -19,6 +19,8 @@ GetOptions(
     'peak_type=s'    => \$peak_type,
     'broad_cutoff=f' => \$broad_cutoff,
     'threads=i'      => \$threads,
+    'species=s'      => \$species,
+    'experiment=s'   => \$experiment,
     'help!'          => \$help,
 ) or die "参数格式错误。\n";
 
@@ -50,6 +52,17 @@ log_message("参数: cutoff_type=$cutoff_type, value=$qval, normalization=$norm_
 open(my $IN, '<', $metadata_file) or die "无法打开文件 $metadata_file: $!";
 my $header = <$IN>; # Skip header
 
+# metadata.csv 可带可选的 project 列（值形如 TAIR10/314Com5）。
+# project 为空的行走“通用”语义，对所有项目生效，兼容老的两三列格式；
+# 写了 project 的行只属于那一个项目，避免多项目共用一张表时串样本。
+chomp $header;
+my @header_cols = map { my $c = $_; $c =~ s/^\s+|\s+$//g; $c } split(/,/, $header);
+my $idx_project = -1;
+for my $i (0 .. $#header_cols) {
+    if ($header_cols[$i] eq 'project') { $idx_project = $i; last; }
+}
+my $my_project = (defined $species && defined $experiment) ? "$species/$experiment" : "";
+
 my $processed_count = 0;
 
 while (my $line = <$IN>) {
@@ -68,6 +81,16 @@ while (my $line = <$IN>) {
     if (!$treat_sample || !$control_sample) {
         log_message("跳过空样本对（metadata.csv 可能含有空行）") if $treat_sample || $control_sample;
         next;
+    }
+
+    # 按项目过滤
+    if ($idx_project >= 0 && $my_project ne "") {
+        my $proj = $fields[$idx_project] // "";
+        $proj =~ s/^\s+|\s+$//g;
+        if ($proj ne "" && $proj ne $my_project) {
+            log_message("跳过其它项目的样本对: $treat_sample vs $control_sample (project=$proj)");
+            next;
+        }
     }
 
     my $treat_bam = "$bamdir/$treat_sample/accepted_hits.sorted.unique.bam";
