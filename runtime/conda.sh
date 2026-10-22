@@ -350,6 +350,10 @@ runtime_build_all() {
 runtime_update() {
     runtime_stop || true
     local launcher="$CHIPSEQ_LAUNCH_ENV" mode="${1:-}"
+    # config/ 已纳入 .gitignore，git pull 命中「删除 config/*」的提交时会把它清空。
+    # 每次更新补种一次模板（已存在则不覆盖，用户自己的配置不会被动）。
+    local _repo; _repo=$(_repo_dir 2>/dev/null || echo ".")
+    seed_repo_config "$_repo" "$CHIPSEQ_RUNTIME_DIR/assets"
     log "更新启动器环境: $launcher"
     # 启动器只依赖 python/streamlit/pyyaml，绝大多数更新不需要重建。
     # 早先这里无条件 rm -rf，导致每次 update 都重跑一遍 conda 求解（慢盘上几十分钟）。
