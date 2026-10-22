@@ -72,7 +72,11 @@ fi
 if [ -n "$repo" ] && [ -f "$repo/scripts/install-cli.sh" ]; then
     log "重装 CLI 执行副本 → 刷新 .chipseq-runtime/{bin,lib,runtime,assets} ..."
     bash "$repo/scripts/install-cli.sh" || warn "install-cli.sh 执行失败；执行副本可能未刷新，可手动重跑该脚本"
-    # 重装后重新加载后端，使本次 runtime_update 也用最新函数
+    # 重装后用最新副本重新加载共享库与后端。只重载 $BACKEND 不够：新增到
+    # common.sh 的函数（如 seed_repo_config）在旧副本里不存在，会让新版后端
+    # 报「未找到命令」——首次跨版本升级必踩。
+    # shellcheck disable=SC1091
+    source "@@LIB@@" 2>/dev/null || true
     # shellcheck disable=SC1090
     source "$BACKEND" 2>/dev/null || true
 else
