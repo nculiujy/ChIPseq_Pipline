@@ -90,50 +90,29 @@ def get_bowtie2_dirs(species):
 FASTQ_EXTS = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
 
 
-def get_rawdata_candidates(species, max_depth=3):
-    """列出 workflow/resources/<species>/ 下可作 rawdata_dir 的目录。
+def get_rawdata_candidates(species):
+    """列出 workflow/resources/<species>/ 下可作为 rawdata_dir 的实验目录。
 
-    3_1_ChIPseq.pl 只认两种布局：inputdir/*_1*.fq.gz（直接铺平）与
-    inputdir/*/*_1*.fq.gz（一层子目录）。所以候选既包含「直接含 fastq 的目录」，
-    也包含它们的父目录 —— 后者能一次覆盖该父目录下的全部样本。
-    若某个实验目录下一个 fastq 都没有，仍保留目录本身，方便先建项目后放数据。
+    约定：原始 fastq 直接放在 workflow/resources/<物种>/<实验目录>/ 这一层，
+    由用户自行放入（参考 .../TAIR10/需要合并分析的314Com5 ChIP-seq数据_20260427/）。
+    因此只列一级子目录，并统计本层 fastq 数，用于提示数据是否已就位。
 
-    返回 [(相对仓库根的路径, fastq 数, 是否直接含 fastq), ...]，按路径排序。
-    direct=False 表示数据在子目录里、数量是子目录合计 —— 多个子目录都有 fastq
-    时（如 rawdata 与 cleandata 并存），选中它会一并抓取，用时需留意重复。
+    返回 [(相对仓库根的路径, fastq 数), ...]，按路径排序。
     """
     base = os.path.join(RESOURCES_DIR, species)
     if not os.path.isdir(base):
         return []
-
-    species_prefix = f"workflow/resources/{species}"
-    found = {}          # path -> [fastq 数, 是否直接含]
+    out = []
     for name in sorted(os.listdir(base)):
-        exp_dir = os.path.join(base, name)
-        if name.startswith(".") or not os.path.isdir(exp_dir):
+        folder = os.path.join(base, name)
+        if name.startswith(".") or not os.path.isdir(folder):
             continue
-        exp_rel = f"{species_prefix}/{name}"
-        hits = {}
-        for cur, dirs, files in os.walk(exp_dir):
-            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-            if os.path.relpath(cur, base).count(os.sep) > max_depth:
-                dirs[:] = []
-                continue
-            n = sum(1 for f in files if f.endswith(FASTQ_EXTS))
-            if n:
-                rel = os.path.relpath(cur, base).replace(os.sep, "/")
-                hits[f"{species_prefix}/{rel}"] = n
-        if not hits:
-            found[exp_rel] = [0, False]
-            continue
-        for k, v in hits.items():
-            found[k] = [v, True]
-        for parent in {os.path.dirname(k) for k in hits}:
-            if parent.rstrip("/") == species_prefix:
-                continue
-            found.setdefault(parent, [sum(v for k, v in hits.items()
-                                          if os.path.dirname(k) == parent), False])
-    return sorted((p, v[0], v[1]) for p, v in found.items())
+        try:
+            n = sum(1 for f in os.listdir(folder) if f.endswith(FASTQ_EXTS))
+        except OSError:
+            n = 0
+        out.append((f"workflow/resources/{species}/{name}", n))
+    return out
 
 
 def get_bowtie2_index_prefix(species, bowtie2_folder):
@@ -803,10 +782,9 @@ with tab2:
     raw_cands = get_rawdata_candidates(new_species)
     _MANUAL = "手动填写其他路径…"
     _raw_labels = [
-        (f"{rel}   （未发现 fastq）" if not n
-         else f"{rel}   （{n} 个 fastq）" if direct
-         else f"{rel}   （子目录合计 {n} 个，选它会一并抓取）")
-        for rel, n, direct in raw_cands
+        f"{rel}   （{n} 个 fastq）" if n
+        else f"{rel}   （本层未发现 fastq，请把 fq 放入该目录）"
+        for rel, n in raw_cands
     ]
 
     def _sync_rawdata():
@@ -817,7 +795,11 @@ with tab2:
     # 切换物种后旧路径已失效，重置为新物种的第一个候选（没有候选则清空）
     if st.session_state.get("_raw_sp_prev") != new_species:
         st.session_state["_raw_sp_prev"] = new_species
-        st.session_state["new_raw_val"] = raw_cands[0][0] if raw_cands else ""
+        # 默认选第一个已放好 fastq 的目录，没有则选第一项
+        st.session_state["new_raw_val"] = next(
+            (rel for rel, n in raw_cands if n),
+            raw_cands[0][0] if raw_cands else "",
+        )
 
     if raw_cands:
         st.selectbox(
