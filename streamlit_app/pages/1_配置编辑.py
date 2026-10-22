@@ -67,6 +67,23 @@ def save_metadata(df):
 
 
 # ------------------------------------------------------------
+# 项目目录预建
+# ------------------------------------------------------------
+def _ensure_project_dirs_or_stop(species, experiment, rawdata_dir=""):
+    """建好原始数据 / 结果 / 日志目录，返回要写进 config 的 rawdata 路径。
+
+    rawdata_dir 留空则回落到 workflow/resources/<物种>/<实验>/，让用户直接把 fastq
+    拷进去；建目录失败就当场拦住——路径建不出来时写进 config 也只是个死链。
+    """
+    try:
+        info = rt.ensure_project_dirs(species, experiment, (rawdata_dir or "").strip())
+    except Exception as e:  # noqa: BLE001
+        st.error(f"目录创建失败：{e}")
+        st.stop()
+    return str(info["rawdata_dir"])
+
+
+# ------------------------------------------------------------
 # 样本名识别（供「样本配对表」按项目自动填表）
 # ------------------------------------------------------------
 # 规则与 workflow/scripts/3_1_ChIPseq.pl 保持一致，顺序不能乱：
@@ -173,12 +190,16 @@ def build_pairs_from_samples(samples, existing=None) -> list:
 
 
 def get_species_dirs():
-    """获取 workflow/anno/ 下的物种目录"""
+    """获取 workflow/anno/ 下的物种目录
+
+    跳过隐藏目录：workflow/anno/.download_tasks 是下载任务的暂存区，
+    不跳会把一个点开头的目录当成可选物种，新建项目直接落到那里去。
+    """
     if not os.path.isdir(ANNO_DIR):
         return []
     return sorted([
         d for d in os.listdir(ANNO_DIR)
-        if os.path.isdir(os.path.join(ANNO_DIR, d))
+        if os.path.isdir(os.path.join(ANNO_DIR, d)) and not d.startswith(".")
     ])
 
 
@@ -850,7 +871,8 @@ with tab2:
                             st.stop()
                         fresh_projects[i]["species"] = _sp
                         fresh_projects[i]["experiment"] = _exp
-                        fresh_projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
+                        fresh_projects[i]["rawdata_dir"] = _ensure_project_dirs_or_stop(
+                            _sp, _exp, st.session_state[f"raw_{i}"])
                         fresh_projects[i]["index_dir"] = final_index_dir
                         fresh_projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
                         fresh_projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
@@ -952,6 +974,7 @@ with tab2:
         with col1:
             new_experiment = st.text_input(
                 "实验名称",
+                key="new_exp",
                 help="会拼进 result/<物种>/<实验名> 与 logs/<物种>/<实验名>，"
                      "带空格会被 shell 拆词，因此保存时自动转成下划线",
             )
@@ -969,11 +992,15 @@ with tab2:
 
         submitted = st.form_submit_button("添加项目")
         if submitted and new_experiment:
+            _sp_new = rt.sanitize_name(new_species)
             _exp_new = rt.sanitize_name(new_experiment)
+            # 目录先建好再写 config：rawdata 留空也落到 workflow/resources/<物种>/<实验>/，
+            # 用户拿到的是一条能直接拷 fastq 进去的路径，而不是一个空值。
+            _raw_new = _ensure_project_dirs_or_stop(_sp_new, _exp_new, new_rawdata)
             new_proj = {
-                "species": rt.sanitize_name(new_species),
+                "species": _sp_new,
                 "experiment": _exp_new,
-                "rawdata_dir": new_rawdata,
+                "rawdata_dir": _raw_new,
                 "index_dir": new_index_value,
                 "txdb": new_txdb,
                 "orgdb": new_orgdb,
@@ -997,7 +1024,9 @@ with tab2:
                     f"实验名称已自动规范化：`{new_experiment}` → `{_exp_new}`。"
                     "路径里带空格会让 shell 把一条命令拆成多个词，规则会在 touch 阶段失败。")
             else:
-                st.session_state["_cfg_flash"] = f"项目 {new_proj['species']}/{_exp_new} 已添加"
+                st.session_state["_cfg_flash"] = (
+                    f"项目 {new_proj['species']}/{_exp_new} 已添加；"
+                    f"fastq 放到 `{_raw_new}/` 即可")
             st.rerun()
 
 # ============================================================

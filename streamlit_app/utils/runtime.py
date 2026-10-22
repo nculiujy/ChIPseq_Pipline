@@ -25,6 +25,7 @@ CONFIG_PATH = BASE_DIR / "config" / "config.yaml"
 LOGS_DIR = BASE_DIR / "logs"
 RESULT_DIR = BASE_DIR / "result"
 ANNO_DIR = BASE_DIR / "workflow" / "anno"
+RESOURCES_DIR = BASE_DIR / "workflow" / "resources"
 
 CURRENT_UID = os.getuid()
 
@@ -88,6 +89,95 @@ def sanitize_name(name: str) -> str:
 def is_safe_name(name: str) -> bool:
     """名字本身是否已经能安全地当路径用（无需 sanitize 改写）。"""
     return bool(name) and sanitize_name(name) == name
+
+
+# 原始数据目录里留一张便签：空目录在文件管理器里看不出用途，
+# 有了它用户就知道 fastq 往哪放、放完下一步该去哪个页面。
+_RESOURCES_NOTE = """\
+这里是项目 {species} / {experiment} 的原始测序数据目录，
+由「物种注释」页或「配置编辑」页配置项目时自动创建。
+
+把 fastq 直接放在本目录下，支持这些命名：
+  IP2_1.clean.fq.gz    IP2_2.clean.fq.gz    双端，_1/_2 成对
+  IP2_1_val_1.fq.gz    IP2_2_val_2.fq.gz    Trimmomatic 产出
+  IP2_1.fq.gz          IP2_2.fq.gz
+  INPUT2_1.fastq.gz    INPUT2_2.fastq.gz    单端也行
+
+文件名里 _1 前面的部分就是样本名（上面几行分别是 IP2 和 INPUT2）。
+带 input / ctrl / control / mock / igg / ck 字样的样本会被当成对照。
+
+放好之后：
+  1. 打开「配置编辑 → 样本配对表」
+  2. 在 {species} 项目的抽屉里点「按识别结果生成配对表」
+  3. 核对一遍配对和重复组，保存
+
+这个说明文件可以直接删，不影响流程。
+"""
+
+
+def project_dirs(species: str, experiment: str) -> dict[str, Path]:
+    """一个项目会用到的三个目录：原始数据 / 结果 / 日志。"""
+    return {
+        "rawdata": RESOURCES_DIR / species / experiment,
+        "result": RESULT_DIR / species / experiment,
+        "logs": LOGS_DIR / species / experiment,
+    }
+
+
+def _rel_path(p: Path) -> str:
+    """相对仓库根的路径；数据在别的盘时退回绝对路径。"""
+    try:
+        return str(p.relative_to(BASE_DIR))
+    except ValueError:
+        return str(p)
+
+
+def ensure_project_dirs(
+    species: str, experiment: str, rawdata_dir: str = ""
+) -> dict[str, object]:
+    """按 species/experiment 预建原始数据、结果、日志目录。
+
+    rawdata_dir 留空时按约定建 workflow/resources/<物种>/<实验>/，让用户把 fastq
+    直接拖进去；显式给了别的路径（比如数据在另一块盘）就只建那一处，
+    不再多建一个空目录。物种层与实验层两级都建：同一物种跑第二个实验时
+    两份原始数据互不干扰。
+
+    返回 {"dirs": {key: 路径}, "created": [...], "existed": [...]}，
+    其中 created/existed 是相对仓库根的路径，供 UI 直接展示。
+    """
+    sp = sanitize_name(species)
+    exp = sanitize_name(experiment)
+    if not sp or not exp:
+        raise ValueError("物种名与实验名都不能为空")
+
+    custom_raw = (rawdata_dir or "").strip()
+    dirs = project_dirs(sp, exp)
+    if custom_raw:
+        p = Path(custom_raw)
+        dirs["rawdata"] = p if p.is_absolute() else BASE_DIR / p
+
+    created: list[str] = []
+    existed: list[str] = []
+    for path in dirs.values():
+        rel = _rel_path(path)
+        if path.is_dir():
+            existed.append(rel)
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            created.append(rel)
+
+    # 便签只放在默认的原始数据目录里；用户自定义目录不往里塞东西
+    if not custom_raw and dirs["rawdata"].is_dir():
+        note = dirs["rawdata"] / "README.txt"
+        if not note.exists():
+            note.write_text(_RESOURCES_NOTE.format(species=sp, experiment=exp), encoding="utf-8")
+
+    return {
+        "dirs": {k: _rel_path(v) for k, v in dirs.items()},
+        "created": created,
+        "existed": existed,
+        "rawdata_dir": _rel_path(dirs["rawdata"]),
+    }
 
 
 def check_marker(species: str, experiment: str, marker_path: str) -> bool:

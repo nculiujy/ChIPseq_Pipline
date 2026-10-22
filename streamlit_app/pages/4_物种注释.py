@@ -26,6 +26,7 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from utils import annotation_manager as am  # noqa: E402
+from utils import runtime as rt  # noqa: E402
 from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
 
 from utils.version import APP_FULL_NAME  # noqa: E402
@@ -261,10 +262,42 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
     if st.button(f"应用到 config.yaml ({sid})", key=f"{key_prefix}_btn"):
         st.session_state[f"{key_prefix}_open"] = True
 
+    # 刚写入的项目：把三个目录摆出来。配置完下一步就是往原始数据目录里放 fastq，
+    # 路径必须当场能看见，否则用户还得自己去猜目录建在哪。
+    done = st.session_state.get(f"{key_prefix}_done")
+    if done:
+        st.success(f"已写入 config.yaml：`{done['species']}/{done['experiment']}`")
+        st.markdown(
+            f"- **原始数据**(放 fastq) `{done['dirs']['rawdata']}/`\n"
+            f"- **结果** `{done['dirs']['result']}/`\n"
+            f"- **日志** `{done['dirs']['logs']}/`"
+        )
+        st.caption("放好 fastq 后到「配置编辑 → 样本配对表」，在对应项目的抽屉里点「按识别结果生成配对表」。")
+        if st.button("知道了", key=f"{key_prefix}_done_ok"):
+            st.session_state.pop(f"{key_prefix}_done", None)
+            st.rerun()
+
     if st.session_state.get(f"{key_prefix}_open"):
         with st.form(f"{key_prefix}_form"):
-            experiment = st.text_input("experiment 名称", value=sid.lower(), key=f"{key_prefix}_exp")
-            rawdata = st.text_input("rawdata_dir (FASTQ 目录，可稍后填)", value="", key=f"{key_prefix}_raw")
+            experiment = st.text_input(
+                "experiment 名称", value=sid.lower(), key=f"{key_prefix}_exp",
+                help="会拼进 result/<物种>/<实验> 与 logs/<物种>/<实验>；带空格会自动转成下划线",
+            )
+            # 表单内改实验名不会触发 rerun，所以这里只给模板不填具体值；
+            # 真正建目录一律以提交时的实验名为准。
+            rawdata = st.text_input(
+                "rawdata_dir (FASTQ 目录，留空自动创建)",
+                value="",
+                placeholder=f"workflow/resources/{sid}/<实验名>",
+                key=f"{key_prefix}_raw",
+                help="留空则按上面的实验名建 workflow/resources/<物种>/<实验名>/；"
+                     "数据在另一块盘时填绝对路径，那就不再建默认目录",
+            )
+            st.caption(
+                "提交时按上面填的实验名建好："
+                f"`workflow/resources/{sid}/<实验名>/`(放 fastq) · "
+                f"`result/{sid}/<实验名>/` · `logs/{sid}/<实验名>/`"
+            )
 
             # index_dir：相对项目根
             rel_target = Path(status.bowtie2_dir or "")
@@ -289,21 +322,28 @@ def _render_apply_button(sid: str, entry: dict, status: am.SpeciesStatus, scope:
 
             submitted = st.form_submit_button("写入 config.yaml", type="primary")
             if submitted:
-                if not experiment.strip():
+                exp = rt.sanitize_name(experiment)
+                if not exp:
                     st.error("experiment 不能为空")
                 else:
                     try:
+                        # 先把目录建好，再把路径写进 config：rawdata_dir 不再是空字符串，
+                        # 用户在配置编辑页能看到数据该放哪，4_1 之前的规则也不用猜。
+                        info = rt.ensure_project_dirs(sid, exp, rawdata.strip())
                         am.apply_to_config(
                             CONFIG_PATH,
                             species_id=sid,
-                            experiment=experiment.strip(),
+                            experiment=exp,
                             index_dir=index_dir_rel,
                             txdb=txdb_value,
                             orgdb=orgdb.strip(),
-                            rawdata_dir=rawdata.strip(),
+                            rawdata_dir=str(info["rawdata_dir"]),
                         )
-                        st.success(f"已写入 config.yaml: {sid}/{experiment}")
+                        info["species"] = sid
+                        info["experiment"] = exp
+                        st.session_state[f"{key_prefix}_done"] = info
                         st.session_state[f"{key_prefix}_open"] = False
+                        st.rerun()
                     except Exception as e:  # noqa: BLE001
                         st.error(f"写入失败: {e}")
 
