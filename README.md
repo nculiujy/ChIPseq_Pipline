@@ -159,6 +159,10 @@ R 运行时和流程用到的 R 包（ChIPseeker / rtracklayer / GenomicFeatures
 | 分析中途报错 | `chipseq-app-logs`，或运行管理页看 Snakemake 日志（在 `logs/`） |
 | 从旧版本升级（环境在 `~/.local/chipseq-*` / 数据在 `~/.chipseq-pipeline`） | `bootstrap.sh` 会提示迁移。推荐：`mv ~/.local/chipseq-launch <repo>/.chipseq-runtime/launch && mv ~/.local/chipseq-env <repo>/.chipseq-runtime/analysis && mv ~/.chipseq-pipeline <repo>/.chipseq-runtime/data`；确认新版能跑后再 `chipseq-app-uninstall --purge-legacy` 收尾 |
 | 不想污染 HOME，但项目所在盘空间不够 | 把仓库整个搬到大盘；或临时 `export CHIPSEQ_RUNTIME_DIR=/scratch/$USER/chipseq-runtime` 后再跑 bootstrap，一切写入（env/pkgs/R 库/data）都会落到该目录 |
+| 监测页显示 `meme` / `streme` 为「可选·未装」 | 只影响 motif 分析（阶段 6），不计入「环境不满足」，其余模块照常。要做 motif 见下文「可选组件：motif 分析（MEME suite）」 |
+| `mamba install` 报 `cannot set permissions: Operation not permitted [/common_data/miniconda3/pkgs]` | 用的是系统公共 conda 缓存，当前用户无写权限。先 `cd <仓库> && export CONDA_PKGS_DIRS=$PWD/.chipseq-runtime/pkgs` 再装。`bootstrap.sh` / `chipseq-app-update` 会自动设这个变量，**手工敲 conda/mamba 时需要自己设** |
+| `git pull` 后 `config/` 空了 | `config/*` 已移出版本控制。`chipseq-app-update` 会自动补种模板（已有配置不覆盖）；急用可 `cp assets/config.yaml assets/metadata.csv config/` |
+| 报 `seed_repo_config: 未找到命令` / `Non-conda folder exists at prefix` | 均为旧版遗留问题，已在 v1.0 修复。`git pull` 后重跑 `chipseq-app-update`；若仍复现，`bash scripts/install-cli.sh` 重装命令副本再试 |
 
 其他问题提 GitHub Issues。
 
@@ -175,6 +179,68 @@ cp chipseq-env-<ver>.tar.gz <仓库目录>/           # 或设 CHIPSEQ_ENV_URL �
 CHIPSEQ_RUNTIME=conda ./bootstrap.sh --full       # 检测到本地 tar 自动走离线解压
 # 或显式重装：chipseq-app-update offline
 ```
+
+## 可选组件：motif 分析（MEME suite）
+
+阶段 6（`6_motif`）依赖 MEME suite 的 `meme-chip`，它**不在分析环境里**，需要单独安装。
+
+原因：conda 的 `meme` 包把 `perl` 钉在 5.32.1，与 conda-forge 的 `r-base` 冲突 —— 装进同一个环境会让 r-base 从 4.6 降到 4.5，连带上十个包重装，现有的 R 包（ChIPseeker / clusterProfiler / rtracklayer …）可能直接加载失败。所以 MEME 一律单独装，**不碰 `analysis/`**。
+
+**不做 motif 的项目可以跳过本节。** 环境监测页会把 `meme` / `streme` 显示为「可选·未装」，不计入「环境不满足」，其余五个模块不受影响。
+
+### 方式 A：独立 conda 环境（不需要 root，推荐）
+
+```bash
+cd <仓库目录>
+export CONDA_PKGS_DIRS=$PWD/.chipseq-runtime/pkgs   # 复用项目缓存；别用系统公共缓存（多用户机器上常不可写）
+mamba create -p $HOME/chipseq-meme -y -c conda-forge -c bioconda meme
+```
+
+先确认装出来的目录布局（conda 包的 `libexec` / `share` 子目录可能带版本号）：
+
+```bash
+ls $HOME/chipseq-meme/bin | grep -E '^(meme|streme|meme-chip)$'
+ls -d $HOME/chipseq-meme/libexec/meme-* $HOME/chipseq-meme/share/meme-* 2>/dev/null
+```
+
+再按实际结果写进 `~/.bashrc`（`6_motif.smk` 读这三个变量）：
+
+```bash
+cat >> ~/.bashrc <<'EOF'
+export MEME_BIN_DIR=$HOME/chipseq-meme/bin
+export MEME_SECONDARY_BIN_DIR=$HOME/chipseq-meme/libexec/meme-5.5.7
+export MEME_DATA_DIR=$HOME/chipseq-meme/share/meme-5.5.7
+export PATH=$MEME_BIN_DIR:$PATH
+EOF
+source ~/.bashrc
+```
+
+### 方式 B：源码装到 /usr/local/meme（有 root 时最省事）
+
+`6_motif.smk` 的默认值就是 `/usr/local/meme`，装到那里一个环境变量都不用设：
+
+```bash
+cd /tmp
+wget http://meme-suite.org/meme-software/5.5.7/meme-5.5.7.tar.gz
+tar xzf meme-5.5.7.tar.gz && cd meme-5.5.7
+./configure --prefix=/usr/local/meme --enable-python
+make -j 8 && sudo make install
+```
+
+### 验证
+
+```bash
+meme -version        # MEME 用单横线 -version；--version 会打印整页 usage
+streme --version
+```
+
+能看到 `5.5.7` 即可。版本必须是 **5.5.7** —— `6_motif.smk` 里的 `libexec/meme-5.5.7` 是写死的。
+
+装完之后：
+
+1. 在**配置编辑**页把该项目的 `6_motif` 勾上（默认关闭）；
+2. 重启面板让新的 `PATH` 生效：`chipseq-app-stop && chipseq-app`；
+3. 环境监测页点「重新检测」，`meme` / `streme` 会从「可选·未装」变为「就位」。
 
 ## 容器模式（可选）
 
