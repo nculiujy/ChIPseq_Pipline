@@ -51,12 +51,12 @@ rule gsea_analysis:
         """
         export LD_LIBRARY_PATH="${{CONDA_PREFIX}}/lib:${{LD_LIBRARY_PATH:-}}"
         Rscript workflow/scripts/5_1_gsea.R \
-            --indir      {params.indir} \
-            --outdir     {params.outdir} \
+            --indir      "{params.indir}" \
+            --outdir     "{params.outdir}" \
             --metadata   config/metadata.csv \
             --config     config/config.yaml \
-            --species    {params.species} \
-            --experiment {params.experiment} \
+            --species    "{params.species}" \
+            --experiment "{params.experiment}" \
             --pvalue_cutoff  {params.p[pvalue_cutoff]} \
             --qvalue_cutoff  {params.p[qvalue_cutoff]} \
             --go_types       "{params.p[go_types]}" \
@@ -64,5 +64,5 @@ rule gsea_analysis:
             --max_gs_size    {params.p[max_gs_size]} \
             --top_n          {params.p[top_n]} \
             {params.flags} \
-            > {log} 2>&1
+            > "{log}" 2>&1
         """

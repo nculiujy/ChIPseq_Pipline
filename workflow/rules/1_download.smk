@@ -10,10 +10,10 @@ rule download_data_project:
         outdir="result/{species}/{experiment}/1_download"
     shell:
         """
-        python {input.script} \
-            --species {wildcards.species} \
-            --experiment {wildcards.experiment} \
-            --outdir {params.outdir} > {log} 2>&1
+        python "{input.script}" \
+            --species "{wildcards.species}" \
+            --experiment "{wildcards.experiment}" \
+            --outdir "{params.outdir}" > "{log}" 2>&1
         
-        touch {output}
+        touch "{output}"
         """

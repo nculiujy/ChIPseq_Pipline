@@ -32,10 +32,10 @@ rule QC_trim_galore:
         indir = get_qc_input_dir
     shell:
         """
-        perl {input.script} \
-            --inputdir {params.indir} \
-            --outputdir result/{wildcards.species}/{wildcards.experiment}/2_QC \
-            --threads {config[threads]} > {log} 2>&1
+        perl "{input.script}" \
+            --inputdir "{params.indir}" \
+            --outputdir "result/{wildcards.species}/{wildcards.experiment}/2_QC" \
+            --threads {config[threads]} > "{log}" 2>&1
         
-        touch {output}
+        touch "{output}"
         """

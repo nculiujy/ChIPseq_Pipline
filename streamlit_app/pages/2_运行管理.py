@@ -85,11 +85,15 @@ def build_project_targets(proj):
     return rt.project_targets(proj)
 
 
-def run_snakemake_dryrun(targets):
-    """对指定目标执行 dry-run 并返回输出（Snakemake 7.32：目标文件用位置参数）"""
+def run_snakemake_dryrun(targets, cores=8):
+    """对指定目标执行 dry-run 并返回输出（Snakemake 7.32：目标文件用位置参数）
+
+    --config 必须用等号形式：空格形式会把后面的目标文件一并吃成 config 值。
+    """
     try:
         result = subprocess.run(
-            ["snakemake", "-n", *targets],
+            ["snakemake", "-n", "-c", str(int(cores)),
+             f"--config=threads={int(cores)}", *targets],
             capture_output=True,
             text=True,
             cwd=BASE_DIR,
@@ -590,7 +594,19 @@ if has_incomplete:
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    cores = st.number_input("CPU 核心数", min_value=1, max_value=64, value=30)
+    # 这个值不只是一个摆设：它会同时进 snakemake 的 -c 和 --config=threads，
+    # 后者才是各 rule 里 --threads 真正读的 config["threads"]。
+    # 带 key 是为了不被每 15 秒的自动刷新打断/重置。
+    _cfg_threads = int(config.get("threads", 8) or 8)
+    cores = st.number_input(
+        "CPU 核心数",
+        min_value=1,
+        max_value=max(128, os.cpu_count() or 8),
+        value=_cfg_threads,
+        key="run_cores",
+        help="同时作为 snakemake 的 -c（并发任务数）和各规则内部的 --threads"
+             "（单任务线程数，默认取「配置编辑 → 并行线程数」）",
+    )
 
 with col2:
     run_mode = st.selectbox("运行模式", ["正常运行", "Dry-run（仅预览）", "强制全部重跑"])
@@ -601,8 +617,8 @@ with col3:
 # Dry-run 预览（仅预览所选项目的 DAG）
 if st.button("预览将执行的任务 (dry-run)", key="dryrun", disabled=_sel_blocked):
     with st.spinner("正在分析 DAG..."):
-        output = run_snakemake_dryrun(_sel_targets)
-    st.caption(f"snakemake -n {' '.join(_sel_targets)}")
+        output = run_snakemake_dryrun(_sel_targets, cores)
+    st.caption(f"snakemake -n -c {int(cores)} {' '.join(_sel_targets)}")
     st.code(output, language="text")
 
 # 正式运行
@@ -658,7 +674,9 @@ dry_first = st.checkbox(
 
 
 def _build_cmd():
-    cmd = ["snakemake", "-c", str(int(cores)), *_sel_targets]
+    # --config 用等号形式，否则 argparse 会把后面的目标文件当成 config 值吃掉
+    cmd = ["snakemake", "-c", str(int(cores)),
+           f"--config=threads={int(cores)}", *_sel_targets]
     if run_mode == "Dry-run（仅预览）":
         cmd.insert(1, "-n")
     elif run_mode == "强制全部重跑":
@@ -738,12 +756,12 @@ if st.button(
     cmd = _build_cmd()
     if run_mode == "Dry-run（仅预览）":
         with st.spinner("正在分析 DAG..."):
-            output = run_snakemake_dryrun(_sel_targets)
+            output = run_snakemake_dryrun(_sel_targets, cores)
         st.code(output[-6000:], language="text")
     elif dry_first:
         # 两段式：先预览，写入 pending_launch 后重跑展示确认摘要
         with st.spinner("启动前先执行 dry-run 预览…"):
-            output = run_snakemake_dryrun(_sel_targets)
+            output = run_snakemake_dryrun(_sel_targets, cores)
         _m = _re.search(r"total\s+(\d+)", output)
         st.session_state.pending_launch = {
             "cmd": cmd, "preview": output[-4000:], "jobs": _m.group(1) if _m else "?",

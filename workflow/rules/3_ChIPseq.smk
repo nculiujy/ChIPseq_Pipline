@@ -40,14 +40,14 @@ rule ChIPseq_step1:
         threads = config["threads"]
     shell:
         """
-        perl {input.script} \
+        perl "{input.script}" \
             --inputdir "{params.fqdir}" \
             --outputdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
             --indexdir "{params.index_dir}" \
             --picarddir "{params.picard_dir}" \
-            --threads {params.threads} > {log} 2>&1
+            --threads {params.threads} > "{log}" 2>&1
             
-        touch {output}
+        touch "{output}"
         """
 
 rule ChIPseq_step2_bamtobw:
@@ -60,9 +60,9 @@ rule ChIPseq_step2_bamtobw:
         "logs/{species}/{experiment}/3_2_bamtobw.log"
     shell:
         """
-        perl {input.script} \
-            --inputdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
-            --threads {config[threads]} > {log} 2>&1
+        perl "{input.script}" \
+            --inputdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
+            --threads {config[threads]} > "{log}" 2>&1
         
-        touch {output}
+        touch "{output}"
         """

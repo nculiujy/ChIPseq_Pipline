@@ -37,15 +37,15 @@ rule motif_analysis:
         export PERL5LIB="/usr/local/meme/lib/meme-5.5.7/perl:$CONDA_ENV_BIN/../lib/perl5/5.32/site_perl:$CONDA_ENV_BIN/../lib/perl5/site_perl:$CONDA_ENV_BIN/../lib/perl5/5.32/vendor_perl:$CONDA_ENV_BIN/../lib/perl5/vendor_perl:${{PERL5LIB:-}}"
         export CONDA_PREFIX="${{CONDA_PREFIX:-$CONDA_ENV_BIN/..}}"
 
-        python {input.script} \
-            --metadata {input.metadata} \
-            --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
-            --consensus_dir result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus \
-            --outdir result/{wildcards.species}/{wildcards.experiment}/6_motif \
-            --config {input.config} \
-            --species {wildcards.species} \
-            --experiment {wildcards.experiment} \
-            --threads {params.threads} > {log} 2>&1
+        python "{input.script}" \
+            --metadata "{input.metadata}" \
+            --peakdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
+            --consensus_dir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus" \
+            --outdir "result/{wildcards.species}/{wildcards.experiment}/6_motif" \
+            --config "{input.config}" \
+            --species "{wildcards.species}" \
+            --experiment "{wildcards.experiment}" \
+            --threads {params.threads} > "{log}" 2>&1
 
-        touch {output}
+        touch "{output}"
         """

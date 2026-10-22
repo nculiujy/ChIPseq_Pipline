@@ -49,20 +49,20 @@ rule analyse_peakcalling:
         broad_cutoff_flag = lambda wildcards: f"--broad_cutoff {config.get('macs2_broad_cutoff', 0.1)}" if config["macs2_peak_type"] == "broad" else ""
     shell:
         """
-        perl {input.script} \
-            --metadata {input.metadata} \
-            --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
-            --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
-            --picdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/pictures \
+        perl "{input.script}" \
+            --metadata "{input.metadata}" \
+            --bamdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
+            --outdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
+            --picdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/pictures" \
             --genome {params.genome_size} \
             --qval {params.qval} \
             --cutoff_type {params.cutoff_type} \
             --norm_method {params.norm_method} \
             --peak_type {params.peak_type} \
             {params.broad_cutoff_flag} \
-            --threads {params.threads} > {log} 2>&1
+            --threads {params.threads} > "{log}" 2>&1
         
-        touch {output}
+        touch "{output}"
         """
 
 # 定义一个辅助函数，用于获取所有样本对名称
@@ -126,11 +126,11 @@ rule analyse_annoChIPPeaks_single:
     shell:
         """
         export LD_LIBRARY_PATH="${{CONDA_PREFIX:-$(dirname $(which Rscript))/..}}/lib:${{LD_LIBRARY_PATH:-}}"
-        Rscript {input.script} \
-            --peakfile result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/{wildcards.pair}/{wildcards.pair}_peaks.{params.peak_ext} \
-            --output result/{wildcards.species}/{wildcards.experiment}/4_analyse/annoChIPPeaks/{wildcards.pair} \
-            --name {wildcards.pair} \
-            --config {input.config} > {log} 2>&1
+        Rscript "{input.script}" \
+            --peakfile "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling/{wildcards.pair}/{wildcards.pair}_peaks.{params.peak_ext}" \
+            --output "result/{wildcards.species}/{wildcards.experiment}/4_analyse/annoChIPPeaks/{wildcards.pair}" \
+            --name "{wildcards.pair}" \
+            --config "{input.config}" > "{log}" 2>&1
         """
 
 # 这里因为有 {pair} 通配符和 {species}/{experiment} 的组合，
@@ -149,7 +149,7 @@ rule analyse_annoChIPPeaks_all:
         "result/{species}/{experiment}/4_analyse/annoChIPPeaks_finished.txt"
     shell:
         """
-        touch {output}
+        touch "{output}"
         """
 
 rule analyse_deeptools:
@@ -167,18 +167,18 @@ rule analyse_deeptools:
         norm = config["normalization_method"]
     shell:
         """
-        python {input.script} \
-            --metadata {input.metadata} \
-            --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
-            --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
-            --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/deeptools \
-            --config {input.config} \
-            --species {wildcards.species} \
-            --experiment {wildcards.experiment} \
+        python "{input.script}" \
+            --metadata "{input.metadata}" \
+            --bamdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
+            --peakdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
+            --outdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/deeptools" \
+            --config "{input.config}" \
+            --species "{wildcards.species}" \
+            --experiment "{wildcards.experiment}" \
             --threads {params.threads} \
-            --norm {params.norm} > {log} 2>&1
+            --norm {params.norm} > "{log}" 2>&1
             
-        touch {output}
+        touch "{output}"
         """
 
 # ============================================================
@@ -201,17 +201,17 @@ rule analyse_consensus_peaks:
         norm = config["normalization_method"]
     shell:
         """
-        python {input.script} \
-            --metadata {input.metadata} \
-            --peakdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling \
-            --bamdir result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq \
-            --outdir result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus \
+        python "{input.script}" \
+            --metadata "{input.metadata}" \
+            --peakdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
+            --bamdir "result/{wildcards.species}/{wildcards.experiment}/3_ChIPseq" \
+            --outdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus" \
             --min_overlap {params.min_overlap} \
             --min_fraction {params.min_fraction} \
             --threads {params.threads} \
-            --norm {params.norm} > {log} 2>&1
+            --norm {params.norm} > "{log}" 2>&1
 
-        touch {output}
+        touch "{output}"
         """
 
 # ============================================================
@@ -356,7 +356,7 @@ rule analyse_anno_consensus:
             fi
         done
         GRP_LIST=$(echo $GRP_LIST)  # trim leading space
-        echo "[DEBUG] GRP_LIST=[$GRP_LIST]" >> {log} 2>&1
+        echo "[DEBUG] GRP_LIST=[$GRP_LIST]" >> "{log}" 2>&1
 
         set -o pipefail  # 恢复 pipefail
 
@@ -366,26 +366,26 @@ rule analyse_anno_consensus:
         for GRP in $GRP_LIST; do
             BED="$CONSENSUS_DIR/consensus_$GRP.bed"
             if [ ! -f "$BED" ] || [ ! -s "$BED" ]; then
-                echo "[SKIP] consensus BED not found or empty: $BED" >> {log} 2>&1
+                echo "[SKIP] consensus BED not found or empty: $BED" >> "{log}" 2>&1
                 continue
             fi
 
             OUTDIR="$ANNO_OUTBASE/consensus_$GRP"
             mkdir -p "$OUTDIR"
 
-            echo "[INFO] Annotating consensus_$GRP ..." >> {log} 2>&1
-            if Rscript {input.script} \
+            echo "[INFO] Annotating consensus_$GRP ..." >> "{log}" 2>&1
+            if Rscript "{input.script}" \
                 --peakfile "$BED" \
                 --output "$OUTDIR" \
                 --name "consensus_$GRP" \
-                --config {input.config} >> {log} 2>&1; then
+                --config "{input.config}" >> "{log}" 2>&1; then
                 SUCCESS=$((SUCCESS + 1))
             else
                 FAIL=$((FAIL + 1))
-                echo "[WARNING] consensus_$GRP annotation failed" >> {log} 2>&1
+                echo "[WARNING] consensus_$GRP annotation failed" >> "{log}" 2>&1
             fi
         done
 
-        echo "[SUMMARY] Consensus annotation: $SUCCESS succeeded, $FAIL failed" >> {log} 2>&1
-        touch {output}
+        echo "[SUMMARY] Consensus annotation: $SUCCESS succeeded, $FAIL failed" >> "{log}" 2>&1
+        touch "{output}"
         """
