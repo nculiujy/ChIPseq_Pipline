@@ -47,8 +47,9 @@ runtime_install() {
     command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1 \
         || die "未检测到 conda/mamba。请先安装 Miniforge（https://github.com/conda-forge/miniforge）后重跑 bootstrap.sh"
 
-    if [ -x "$launcher/bin/streamlit" ]; then
-        ok "启动器环境已就绪: $launcher"
+    if [ -x "$launcher/bin/streamlit" ] \
+       && "$launcher/bin/python" -c "import streamlit, yaml" >/dev/null 2>&1; then
+        ok "启动器环境已就绪: $launcher（跳过重建；需要刷新用 CHIPSEQ_REFRESH_LAUNCHER=1）"
     else
         log "创建精简启动器环境（python=3.11 + streamlit + pyyaml）: $launcher"
         check_disk_space "$(dirname "$launcher")" 1
@@ -350,7 +351,12 @@ runtime_update() {
     runtime_stop || true
     local launcher="$CHIPSEQ_LAUNCH_ENV" mode="${1:-}"
     log "更新启动器环境: $launcher"
-    rm -rf "$launcher"
+    # 启动器只依赖 python/streamlit/pyyaml，绝大多数更新不需要重建。
+    # 早先这里无条件 rm -rf，导致每次 update 都重跑一遍 conda 求解（慢盘上几十分钟）。
+    if [ "${CHIPSEQ_REFRESH_LAUNCHER:-0}" = "1" ]; then
+        log "强制刷新启动器环境（CHIPSEQ_REFRESH_LAUNCHER=1）: $launcher"
+        rm -rf "$launcher"
+    fi
     runtime_install
     case "$mode" in
         all|analysis)
