@@ -37,6 +37,7 @@ mkdir -p "$RT_BIN" "$RT_LIB" "$RT_RUNTIME" "$RT_ASSETS"
 
 # ---------- 拷贝共享资源 ----------
 install -m 644 "$SRC/scripts/lib/common.sh"   "$RT_LIB/common.sh"
+install -m 644 "$SRC/scripts/lib/cd-banner.sh" "$RT_LIB/cd-banner.sh"
 install -m 644 "$SRC"/runtime/*.sh            "$RT_RUNTIME/"
 install -m 644 "$SRC"/assets/*                "$RT_ASSETS/" 2>/dev/null || true
 
@@ -83,6 +84,39 @@ case ":$PATH:" in
         warn "  echo 'export PATH=\"$LINK_DIR:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
         ;;
 esac
+
+# ---------- 注入 cd 提示钩子（~/.bashrc，幂等） ----------
+# 目的：cd 进仓库根就自动打印命令速查，不必先敲 chipseq-app 才知道有哪些命令、
+# 更不会因为不知道 --tunnel 而错过公网访问。关掉：export CHIPSEQ_NO_CD_BANNER=1
+RC_FILE="${CHIPSEQ_SHELL_RC:-$HOME/.bashrc}"
+BANNER="$RT_LIB/cd-banner.sh"
+if [ -f "$BANNER" ] && [ -f "$RC_FILE" ] && [ -w "$RC_FILE" ]; then
+    # 先删旧块再追加：仓库搬家后重装能自动刷新绝对路径，也不会重复堆积
+    sed -i '/^# >>> chipseq-pipeline cd banner >>>$/,/^# <<< chipseq-pipeline cd banner <<<$/d' \
+        "$RC_FILE" 2>/dev/null || true
+    cat >> "$RC_FILE" <<EOF
+# >>> chipseq-pipeline cd banner >>>
+# 由 scripts/install-cli.sh 生成；chipseq-app-uninstall 会自动移除本块
+if [ -n "\${PS1:-}" ] && [ -f "$BANNER" ]; then
+    . "$BANNER"
+    if declare -p PROMPT_COMMAND 2>/dev/null | grep -q 'declare -a'; then
+        case " \${PROMPT_COMMAND[*]:-} " in
+            *" _chipseq_cd_banner "*) ;;
+            *) PROMPT_COMMAND+=(_chipseq_cd_banner) ;;
+        esac
+    else
+        case "\${PROMPT_COMMAND:-}" in
+            *_chipseq_cd_banner*) ;;
+            *) PROMPT_COMMAND="_chipseq_cd_banner\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}" ;;
+        esac
+    fi
+fi
+# <<< chipseq-pipeline cd banner <<<
+EOF
+    ok "已注入 cd 提示钩子 → $RC_FILE（新开终端生效；当前终端可 source $RC_FILE）"
+else
+    warn "跳过 cd 提示钩子：$RC_FILE 不存在或不可写（可用 CHIPSEQ_SHELL_RC 指定）"
+fi
 
 ok "CLI 已安装到 $RT_BIN（软链 $LINK_DIR）"
 echo

@@ -98,6 +98,16 @@ chipseq-app-uninstall   卸载（默认保留数据目录；--data 连数据一�
 
 启动选项：`chipseq-app --port 9000`、`chipseq-app --private`（只绑 127.0.0.1，默认已局域网开放，`--public` 同义）、`chipseq-app --tunnel`（cloudflared 公网临时 URL）、`chipseq-app --no-browser`。
 
+### 进入项目目录自动显示命令提示
+
+安装 CLI 时会往 `~/.bashrc` 注入一小段钩子（带 `# >>> chipseq-pipeline cd banner >>>` 标记）：**`cd` 进仓库根目录就自动打印命令速查**，不必先敲 `chipseq-app` 才知道有哪些选项（比如 `--tunnel`）。子目录不打扰；同一个 shell 里首次给完整菜单，之后进入只给一行。
+
+- 新开终端生效；当前终端可 `source ~/.bashrc`
+- 关闭：`export CHIPSEQ_NO_CD_BANNER=1`
+- 想装到别的 rc 文件：`CHIPSEQ_SHELL_RC=~/.zshrc bash scripts/install-cli.sh`
+- `chipseq-app-uninstall` 会自动移除这段注入块
+
+
 ## 卸载
 
 ```bash
@@ -163,6 +173,7 @@ R 运行时和流程用到的 R 包（ChIPseeker / rtracklayer / GenomicFeatures
 | `mamba install` 报 `cannot set permissions: Operation not permitted [/common_data/miniconda3/pkgs]` | 用的是系统公共 conda 缓存，当前用户无写权限。先 `cd <仓库> && export CONDA_PKGS_DIRS=$PWD/.chipseq-runtime/pkgs` 再装。`bootstrap.sh` / `chipseq-app-update` 会自动设这个变量，**手工敲 conda/mamba 时需要自己设** |
 | `git pull` 后 `config/` 空了 | `config/*` 已移出版本控制。`chipseq-app-update` 会自动补种模板（已有配置不覆盖）；急用可 `cp assets/config.yaml assets/metadata.csv config/` |
 | 报 `seed_repo_config: 未找到命令` / `Non-conda folder exists at prefix` | 均为旧版遗留问题，已在 v1.0 修复。`git pull` 后重跑 `chipseq-app-update`；若仍复现，`bash scripts/install-cli.sh` 重装命令副本再试 |
+| `cd` 进项目目录没有命令提示 | 钩子写在 `~/.bashrc`，需新开终端（或 `source ~/.bashrc`）；`grep chipseq-pipeline ~/.bashrc` 确认注入块在。卸载过会连带移除，重跑 `bash scripts/install-cli.sh` 即可补回；不想看就 `export CHIPSEQ_NO_CD_BANNER=1` |
 
 其他问题提 GitHub Issues。
 

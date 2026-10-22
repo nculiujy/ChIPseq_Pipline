@@ -228,6 +228,18 @@ _clean_env_txt() {
 }
 _clean_env_txt || true
 
+# ---------- 移除 ~/.bashrc 里的 cd 提示钩子 ----------
+# 钩子块在 HOME 侧，不在 _targets 里，按标记单独清；不清会留下指向已删除的
+# .chipseq-runtime/lib/cd-banner.sh 的死块（有 -f 判断不会报错，但一直是垃圾）
+for _rc in "${CHIPSEQ_SHELL_RC:-$HOME/.bashrc}" "$HOME/.zshrc"; do
+    [ -f "$_rc" ] && [ -w "$_rc" ] || continue
+    grep -q '^# >>> chipseq-pipeline cd banner >>>' "$_rc" 2>/dev/null || continue
+    if sed -i '/^# >>> chipseq-pipeline cd banner >>>$/,/^# <<< chipseq-pipeline cd banner <<<$/d' \
+            "$_rc" 2>/dev/null; then
+        log "已从 $_rc 移除 cd 提示钩子"
+    fi
+done
+
 # ---------- 收尾提示 ----------
 echo
 if [ "$RM_DATA" = 1 ]; then
