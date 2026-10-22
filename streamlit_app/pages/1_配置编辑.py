@@ -43,6 +43,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CONFIG_PATH = os.path.join(BASE_DIR, "config", "config.yaml")
 METADATA_PATH = os.path.join(BASE_DIR, "config", "metadata.csv")
 ANNO_DIR = os.path.join(BASE_DIR, "workflow", "anno")
+RESOURCES_DIR = os.path.join(BASE_DIR, "workflow", "resources")
 
 
 def load_config():
@@ -84,6 +85,55 @@ def get_bowtie2_dirs(species):
         d for d in os.listdir(species_dir)
         if os.path.isdir(os.path.join(species_dir, d)) and d.lower().startswith("bowtie2")
     ])
+
+
+FASTQ_EXTS = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
+
+
+def get_rawdata_candidates(species, max_depth=3):
+    """列出 workflow/resources/<species>/ 下可作 rawdata_dir 的目录。
+
+    3_1_ChIPseq.pl 只认两种布局：inputdir/*_1*.fq.gz（直接铺平）与
+    inputdir/*/*_1*.fq.gz（一层子目录）。所以候选既包含「直接含 fastq 的目录」，
+    也包含它们的父目录 —— 后者能一次覆盖该父目录下的全部样本。
+    若某个实验目录下一个 fastq 都没有，仍保留目录本身，方便先建项目后放数据。
+
+    返回 [(相对仓库根的路径, fastq 数, 是否直接含 fastq), ...]，按路径排序。
+    direct=False 表示数据在子目录里、数量是子目录合计 —— 多个子目录都有 fastq
+    时（如 rawdata 与 cleandata 并存），选中它会一并抓取，用时需留意重复。
+    """
+    base = os.path.join(RESOURCES_DIR, species)
+    if not os.path.isdir(base):
+        return []
+
+    species_prefix = f"workflow/resources/{species}"
+    found = {}          # path -> [fastq 数, 是否直接含]
+    for name in sorted(os.listdir(base)):
+        exp_dir = os.path.join(base, name)
+        if name.startswith(".") or not os.path.isdir(exp_dir):
+            continue
+        exp_rel = f"{species_prefix}/{name}"
+        hits = {}
+        for cur, dirs, files in os.walk(exp_dir):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            if os.path.relpath(cur, base).count(os.sep) > max_depth:
+                dirs[:] = []
+                continue
+            n = sum(1 for f in files if f.endswith(FASTQ_EXTS))
+            if n:
+                rel = os.path.relpath(cur, base).replace(os.sep, "/")
+                hits[f"{species_prefix}/{rel}"] = n
+        if not hits:
+            found[exp_rel] = [0, False]
+            continue
+        for k, v in hits.items():
+            found[k] = [v, True]
+        for parent in {os.path.dirname(k) for k in hits}:
+            if parent.rstrip("/") == species_prefix:
+                continue
+            found.setdefault(parent, [sum(v for k, v in hits.items()
+                                          if os.path.dirname(k) == parent), False])
+    return sorted((p, v[0], v[1]) for p, v in found.items())
 
 
 def get_bowtie2_index_prefix(species, bowtie2_folder):
@@ -748,11 +798,47 @@ with tab2:
         st.warning(f"`workflow/anno/{new_species}/` 下无 bowtie2 开头的目录")
         new_index_value = st.text_input("手动输入 Bowtie2 索引路径", key="new_idx_manual")
 
+    # 新项目：原始数据目录跟随物种联动。rawdata_dir 必须指向真正放 fastq 的那一层，
+    # 所以列出 workflow/resources/<物种>/ 的子目录，并把下载流程产出的 fastqfile/ 也单列。
+    raw_cands = get_rawdata_candidates(new_species)
+    _MANUAL = "手动填写其他路径…"
+    _raw_labels = [
+        (f"{rel}   （未发现 fastq）" if not n
+         else f"{rel}   （{n} 个 fastq）" if direct
+         else f"{rel}   （子目录合计 {n} 个，选它会一并抓取）")
+        for rel, n, direct in raw_cands
+    ]
+
+    def _sync_rawdata():
+        pick = st.session_state.get("new_raw_pick", "")
+        if pick and pick != _MANUAL and pick in _raw_labels:
+            st.session_state["new_raw_val"] = raw_cands[_raw_labels.index(pick)][0]
+
+    # 切换物种后旧路径已失效，重置为新物种的第一个候选（没有候选则清空）
+    if st.session_state.get("_raw_sp_prev") != new_species:
+        st.session_state["_raw_sp_prev"] = new_species
+        st.session_state["new_raw_val"] = raw_cands[0][0] if raw_cands else ""
+
+    if raw_cands:
+        st.selectbox(
+            "原始数据目录",
+            _raw_labels + [_MANUAL],
+            key="new_raw_pick",
+            on_change=_sync_rawdata,
+            help="列出 workflow/resources/<物种>/ 下含 fastq 的目录；样本各自成子目录时，选其父目录可一次覆盖全部样本",
+        )
+    new_rawdata = st.text_input(
+        "原始数据目录（可手动修改）",
+        key="new_raw_val",
+        placeholder=f"workflow/resources/{new_species}/<实验目录>",
+        help="数据不在项目内时可填绝对路径",
+    )
+
     with st.form("new_project_form"):
         col1, col2 = st.columns(2)
         with col1:
             new_experiment = st.text_input("实验名称")
-            new_rawdata = st.text_input("原始数据目录")
+            st.caption(f"原始数据目录: `{new_rawdata or '（未填写）'}`")
             st.caption(f"Bowtie2 索引: `{new_index_value}`")
         with col2:
             new_txdb = st.text_input(
