@@ -16,7 +16,7 @@ def get_genome_size(species):
     if species.startswith("tair"):
         return "1.2e8"  # 拟南芥 (TAIR10 ~120Mb)
     elif species.startswith("glyma") or species.startswith("glycine") or species.startswith("gmax") or species.startswith("soy"):
-        return "1.0e9"  # 大豆 (Glycine max v4 ~1.025Gb)
+        return "1.0e9"  # 大豆 (Wm82.a4.v1 ~1.02Gb)
     elif species.startswith("mm") or species.startswith("mus"):
         return "mm"     # 小鼠
     elif species.startswith("hg") or species.startswith("homo") or species == "hs":

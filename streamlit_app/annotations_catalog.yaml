@@ -131,23 +131,26 @@ species:
           size_mb: 26
 
   # ==================== 大豆 ====================
+  # 注意：Ensembl Plants 不收大豆 v4 —— 那边至今只有 Glycine_max_v2.1（Wm82.a2.v1，2014）。
+  # 真正的 v4 是 Wm82.a4.v1（JGI 2019），只发在 SoyBase / LegumeInfo 的 data store 里，
+  # 所以这里走 LegumeInfo 的 gnm4（= a4.v1）基因组 + gnm4.ann1 注释，别再换回 Ensembl。
   Glycine_max_v4:
-    display_name: "大豆 Glycine max (v4.0)"
+    display_name: "大豆 Glycine max (Wm82.a4.v1)"
     genome_size_mb: 1025
     default_txdb_pkg: null          # 无 Bioconductor 官方包，用 GFF 文件
     default_orgdb_pkg: ""           # 无官方 OrgDb；GSEA 会跳过
-    recommended_source: "Ensembl_Plants_61"
+    recommended_source: "LegumeInfo_Wm82_gnm4"
     sources:
-      Ensembl_Plants_61:
-        label: "Ensembl Plants Release 61 (2024)"
+      LegumeInfo_Wm82_gnm4:
+        label: "LegumeInfo / SoyBase Wm82.gnm4 (JGI 2019)"
         fasta:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/fasta/glycine_max/dna/Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
-          filename: "Glycine_max.Glycine_max_v2.1.dna.toplevel.fa.gz"
-          size_mb: 274
+          url: "https://data.legumeinfo.org/Glycine/max/genomes/Wm82.gnm4.4PTR/glyma.Wm82.gnm4.4PTR.genome_main.fna.gz"
+          filename: "glyma.Wm82.gnm4.4PTR.genome_main.fna.gz"
+          size_mb: 280
         gff:
-          url: "https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-61/gff3/glycine_max/Glycine_max.Glycine_max_v2.1.61.chr.gff3.gz"
-          filename: "Glycine_max.Glycine_max_v2.1.61.chr.gff3.gz"
-          size_mb: 13
+          url: "https://data.legumeinfo.org/Glycine/max/annotations/Wm82.gnm4.ann1.T8TQ/glyma.Wm82.gnm4.ann1.T8TQ.gene_models_main.gff3.gz"
+          filename: "glyma.Wm82.gnm4.ann1.T8TQ.gene_models_main.gff3.gz"
+          size_mb: 18
 
   # ==================== 玉米 ====================
   Zea_mays_B73v5:
