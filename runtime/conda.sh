@@ -120,6 +120,16 @@ provision_analysis_online() {
         # 传了会直接报 "unrecognized arguments: -y"。update 本身不弹 Confirm，用 </dev/null 兜底。
         "$inst" env update -p "$env_root" -f "$yml" </dev/null || die "$inst env update 失败"
     else
+        # 预建的 $env_root/lib/R/library 让 env_root 成为非 conda 目录，
+        # libmamba 会报 Non-conda folder exists at prefix，须先清掉空壳。
+        # rmdir 只删空目录，有真实文件时删不动，不会误删数据。
+        if [ -d "$env_root" ]; then
+            rmdir -p "$CHIPSEQ_R_LIB" 2>/dev/null || true
+            if [ -d "$env_root" ]; then
+                die "$env_root 已存在但非 conda 环境，请先 mv 走再重试"
+            fi
+            log "已清理预建的空壳目录，重新创建分析环境"
+        fi
         "$inst" env create -y -p "$env_root" -f "$yml" </dev/null || die "$inst env create 失败"
     fi
     _chipseq_sanitize_environments_txt
