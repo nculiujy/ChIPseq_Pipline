@@ -289,10 +289,21 @@ EOF
  数据目录:    ${data}
  容器/进程:   ${CHIPSEQ_CONTAINER_NAME}
 ------------------------------------------------------------
- chipseq-app-logs    查看实时日志
- chipseq-app-status  查看运行状态
- chipseq-app-stop    停止服务
- chipseq-app-update  升级到最新版本
+ chipseq-app-logs       查看实时日志
+ chipseq-app-status     查看运行状态
+ chipseq-app-shell      进入分析环境（R / snakemake 调试用）
+ chipseq-app-stop       停止服务
+ chipseq-app-update     升级到最新版本
+ chipseq-app-uninstall  卸载（默认保留数据；--data 连数据一起删，--all 彻底清空）
+EOF
+    # --tunnel 依赖 cloudflared：装了才列进命令区，否则只在下面留一行启用提示 ——
+    # 菜单里出现一条当前跑不通的命令只会让人误点。
+    if _find_cloudflared >/dev/null 2>&1; then
+        echo " chipseq-app --tunnel   开通临时公网地址（cloudflared 已就绪）"
+    else
+        echo " （未检测到 cloudflared，暂不能开公网地址；把 cloudflared-linux-amd64 放到仓库根目录即可启用）"
+    fi
+    cat <<EOF
 ============================================================
 
 EOF

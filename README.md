@@ -93,7 +93,7 @@ chipseq-app-status      运行状态（含分析环境是否就绪）
 chipseq-app-stop        停止面板
 chipseq-app-shell       进入分析环境的 shell
 chipseq-app-update      更新启动器；all/analysis/online/offline 一并建分析环境 + 补 R 包
-chipseq-app-uninstall   卸载（默认保留数据目录）
+chipseq-app-uninstall   卸载（默认保留数据目录；--data 连数据一起删，--all 彻底清空）
 ```
 
 启动选项：`chipseq-app --port 9000`、`chipseq-app --private`（只绑 127.0.0.1，默认已局域网开放，`--public` 同义）、`chipseq-app --tunnel`（cloudflared 公网临时 URL）、`chipseq-app --no-browser`。
