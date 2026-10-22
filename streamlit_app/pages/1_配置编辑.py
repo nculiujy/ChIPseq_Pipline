@@ -218,6 +218,10 @@ for _i, _s in enumerate(_steps):
     _s["current"] = _i == _current_step
 
 section_title("工作流配置进度")
+# 保存时若有字段被自动规范化，先把提示暂存到 session_state，rerun 后在这里补发一次
+_flash = st.session_state.pop("_cfg_flash", None)
+if _flash:
+    st.warning(_flash)
 steps_bar(_steps)
 st.caption("分工说明：步骤条只反映各工作流环节的完成度/问题状态（已完成 · 有问题 · 需重校验）；具体修改仍请在下方对应 Tab 内完成并保存。")
 
@@ -646,7 +650,13 @@ with tab2:
                     key=f"sp_{i}",
                 )
 
-                st.text_input("实验名称", value=proj["experiment"], key=f"exp_{i}")
+                st.text_input(
+                    "实验名称",
+                    value=proj["experiment"],
+                    key=f"exp_{i}",
+                    help="会拼进 result/<物种>/<实验名> 与 logs/<物种>/<实验名>，"
+                         "因此保存时自动把空格转成下划线（含空格会让 shell 拆词，规则跑到 touch 就挂）",
+                )
                 st.text_input("原始数据目录", value=proj.get("rawdata_dir", ""), key=f"raw_{i}")
 
                 # Bowtie2 索引选择
@@ -723,8 +733,17 @@ with tab2:
                     fresh_config = load_config()
                     fresh_projects = fresh_config.get("projects", [])
                     if i < len(fresh_projects):
-                        fresh_projects[i]["species"] = selected_species
-                        fresh_projects[i]["experiment"] = st.session_state[f"exp_{i}"]
+                        # 物种/实验名会展开进 result、logs 的路径，再经 shell 传给下游工具。
+                        # 含空格时 `> {log}` 会被 bash 拆词（日志跑进同名文件、touch 失败），
+                        # 所以保存前统一规范化，并把改名结果写回输入框。
+                        _exp_raw = st.session_state[f"exp_{i}"]
+                        _exp = rt.sanitize_name(_exp_raw)
+                        _sp = rt.sanitize_name(selected_species)
+                        if not _exp:
+                            st.error("实验名称不能为空")
+                            st.stop()
+                        fresh_projects[i]["species"] = _sp
+                        fresh_projects[i]["experiment"] = _exp
                         fresh_projects[i]["rawdata_dir"] = st.session_state[f"raw_{i}"]
                         fresh_projects[i]["index_dir"] = final_index_dir
                         fresh_projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
@@ -739,7 +758,13 @@ with tab2:
                         }
                         fresh_config["projects"] = fresh_projects
                         save_config(fresh_config)
-                        st.success(f"项目 {selected_species}/{st.session_state[f'exp_{i}']} 已保存")
+                        if _exp != _exp_raw:
+                            st.session_state[f"exp_{i}"] = _exp
+                            st.session_state["_cfg_flash"] = (
+                                f"实验名称已自动规范化：`{_exp_raw}` → `{_exp}`。"
+                                "路径里带空格会让 shell 把一条命令拆成多个词，"
+                                "表现为日志写进一个同名文件、touch 找不到目录而报规则失败。"
+                                "若该名字已有 result/logs 目录，请一并改名，否则旧进度不会被识别。")
                         st.rerun()
             with btn_col2:
                 if st.button(f"删除", key=f"del_proj_{i}", type="secondary"):
@@ -819,7 +844,11 @@ with tab2:
     with st.form("new_project_form"):
         col1, col2 = st.columns(2)
         with col1:
-            new_experiment = st.text_input("实验名称")
+            new_experiment = st.text_input(
+                "实验名称",
+                help="会拼进 result/<物种>/<实验名> 与 logs/<物种>/<实验名>，"
+                     "带空格会被 shell 拆词，因此保存时自动转成下划线",
+            )
             st.caption(f"原始数据目录: `{new_rawdata or '（未填写）'}`")
             st.caption(f"Bowtie2 索引: `{new_index_value}`")
         with col2:
@@ -834,9 +863,10 @@ with tab2:
 
         submitted = st.form_submit_button("添加项目")
         if submitted and new_experiment:
+            _exp_new = rt.sanitize_name(new_experiment)
             new_proj = {
-                "species": new_species,
-                "experiment": new_experiment,
+                "species": rt.sanitize_name(new_species),
+                "experiment": _exp_new,
                 "rawdata_dir": new_rawdata,
                 "index_dir": new_index_value,
                 "txdb": new_txdb,
@@ -856,7 +886,12 @@ with tab2:
                 fresh_config["projects"] = []
             fresh_config["projects"].append(new_proj)
             save_config(fresh_config)
-            st.success(f"项目 {new_species}/{new_experiment} 已添加！")
+            if _exp_new != new_experiment:
+                st.session_state["_cfg_flash"] = (
+                    f"实验名称已自动规范化：`{new_experiment}` → `{_exp_new}`。"
+                    "路径里带空格会让 shell 把一条命令拆成多个词，规则会在 touch 阶段失败。")
+            else:
+                st.session_state["_cfg_flash"] = f"项目 {new_proj['species']}/{_exp_new} 已添加"
             st.rerun()
 
 # ============================================================

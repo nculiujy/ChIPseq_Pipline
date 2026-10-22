@@ -585,6 +585,39 @@ if not _sel_enabled:
     _sel_blocked = True
 else:
     _sel_blocked = False
+
+# 项目名会展开进 result/logs 路径，再经 snakemake 的 shell 块和各脚本内部的 system()
+# 传给下游工具。带空格时 bash 会把 `> {log}` / `touch {output}` 拆成多个词：日志落进一个
+# 同名文件、touch 报目录不存在 —— 此时 snakemake 只会说一句含糊的
+# "job execution failed"，真实错误又写到了不存在的日志路径上，很难自己查。
+# 所以启动前就直接拦下，让用户先去改名。
+_unsafe_fields = [
+    (label, str(selected_proj.get(field, "")))
+    for field, label in (("species", "物种"), ("experiment", "实验名"))
+    if not rt.is_safe_name(str(selected_proj.get(field, "")))
+]
+if _unsafe_fields:
+    _bad_experiment = str(selected_proj.get("experiment", ""))
+    _bad_species = str(selected_proj.get("species", ""))
+    _suggest = "、".join(
+        f"{lb} `{val}` → `{rt.sanitize_name(val)}`" for lb, val in _unsafe_fields)
+    st.error(
+        "**项目名里含空格，这次运行必然挂在 `touch` 那一步，先改名再跑。**\n\n"
+        f"建议改成：{_suggest}\n\n"
+        "原因：名字会被展开进 `result/{species}/{experiment}/...`，拿到 shell 里带空格会把"
+        "一条命令拆成几个词——日志会写进 `"
+        f"logs/{_bad_species.split()[0] if _bad_species.split() else _bad_species}`"
+        "` 这个**文件**（而非目录），`touch` 则找不到真实目录直接报错；"
+        "而报错提示让你去看的日志文件本身根本不存在。\n\n"
+        "去「配置编辑 → 项目管理」修改实验名称后保存即可（保存时会自动把空格转成下划线）。")
+    st.caption("若旧名字下已经有产物，改名后需要在项目根目录把目录一并改过去（否则旧进度不被识别）：")
+    st.code(
+        f"mv 'result/{_bad_species}/{_bad_experiment}' "
+        f"'result/{rt.sanitize_name(_bad_species)}/{rt.sanitize_name(_bad_experiment)}'\n"
+        f"mv 'logs/{_bad_species}/{_bad_experiment}' "
+        f"'logs/{rt.sanitize_name(_bad_species)}/{rt.sanitize_name(_bad_experiment)}'",
+        language="bash")
+    _sel_blocked = True
 st.info(
     "**单管线模式**：启动命令会把目标文件作为位置参数限定为所选项目的 marker，"
     "其他项目不会被连带运行；同一时刻只允许运行一条管线（运行中时启动按钮会禁用）。"

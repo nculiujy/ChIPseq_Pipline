@@ -11,6 +11,7 @@ utils.runtime — 只读运行时数据助手
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -65,6 +66,28 @@ def save_project_order(config: dict) -> tuple[bool, str]:
         return True, "已保存项目顺序"
     except OSError as e:
         return False, f"保存失败：{e}"
+
+
+# 项目名会展开进 result/{species}/{experiment}、logs/{species}/{experiment}，再经 snakemake
+# 的 shell 块、perl 的 system()、python 的 shell=True 一路传给下游工具。名字里只要有空格，
+# `> {log}` / `touch {output}` 就会被 bash 按空格拆词 —— 实测日志会跑进一个叫
+# `logs/TAIR10/314COM_ChIP` 的文件里，touch 则报 `9/3_ChIPseq/step1_finished.txt: 没有那个文件`。
+# 所以物种/实验名统一在这个函数里收敛成路径安全的形式。
+_UNSAFE_NAME_CHARS = re.compile(r"[\s~!$&'\"()*;<>?\[\]{}|\\`#]")
+
+
+def sanitize_name(name: str) -> str:
+    """把物种/实验名规范成路径安全形式：连续空白压成下划线，其余 shell 元字符丢弃。
+
+    例：`314COM_ChIP 3 and 9` → `314COM_ChIP_3_and_9`。已经是安全名的原样返回。
+    """
+    s = re.sub(r"\s+", "_", (name or "").strip())
+    return _UNSAFE_NAME_CHARS.sub("", s)
+
+
+def is_safe_name(name: str) -> bool:
+    """名字本身是否已经能安全地当路径用（无需 sanitize 改写）。"""
+    return bool(name) and sanitize_name(name) == name
 
 
 def check_marker(species: str, experiment: str, marker_path: str) -> bool:
@@ -717,6 +740,14 @@ def config_issues(config: dict | None = None) -> list[dict]:
         for req in ("species", "experiment", "index_dir"):
             if not proj.get(req):
                 add("error", f"projects[{i}].{req}", f"项目 {tag} 缺少必填字段 {req}")
+        for req in ("species", "experiment"):
+            val = proj.get(req, "")
+            if val and not is_safe_name(val):
+                add("error", f"projects[{i}].{req}",
+                    f"{req} '{val}' 含空格或 shell 特殊字符：该名字会展开进 result/logs 路径，"
+                    f"被 shell 按空格拆词后规则会在 touch 阶段失败"
+                    f"（日志会写进一个叫 '{val.split()[0]}' 的文件里）"
+                    f"。请改成 {sanitize_name(val)}，并把已有的 result/logs 目录一并改名")
         idx = proj.get("index_dir", "")
         if idx and not any(_exists_any(f"{idx}.{n}.bt2") for n in (1, 2, 3, 4)):
             add("error", f"{tag}.index_dir", f"bowtie2 索引前缀不存在：{idx}（缺 *.bt2）")
