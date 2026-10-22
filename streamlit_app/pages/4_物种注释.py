@@ -267,10 +267,15 @@ def render_catalog_tab() -> None:
         for src_id in (entry.get("sources") or {}):
             ready[(sid, src_id)] = am.scan_variant(ANNO_DIR, sid, src_id)
 
+    # 老结构（workflow/anno/<物种>/bowtie2_index_*）不算进就绪，但得提前算：
+    # 否则用户明明装了，抽屉头上却写「未装」，看起来像丢了。
+    legacy: dict = {sid: am.list_legacy_index_dirs(ANNO_DIR, sid) for sid in SPECIES_DB}
+
     order = sorted(
         SPECIES_DB.keys(),
         key=lambda s: (
             -sum(1 for (sp, _x), stt in ready.items() if sp == s and stt.complete),
+            -len(legacy.get(s) or []),
             s,
         ),
     )
@@ -279,8 +284,24 @@ def render_catalog_tab() -> None:
         entry = SPECIES_DB[sid]
         sources = entry.get("sources", {}) or {}
         genome_mb = entry.get("genome_size_mb") or 0
-        n_ready = sum(1 for src_id in sources if ready[(sid, src_id)].complete)
-        head = f"{n_ready}/{len(sources)} 源就绪" if sources else "无下载源"
+        done = [x for x in sources if ready[(sid, x)].complete]
+
+        # 抽屉关着也要能看出装了哪几套，否则得逐个物种点开翻
+        if not sources:
+            head = "无下载源"
+        elif not done:
+            head = f"未装 · {len(sources)} 套可选"
+        elif len(done) == len(sources):
+            head = f"✓ 全部 {len(sources)} 套已装"
+        elif len(done) <= 2:
+            head = f"✓ 已装 {'、'.join(done)}（{len(done)}/{len(sources)}）"
+        else:
+            head = f"✓ 已装 {done[0]} 等 {len(done)} 套（{len(done)}/{len(sources)}）"
+
+        # 有一批索引建在老结构里，没归到任何源，不提示就会以为没装过
+        n_legacy = len(legacy.get(sid) or [])
+        if n_legacy:
+            head += f"  ·  另有 {n_legacy} 个旧索引待归位"
 
         header = (
             f"**{head}**  ·  {entry.get('display_name', sid)}  ·  `{sid}`  ·  ~{genome_mb} MB"

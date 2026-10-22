@@ -213,6 +213,19 @@ species:
           url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/004/515/GCF_000004515.6_Glycine_max_v4.0/GCF_000004515.6_Glycine_max_v4.0_genomic.gff.gz"
           filename: "GCF_000004515.6_Glycine_max_v4.0_genomic.gff.gz"
           size_mb: 18
+      NCBI_RefSeq_v2.1:
+        # 同一套 Wm82.a4 组装的上一版注释（annotation release 103，2018）。
+        # NCBI 换了注释就把旧版从 genomes/all/GCF/... 撤到 annotation_releases，
+        # 所以组装号是 .5 不是 .6，路径也不一样；基因 ID 与 v4.0 不通用。
+        label: "NCBI RefSeq GCF_000004515.5 (v2.1，annotation release 103)"
+        fasta:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/annotation_releases/3847/103/GCF_000004515.5_Glycine_max_v2.1/GCF_000004515.5_Glycine_max_v2.1_genomic.fna.gz"
+          filename: "GCF_000004515.5_Glycine_max_v2.1_genomic.fna.gz"
+          size_mb: 282
+        gff:
+          url: "https://ftp.ncbi.nlm.nih.gov/genomes/all/annotation_releases/3847/103/GCF_000004515.5_Glycine_max_v2.1/GCF_000004515.5_Glycine_max_v2.1_genomic.gff.gz"
+          filename: "GCF_000004515.5_Glycine_max_v2.1_genomic.gff.gz"
+          size_mb: 17
 
   Glycine_max_v6:
     display_name: "大豆 Glycine max (Wm82.a6.v1，2024 单倍型)"
