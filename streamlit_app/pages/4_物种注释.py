@@ -880,6 +880,73 @@ def _render_orgdb_status() -> None:
         st.info("config.yaml 里还没有项目，先到配置页保存一个项目再回来")
 
 
+def _txdb_ready(val: str) -> bool:
+    """txdb 要么是 Bioconductor 包名（enrichGO 那边直接 library），要么是本地注释文件。"""
+    if not val:
+        return False
+    if val.startswith("TxDb.") and "/" not in val:
+        return True
+    return Path(val).exists()
+
+
+def _render_readiness(proj: dict, sp: str, ex: str) -> None:
+    """当前项目为了跑通模块 5 还差哪几样。
+
+    Tab 里下游是「建基因集 → 体检 ID → 写回 config」的长流程，中途离开再回来
+    很容易不知道走到哪了；这张表把四项状态并到一处，每项都带「怎么补」。
+    """
+    mods = proj.get("modules") or {}
+    orgdb = str(proj.get("orgdb") or "")
+    t2g = proj.get("term2gene_go") or {}
+    strip = str(proj.get("id_strip") or "")
+
+    rows = [
+        {
+            "检查项": "TxDb（模块 4 的前提）",
+            "状态": "✓" if _txdb_ready(str(proj.get("txdb") or "")) else "✗",
+            "当前": str(proj.get("txdb") or "没填"),
+            "怎么补": "「配置编辑 → ChIP 注释」选本地 GFF，或填 Bioconductor 包名",
+        },
+        {
+            "检查项": "基因集来源",
+            "状态": "✓" if (orgdb or t2g) else "✗",
+            "当前": f"OrgDb `{orgdb}`" if orgdb else (f"TERM2GENE {len(t2g)} 套" if t2g else "还没有"),
+            "怎么补": "下面路线 A（自建 OrgDb）或路线 B（gene2go 基因集），二选一",
+        },
+        {
+            "检查项": "id_strip（ID 对齐）",
+            "状态": "✓" if (strip or (orgdb and not t2g)) else "✗",
+            "当前": strip or ("不需要（有 OrgDb）" if orgdb and not t2g else "没填"),
+            "怎么补": "做第 ④ 步 ID 体检：geneId 与 gene2go 不是同一套字串",
+        },
+        {
+            "检查项": "5_gsea 开关",
+            "状态": "✓" if mods.get("5_gsea") else "✗",
+            "当前": "开" if mods.get("5_gsea") else "关",
+            "怎么补": "第 ⑤ 步写入 config 时会自动打开",
+        },
+    ]
+    n_ok = sum(1 for r in rows if r["状态"] == "✓")
+    if n_ok == len(rows):
+        st.success(f"{sp}/{ex} 已就绪，可以直接跑模块 5")
+    else:
+        st.warning(f"{sp}/{ex} 还差 {len(rows) - n_ok} 项，照下表补")
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _project_issues(sp: str, ex: str) -> list[dict]:
+    """写入后立刻回显：本项目在全局校验里还剩什么问题。
+
+    config_issues 返回的 field 形如 `species/experiment` 或 `species/experiment.字段`。"""
+    tag = f"{sp}/{ex}"
+    try:
+        issues = rt.config_issues()
+    except Exception:  # noqa: BLE001 - 校验本身挑错不该阻断写入流程
+        return []
+    return [i for i in issues
+            if i.get("field") == tag or str(i.get("field") or "").startswith(tag + ".")]
+
+
 def render_orgdb_tab() -> None:
     st.subheader("OrgDb 自建 / ID 映射")
     st.caption(
@@ -935,6 +1002,11 @@ def render_orgdb_tab() -> None:
     wkey = re.sub(r"[^0-9A-Za-z_]+", "_", sp)
     outdir = oh.species_orgdb_dir(ANNO_DIR, sp)
     orgdb_lib = oh.r_lib_dir()
+
+    # ---- 这个项目还差什么 ----
+    if sel != MANUAL:
+        _render_readiness(proj, sp, ex)
+        st.divider()
 
     # ---- 环境体检 ----
     st.markdown("#### ① 环境体检")
@@ -1103,44 +1175,82 @@ def render_orgdb_tab() -> None:
             st.caption("前缀分布：" + "、".join(f"{p} × {n}" for p, n in summary["prefix_top"]))
 
         suggest = oh.suggest_id_strip(ids)
-        id_strip = st.text_input(
-            "id_strip（正则，去掉这个前缀即得到 gene2go/KEGG 的 ID）",
-            value=proj.get("id_strip") or suggest, key=f"orgdb_strip_{wkey}",
-            help="例：^(gene-)?LOC → LOC100808170 / gene-LOC100808170 都变成 100808170",
-        )
         st.caption(f"推荐值：`{suggest or '（无）'}`")
 
-        if manifest and manifest.get("term2gene_go"):
-            if st.button("预览映射命中率", key=f"orgdb_preview_btn_{wkey}"):
-                pv = _preview_cached(tuple(ids), tuple(sorted(manifest["term2gene_go"].items())), id_strip)
-                st.session_state[pv_key] = pv
-            pv = st.session_state.get(pv_key)
-            if pv and pv.get("id_strip") == id_strip:
-                rows = []
-                for ont, d in pv["per_ont"].items():
-                    rows.append({
-                        "GO 类别": ont,
-                        "term 数": d["n_terms"],
-                        "库内基因": d["n_genes_in_db"],
-                        "命中": d["n_hit"],
-                        "命中率": f"{d['hit_rate']*100:.1f}%",
-                    })
-                st.dataframe(rows, use_container_width=True, hide_index=True)
-                worst = min((d["hit_rate"] for d in pv["per_ont"].values()), default=0.0)
-                if worst < 0.2:
-                    st.error("命中率过低：strip 规则大概写错了。先看下面的未命中示例对齐一下 ID 形状。")
-                elif worst < 0.6:
-                    st.warning("命中率偏低：确认 GFF 与 GTF 是否混用、LOC 前缀是否漏掉")
-                else:
-                    st.success("命中率正常，可以写入 config 并跑模块 5")
-                miss = next(iter(pv["per_ont"].values()), {}).get("samples_miss") or []
-                if miss:
-                    st.caption("未命中示例：" + "、".join(f"`{x}`" for x in miss))
+    # id_strip 既是下面预览的入参，也是 ⑤ 写进 config 的内容；不跟着 `if ids` 走，
+    # 否则「自建完 OrgDb 直接写回」这条最省事的路会因为没扫过 geneId 而断掉。
+    strip_key = f"orgdb_strip_{wkey}"
+    if strip_key not in st.session_state:
+        st.session_state[strip_key] = proj.get("id_strip") or (oh.suggest_id_strip(ids) if ids else "")
+    id_strip = st.text_input(
+        "id_strip（正则，去掉这个前缀即得到 gene2go/KEGG 的 ID）",
+        key=strip_key,
+        help="例：^(gene-)?LOC → LOC100808170 / gene-LOC100808170 都变成 100808170",
+    )
 
-        st.markdown("---")
+    if ids and manifest and manifest.get("term2gene_go"):
+        if st.button("预览映射命中率", key=f"orgdb_preview_btn_{wkey}"):
+            pv = _preview_cached(tuple(ids), tuple(sorted(manifest["term2gene_go"].items())), id_strip)
+            st.session_state[pv_key] = pv
+        pv = st.session_state.get(pv_key)
+        if pv and pv.get("id_strip") == id_strip:
+            rows = []
+            for ont, d in pv["per_ont"].items():
+                rows.append({
+                    "GO 类别": ont,
+                    "term 数": d["n_terms"],
+                    "库内基因": d["n_genes_in_db"],
+                    "命中": d["n_hit"],
+                    "命中率": f"{d['hit_rate']*100:.1f}%",
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+            worst = min((d["hit_rate"] for d in pv["per_ont"].values()), default=0.0)
+            if worst < 0.2:
+                st.error("命中率过低：strip 规则大概写错了。先看下面的未命中示例对齐一下 ID 形状。")
+            elif worst < 0.6:
+                st.warning("命中率偏低：确认 GFF 与 GTF 是否混用、LOC 前缀是否漏掉")
+            else:
+                st.success("命中率正常，可以写入 config 并跑模块 5")
+            miss = next(iter(pv["per_ont"].values()), {}).get("samples_miss") or []
+            if miss:
+                st.caption("未命中示例：" + "、".join(f"`{x}`" for x in miss))
+
+    st.divider()
+
+    # ---- ⑤ 写入 config ----
+    st.markdown("#### ⑤ 写入 config（收尾）")
+    res_key = f"orgdb_write_res_{wkey}"
+    res = st.session_state.pop(res_key, None)
+    if res:
+        st.success(res["msg"])
+        # 写完立刻把本项目在全局校验里剩的问题回显出来，不用再切到配置页对照
+        if res.get("issues"):
+            for it in res["issues"]:
+                fn = {"error": st.error, "warn": st.warning}.get(it.get("level"), st.info)
+                fn(it.get("msg") or "")
+        else:
+            st.caption("全局校验里这一段已经没有 error / warn 了")
+
+    will_write = []
+    if manifest and manifest.get("term2gene_go"):
+        will_write.append(f"`term2gene_go`（{len(manifest['term2gene_go'])} 套）+ `term2name_go` + `universe`")
+    if built:
+        will_write.append(f"`orgdb` = `{built[-1]['pkg']}`")
+    elif cfg_orgdb:
+        will_write.append(f"`orgdb` = `{cfg_orgdb}`（沿用已配置的）")
+    if id_strip:
+        will_write.append(f"`id_strip` = `{id_strip}`")
+    will_write.append("`modules.5_gsea` = 开")
+
+    if not (built or (manifest and manifest.get("term2gene_go")) or cfg_orgdb):
+        st.info("还没有可写入的基因集：先在上面走路线 A（自建 OrgDb）或路线 B（生成 gene2go 基因集）")
+    else:
+        st.caption("将写入：" + "、".join(will_write))
         cw1, cw2 = st.columns([1, 2])
         if cw1.button("写入 config", type="primary", key=f"orgdb_write_{wkey}"):
-            fields: dict = {"id_strip": id_strip}
+            fields: dict = {}
+            if id_strip:
+                fields["id_strip"] = id_strip
             if manifest and manifest.get("term2gene_go"):
                 fields.update({
                     "term2gene_go": manifest["term2gene_go"],
@@ -1162,17 +1272,39 @@ def render_orgdb_tab() -> None:
                                         create_missing=(sel == MANUAL), template=template)
             if ok:
                 ok2, msg2 = oh.enable_gsea_module(CONFIG_PATH, sp, ex, True)
-                st.success(f"{msg}；{msg2}。到「配置编辑 → GSEA 参数」确认后即可跑模块 5")
                 _scan_ids_cached.clear()
                 _preview_cached.clear()
-                time.sleep(0.6)
+                st.session_state[res_key] = {
+                    "msg": f"{msg}；{msg2}。可以在「配置编辑」再检查一遍 GSEA 参数",
+                    "issues": _project_issues(sp, ex),
+                }
                 st.rerun()
             else:
                 st.error(msg)
         cw2.caption(
-            "写入内容：项目的 `orgdb`（若已建包）+ `term2gene_go`/`term2name_go`/`universe` + `id_strip`，"
-            "并顺手打开 `5_gsea` 开关；config 里没有这一条时会自动新建。"
+            "config 里没有这一条时会自动新建；写完后上面那张「还差什么」表会跟着变。"
         )
+
+        with st.expander("清除本项目的基因集配置"):
+            st.caption(
+                "把 `orgdb` / `term2gene_go` / `term2name_go` / `universe` / `id_strip` 一并删掉，"
+                "方便换一套重来（`5_gsea` 开关不动）。"
+            )
+            sure = st.checkbox("我确认要清除", key=f"orgdb_clear_ok_{wkey}")
+            if st.button("清除", key=f"orgdb_clear_btn_{wkey}", disabled=not sure):
+                ok, msg = oh.update_project(
+                    CONFIG_PATH, sp, ex,
+                    {"orgdb": None, "term2gene_go": None, "term2name_go": None,
+                     "universe": None, "id_strip": None},
+                )
+                if ok:
+                    _preview_cached.clear()
+                    st.session_state.pop(pv_key, None)
+                    st.session_state.pop(strip_key, None)
+                    st.toast("已清除")
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
 # ---------- 主布局 ----------
@@ -1192,10 +1324,19 @@ if active_id:
                         text=f"{t.get('species_id')} · {t.get('stage')} · {overall*100:.1f}% · {t.get('message', '')[:80]}")
         st.divider()
 
+# 开了 GSEA 却还没有基因集的项目：tab 标题上挂个待办数，免得要一个个点进去才发现
+def _pending_gene_set() -> int:
+    return sum(
+        1 for p in rt.get_projects()
+        if (p.get("modules") or {}).get("5_gsea") and not (p.get("orgdb") or p.get("term2gene_go"))
+    )
+
+
+_n_pending = _pending_gene_set()
 tab_cat, tab_custom, tab_orgdb, tab_tasks, tab_existing = st.tabs([
     f"物种 catalog ({len(SPECIES_DB)})",
     "自定义物种",
-    "OrgDb 构建 / ID 映射",
+    "OrgDb 构建 / ID 映射" + (f" ({_n_pending} 项待补)" if _n_pending else ""),
     f"任务面板",
     f"已配置",
 ])
