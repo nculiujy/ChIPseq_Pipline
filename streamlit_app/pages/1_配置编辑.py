@@ -96,14 +96,6 @@ _SAMPLE_SUFFIX_RULES = (
     (re.compile(r"^(.+)_1\.fq(?:\.gz)?$"), "_1.fq", "_2.fq"),
 )
 
-# 名字里带这些词的样本视为对照（Input / IgG / CK 等）
-_INPUT_HINTS = ("input", "inp", "ctrl", "control", "mock", "igg", "ck")
-
-
-def _is_input_sample(name: str) -> bool:
-    low = str(name).lower()
-    return any(h in low for h in _INPUT_HINTS)
-
 
 def _project_fastq_dirs(project: dict) -> list:
     """项目可能存放 fastq 的目录，QC 产物优先于原始数据。"""
@@ -188,8 +180,12 @@ def build_editor_columns(detected: dict, current) -> dict:
     """配对表三列的下拉配置。
 
     候选只用来「提示有哪些名字」，具体哪一行填什么由用户自己选：
-    同一个 Input 配几个 IP、哪些样本归到同一个 rep 组，都是实验设计问题，
-    靠命名规则猜必然出错——IP2 和 INPUT2 的数字后缀对得上，不代表它们就该配对。
+    同一个对照配几个 IP、哪些样本归到同一个 rep 组，都是实验设计问题。
+
+    IP 样本与 Input 对照共用同一份候选。哪个名字算对照、哪个算实验组，
+    取决于实验怎么设计，不是名字能决定的：按 input/igg/ck 这类词根去猜，
+    换套命名习惯（对照叫 WT、叫 Ctrl_1，或者干脆叫 A1）就全错，
+    反而不如不区分，全部列出来让人自己挑。
     """
     def _col_values(col: str) -> list:
         if current is None or not len(current) or col not in current.columns:
@@ -198,31 +194,29 @@ def build_editor_columns(detected: dict, current) -> dict:
         # 空格子经过 astype(str) 会变成 "nan"，不滤掉的话下拉里会多出个叫 nan 的样本
         return [v for v in vals if v and v.lower() not in ("nan", "none")]
 
-    names = list(detected or {})
-    ip_opts = _merge_options(
-        [s for s in names if not _is_input_sample(s)], _col_values("IP sample"))
-    in_opts = _merge_options(
-        [s for s in names if _is_input_sample(s)], _col_values("Input"))
-    g_opts = rep_group_options(_col_values("group"), n_min=max(3, len(ip_opts)))
+    # 两列候选完全一致：识别到的全部样本 + 文件里两列写过的全部名字
+    pool = _merge_options(
+        list(detected or {}),
+        _col_values("IP sample") + _col_values("Input"),
+    )
+    g_opts = rep_group_options(_col_values("group"), n_min=max(3, len(pool)))
 
     # 一个样本都没识别到、文件里也没写过时不留下拉：空列表会让这一列没法用
-    ip_col = (
-        st.column_config.SelectboxColumn(
-            "IP 样本", options=[""] + ip_opts, required=False,
-            help="从识别到的样本里选，留空表示这一行不用",
+    if pool:
+        ip_col = st.column_config.SelectboxColumn(
+            "IP 样本", options=[""] + pool, required=False,
+            help="从识别到的样本里选，留空表示这一行不用；与 Input 列的候选相同",
         )
-        if ip_opts else st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名")
-    )
-    in_col = (
-        st.column_config.SelectboxColumn(
-            "Input 对照", options=[""] + in_opts, required=False,
-            help="这一对配哪个对照样本；留空则不做 IP vs Input",
+        in_col = st.column_config.SelectboxColumn(
+            "Input 对照", options=[""] + pool, required=False,
+            help="这一对拿哪个样本做对照，留空则不做 IP vs Input；与 IP 列的候选相同",
         )
-        if in_opts else st.column_config.TextColumn("Input 对照", help="对照组样本名")
-    )
+    else:
+        ip_col = st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名")
+        in_col = st.column_config.TextColumn("Input 对照", help="对照组样本名")
     g_col = st.column_config.SelectboxColumn(
         "重复组", options=g_opts, required=False,
-        help="同组样本互为生物学重复，只填 rep1/rep2/rep3 这种写法；留空表示这一对单独分析",
+        help="同组样本互为生物学重复，只填 rep1/rep2/rep3… 这种写法；留空表示这一对单独分析",
     )
     return {"IP sample": ip_col, "Input": in_col, "group": g_col}
 
@@ -1121,7 +1115,7 @@ with tab3:
         "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
         "Pipeline 会自动对同组样本取 Consensus Peaks（重叠区域），"
         "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。\n\n"
-        "组名统一用 `rep1` / `rep2` / `rep3`，下拉框里只能选这种格式——"
+        "组名统一用 `rep1` / `rep2` / `rep3` 这种写法，需要更多组就接着 `rep4`、`rep5` 往下排——"
         "这一列表达的是「哪几对互为生物学重复」，不是处理组名。"
     )
 
@@ -1177,8 +1171,8 @@ with tab3:
                             + "、".join(f"`{s}`" for s in detected)
                         )
                         st.caption(
-                            "下表三列都是下拉框，候选就是识别到的这些名字："
-                            "哪几个 IP 配哪个 Input、哪些归到同一个 rep 组，由你自己挑。"
+                            "下表三列都是下拉框，识别到的名字在 IP 样本和 Input 对照两列里都能选："
+                            "哪几个配哪个对照、哪些归到同一个 rep 组，由你自己挑。"
                         )
                     else:
                         st.caption(
