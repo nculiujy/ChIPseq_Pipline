@@ -23,6 +23,23 @@
 _pid_file() { echo "$DATA_DIR/streamlit.pid"; }
 _out_log()  { echo "$DATA_DIR/logs/streamlit.out"; }
 
+# ---------- 启动器环境需要哪些包 ----------
+# 启动器只跑 Streamlit UI，不碰分析，所以这里只要「页面里 import 到的第三方包」。
+# 加新依赖时改这一处：新建环境会带上，已装好的环境在 update 时自动补齐。
+# 格式 conda包名:python模块名，两者不同名（pyyaml -> yaml）不能省。
+CHIPSEQ_LAUNCHER_PKGS="streamlit pyyaml plotly"
+_LAUNCHER_IMPORTS="streamlit:streamlit pyyaml:yaml plotly:plotly"
+
+# 打印缺的 conda 包名（空格分隔）；全部齐了输出为空
+_launcher_missing() {
+    local py="$CHIPSEQ_LAUNCH_ENV/bin/python" item pkg mod
+    [ -x "$py" ] || { echo "$CHIPSEQ_LAUNCHER_PKGS"; return; }
+    for item in $_LAUNCHER_IMPORTS; do
+        pkg="${item%%:*}"; mod="${item##*:}"
+        "$py" -c "import $mod" >/dev/null 2>&1 || printf '%s ' "$pkg"
+    done
+}
+
 # 从 $DATA_DIR/repo_path 读取仓库位置；bootstrap.sh 会写入
 _repo_dir() {
     local f="$DATA_DIR/repo_path"
@@ -47,15 +64,22 @@ runtime_install() {
     command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1 \
         || die "未检测到 conda/mamba。请先安装 Miniforge（https://github.com/conda-forge/miniforge）后重跑 bootstrap.sh"
 
-    if [ -x "$launcher/bin/streamlit" ] \
-       && "$launcher/bin/python" -c "import streamlit, yaml" >/dev/null 2>&1; then
+    local inst; inst=$(_installer)
+    local miss; miss=$(_launcher_missing)
+    if [ -x "$launcher/bin/streamlit" ] && [ -z "$miss" ]; then
         ok "启动器环境已就绪: $launcher（跳过重建；需要刷新用 CHIPSEQ_REFRESH_LAUNCHER=1）"
+    elif [ -x "$launcher/bin/python" ]; then
+        # 环境在，只是缺包（比如后来结果预览页开始用 plotly）。整个重建要重新求解一遍
+        # 依赖（慢盘上几十分钟），补装就几秒。
+        log "启动器环境缺依赖（$miss），补齐: $launcher"
+        "$inst" install -p "$launcher" -y $miss \
+            || die "补齐启动器依赖失败（可手动重试：$inst install -p $launcher -y $miss）"
+        _chipseq_sanitize_environments_txt
     else
-        log "创建精简启动器环境（python=3.11 + streamlit + pyyaml）: $launcher"
+        log "创建精简启动器环境（python=3.11 + $CHIPSEQ_LAUNCHER_PKGS）: $launcher"
         check_disk_space "$(dirname "$launcher")" 1
-        local inst; inst=$(_installer)
-        "$inst" create -p "$launcher" -y python=3.11 streamlit pyyaml \
-            || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 streamlit pyyaml）"
+        "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
+            || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
         _chipseq_sanitize_environments_txt
     fi
 
@@ -234,7 +258,14 @@ runtime_status() {
     local repo; repo=$(_repo_dir 2>/dev/null || echo "?")
     echo "运行时:      conda（launcher + analysis 双 prefix）"
     echo "启动器环境:  $launcher"
-    [ -x "$launcher/bin/streamlit" ] && echo "  状态:      就绪" || echo "  状态:      未安装（请跑 bootstrap.sh）"
+    local miss; miss=$(_launcher_missing)
+    if [ -x "$launcher/bin/streamlit" ] && [ -z "$miss" ]; then
+        echo "  状态:      就绪"
+    elif [ -x "$launcher/bin/python" ]; then
+        echo "  状态:      缺依赖（$miss）—— 跑 chipseq-app-update 补齐"
+    else
+        echo "  状态:      未安装（请跑 bootstrap.sh）"
+    fi
     [ -d "$launcher" ] && echo "  大小:      $(du -sh "$launcher" 2>/dev/null | awk '{print $1}')"
     echo "分析环境:    $analysis"
     if [ -x "$analysis/bin/snakemake" ]; then
@@ -355,8 +386,9 @@ runtime_update() {
     local _repo; _repo=$(_repo_dir 2>/dev/null || echo ".")
     seed_repo_config "$_repo" "$CHIPSEQ_RUNTIME_DIR/assets"
     log "更新启动器环境: $launcher"
-    # 启动器只依赖 python/streamlit/pyyaml，绝大多数更新不需要重建。
-    # 早先这里无条件 rm -rf，导致每次 update 都重跑一遍 conda 求解（慢盘上几十分钟）。
+    # 启动器只依赖 $CHIPSEQ_LAUNCHER_PKGS，绝大多数更新不需要重建（runtime_install
+    # 会先逐个 import 检查，缺什么只补什么）。早先这里无条件 rm -rf，导致每次 update
+    # 都重跑一遍 conda 求解（慢盘上几十分钟）。
     if [ "${CHIPSEQ_REFRESH_LAUNCHER:-0}" = "1" ]; then
         log "强制刷新启动器环境（CHIPSEQ_REFRESH_LAUNCHER=1）: $launcher"
         rm -rf "$launcher"

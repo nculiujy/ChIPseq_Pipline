@@ -20,6 +20,15 @@ from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E4
 
 from utils.version import APP_FULL_NAME  # noqa: E402
 
+# plotly 只用来画比对率柱状图。启动器环境万一没装（早期版本的 launch 环境就是这么
+# 建的），退回 st.bar_chart 也比整页报错强——所以在这里探一次，而不是放在 try 里：
+# 放在下面那个 try 里时，ImportError 会被当成「日志解析失败」，把已经解析好的表格
+# 和下载按钮一起吃掉。
+try:
+    import plotly.express as px
+except ImportError:  # pragma: no cover - 取决于部署环境
+    px = None
+
 st.set_page_config(page_title=f"结果预览 · {APP_FULL_NAME}", layout="wide")
 inject_theme()
 render_sidebar("preview")
@@ -119,31 +128,35 @@ if selected_proj:
                     # 绘制柱状图
                     st.markdown("---")
                     st.markdown("**比对率柱状图**")
-                    
-                    import plotly.express as px
-                    
-                    fig = px.bar(
-                        df_align,
-                        x="样本",
-                        y="比对率 (%)",
-                        text="比对率 (%)",
-                        title=f"{species}/{experiment} — Bowtie2 比对率",
-                        color="比对率 (%)",
-                        color_continuous_scale="RdYlGn",
-                        range_color=[0, 100]
-                    )
-                    
-                    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-                    fig.update_layout(
-                        xaxis_title="样本名称",
-                        yaxis_title="比对率 (%)",
-                        yaxis_range=[0, 100],
-                        showlegend=False,
-                        height=500
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
+
+                    if px is not None:
+                        fig = px.bar(
+                            df_align,
+                            x="样本",
+                            y="比对率 (%)",
+                            text="比对率 (%)",
+                            title=f"{species}/{experiment} — Bowtie2 比对率",
+                            color="比对率 (%)",
+                            color_continuous_scale="RdYlGn",
+                            range_color=[0, 100]
+                        )
+
+                        fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                        fig.update_layout(
+                            xaxis_title="样本名称",
+                            yaxis_title="比对率 (%)",
+                            yaxis_range=[0, 100],
+                            showlegend=False,
+                            height=500
+                        )
+
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.bar_chart(df_align.set_index("样本")["比对率 (%)"], height=420)
+                        st.caption(
+                            "启动器环境没装 plotly，用的是内置柱状图。"
+                            "运行 `chipseq-app-update` 会自动补上（也能看，只是没有数值标注）。"
+                        )
                     # 下载按钮
                     st.markdown("---")
                     csv_data = df_align.to_csv(index=False, encoding="utf-8-sig")
