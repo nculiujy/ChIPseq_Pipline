@@ -288,17 +288,33 @@ div[data-testid="stAlert"].stInfo, [data-testid="stAlert"]:has([data-testid="stA
 [data-testid="stExpander"] details, [data-testid="stExpander"] summary { border: none !important; background: transparent !important; border-radius: var(--ux-radius) !important; }
 [data-testid="stExpander"] summary { font-weight: 650 !important; color: var(--ux-text) !important; }
 
-/* 标签页：控制台下划线分段 */
+/* 标签页：控制台下划线分段。
+   这几个 tab 是页面主入口，默认样式又小又淡，用户扫一眼根本注意不到，
+   所以字号与字重都比正文高一档，未选中也不能弱化成灰字。 */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
-  gap: 2px; border-bottom: 1px solid var(--ux-border); background: transparent; border-radius: 0; padding: 0;
+  gap: 4px; border-bottom: 1px solid var(--ux-border-strong); background: transparent; border-radius: 0; padding: 0;
 }
 [data-testid="stTabs"] [data-baseweb="tab"] {
-  border-radius: 0 !important; background: transparent !important; border: none !important;
-  border-bottom: 2px solid transparent !important; font-weight: 600; color: var(--ux-muted) !important;
-  padding: .5rem .9rem !important;
+  border-radius: var(--ux-radius-sm) var(--ux-radius-sm) 0 0 !important;
+  background: transparent !important; border: none !important;
+  border-bottom: 3px solid transparent !important;
+  font-size: 1.02rem !important; font-weight: 700 !important; letter-spacing: .01em !important;
+  color: var(--ux-text) !important; opacity: .78;
+  padding: .6rem 1.05rem !important;
+}
+/* 文字在内层 markdown 容器里，只改 tab 本体盖不住它 */
+[data-testid="stTabs"] [data-baseweb="tab"] p,
+[data-testid="stTabs"] [data-baseweb="tab"] div[data-testid="stMarkdownContainer"] {
+  font-size: inherit !important; font-weight: inherit !important; color: inherit !important;
+  letter-spacing: inherit !important; margin: 0 !important;
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {
+  opacity: 1 !important; color: var(--ux-accent-strong) !important;
+  background: var(--ux-accent-soft) !important;
 }
 [data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
-  color: var(--ux-accent-strong) !important; border-bottom: 2px solid var(--ux-accent) !important; background: transparent !important;
+  opacity: 1 !important; color: var(--ux-accent-strong) !important;
+  border-bottom: 3px solid var(--ux-accent) !important; background: var(--ux-accent-soft) !important;
 }
 [data-testid="stTabs"] [data-baseweb="tab-highlight"] { display: none; }
 
