@@ -156,36 +156,44 @@ def _merge_options(primary, extra) -> list:
     return out
 
 
-def rep_group_options(current=(), n_min: int = 3) -> list:
-    """重复组下拉选项：只给 rep1 / rep2 / rep3 这种写法。
+# 重复组只认「rep + 数字」。下游按组名字符串分组，rep1 和 REP1、rep01 都会被当成
+# 互不相干的组，所以统一要求小写 rep + 阿拉伯数字。
+_REP_GROUP_RE = re.compile(r"rep\d+")
 
-    下游按组名分组，写什么名字都能跑，但 WT/OE 这类名字表达的是处理组、
-    不是生物学重复，混进这一列会让人误以为同组样本是不同处理。
-    老文件里已经存在的非规范组名照样列进去，否则编辑框显示成空白，
-    用户会以为数据被清空了。
+
+def bad_rep_groups(values) -> list:
+    """挑出不符合 repN 格式的组名。
+
+    空值不算错——留空表示这一对不参与重复组分析。
+    列里是自己手填的，写错了下游会静默地把它当成另一个组，consensus peaks
+    和重复间相关性都会少算一组，所以存盘前要先拦一道。
     """
-    used = [str(g or "").strip() for g in current if str(g or "").strip()]
-    hi = max(1, n_min)
-    for g in used:
-        m = re.fullmatch(r"rep(\d+)", g, flags=re.IGNORECASE)
-        if m:
-            hi = max(hi, int(m.group(1)))
-    opts = [f"rep{i}" for i in range(1, hi + 1)]
-    opts += [g for g in used if g not in opts]
-    # 首项留空串，用户才有办法把某一行改回「不分组」
-    return [""] + opts
+    bad = set()
+    for g in values:
+        # NaN / None 是「没填」，不是「填错了」：直接 str() 会变成字面量 nan
+        if g is None or pd.isna(g):
+            continue
+        s = str(g).strip()
+        if s and not _REP_GROUP_RE.fullmatch(s):
+            bad.add(s)
+    return sorted(bad)
 
 
 def build_editor_columns(detected: dict, current) -> dict:
-    """配对表三列的下拉配置。
+    """配对表三列的编辑配置。
 
-    候选只用来「提示有哪些名字」，具体哪一行填什么由用户自己选：
-    同一个对照配几个 IP、哪些样本归到同一个 rep 组，都是实验设计问题。
+    IP / Input 两列的下拉候选只用来「提示有哪些名字」，具体哪一行填什么由
+    用户自己选：同一个对照配几个 IP、哪些样本归到同一个 rep 组，都是实验
+    设计问题。
 
     IP 样本与 Input 对照共用同一份候选。哪个名字算对照、哪个算实验组，
     取决于实验怎么设计，不是名字能决定的：按 input/igg/ck 这类词根去猜，
     换套命名习惯（对照叫 WT、叫 Ctrl_1，或者干脆叫 A1）就全错，
     反而不如不区分，全部列出来让人自己挑。
+
+    重复组用普通文本列而不是下拉：组数没有上限，rep12、rep30 都可能有，
+    下拉得预先枚举，总有人超出范围后填不进去。格式约束交给
+    bad_rep_groups() 在页面上实时提示、存盘时拦下。
     """
     def _col_values(col: str) -> list:
         if current is None or not len(current) or col not in current.columns:
@@ -199,7 +207,6 @@ def build_editor_columns(detected: dict, current) -> dict:
         list(detected or {}),
         _col_values("IP sample") + _col_values("Input"),
     )
-    g_opts = rep_group_options(_col_values("group"), n_min=max(3, len(pool)))
 
     # 一个样本都没识别到、文件里也没写过时不留下拉：空列表会让这一列没法用
     if pool:
@@ -214,9 +221,9 @@ def build_editor_columns(detected: dict, current) -> dict:
     else:
         ip_col = st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名")
         in_col = st.column_config.TextColumn("Input 对照", help="对照组样本名")
-    g_col = st.column_config.SelectboxColumn(
-        "重复组", options=g_opts, required=False,
-        help="同组样本互为生物学重复，只填 rep1/rep2/rep3… 这种写法；留空表示这一对单独分析",
+    g_col = st.column_config.TextColumn(
+        "重复组",
+        help="自己填 rep1 / rep2 / rep3 …（rep + 数字，组数不限）；留空表示这一对单独分析",
     )
     return {"IP sample": ip_col, "Input": in_col, "group": g_col}
 
@@ -1115,7 +1122,8 @@ with tab3:
         "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
         "Pipeline 会自动对同组样本取 Consensus Peaks（重叠区域），"
         "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。\n\n"
-        "组名统一用 `rep1` / `rep2` / `rep3` 这种写法，需要更多组就接着 `rep4`、`rep5` 往下排——"
+        "组名统一用 `rep1` / `rep2` / `rep3` 这种写法，组数不限，接着往下排 `rep4`、`rep5` 即可——"
+        "格式只认小写 `rep` + 数字，写错了存盘时会被拦下。"
         "这一列表达的是「哪几对互为生物学重复」，不是处理组名。"
     )
 
@@ -1171,8 +1179,9 @@ with tab3:
                             + "、".join(f"`{s}`" for s in detected)
                         )
                         st.caption(
-                            "下表三列都是下拉框，识别到的名字在 IP 样本和 Input 对照两列里都能选："
-                            "哪几个配哪个对照、哪些归到同一个 rep 组，由你自己挑。"
+                            "IP 样本与 Input 对照两列是下拉框，识别到的名字两边都能选；"
+                            "重复组直接手填 rep1 / rep2 / rep3 …，组数不限。"
+                            "哪几个配哪个对照、怎么分组，由你自己定。"
                         )
                     else:
                         st.caption(
@@ -1191,14 +1200,22 @@ with tab3:
                         key=f"md_editor_{pid}_{_ver}",
                     )
 
-                    # 重复组统计
+                    # 重复组统计；组名是手填的，顺手把写错的挑出来提醒
                     _g = edf["group"].fillna("").astype(str).str.strip()
-                    _g = _g[_g != ""]
-                    if len(_g):
+                    _g_set = _g[_g != ""]
+                    if len(_g_set):
                         st.caption("重复组：" + "、".join(
-                            f"`{k}`({v})" for k, v in _g.value_counts().items()))
+                            f"`{k}`({v})" for k, v in _g_set.value_counts().items()))
                     else:
                         st.caption("当前未设置重复组，所有样本对将独立分析")
+                    _bad_g = bad_rep_groups(_g_set)
+                    if _bad_g:
+                        st.warning(
+                            "这些组名不符合格式：" + "、".join(f"`{x}`" for x in _bad_g)
+                            + "。应为小写 rep + 数字（rep1、rep2、rep15…）。"
+                            "下游按字符串分组，写错会把同一组拆成互不相干的几组，"
+                            "consensus peaks 和重复间相关性都会少算。"
+                        )
 
                 _d = edf.copy()
                 _d["project"] = pid
@@ -1353,34 +1370,45 @@ with tab3:
                 _out[_c] = _out[_c].fillna("").astype(str).str.strip()
             # 丢掉空行（data_editor 加了一行却没填）
             _out = _out[(_out["IP sample"] != "") | (_out["Input"] != "")]
-            save_metadata(_out[meta_cols + ["project"]])
 
-            # 2. 重新读取最新 config，避免覆盖其他 Tab 的修改
-            fresh_cfg = load_config()
+            # 组名格式不对就整个不存：写进 csv 后下游会把它当成另一个组，
+            # 而且重新打开页面看到的就是错的，一路错到分析结果里
+            _bad_to_save = bad_rep_groups(_out["group"])
+            if _bad_to_save:
+                st.error(
+                    "重复组格式不对，本次未保存："
+                    + "、".join(f"`{x}`" for x in _bad_to_save)
+                    + "。应为小写 rep + 数字（rep1、rep2、rep15…），或者留空。"
+                )
+            else:
+                save_metadata(_out[meta_cols + ["project"]])
 
-            # 3. 保存 consensus_peaks 参数到 config.yaml
-            fresh_cfg["consensus_peaks"] = {
-                "min_overlap": int(consensus_min),
-                "min_fraction": float(consensus_frac),
-            }
+                # 2. 重新读取最新 config，避免覆盖其他 Tab 的修改
+                fresh_cfg = load_config()
 
-            # 4. 保存 comparisons 到 config.yaml（从 session_state 读取）
-            if "deeptools" not in fresh_cfg:
-                fresh_cfg["deeptools"] = {}
-            fresh_cfg["deeptools"]["comparisons"] = (
-                st.session_state.get("comparisons_list", []) if available_groups else []
-            )
+                # 3. 保存 consensus_peaks 参数到 config.yaml
+                fresh_cfg["consensus_peaks"] = {
+                    "min_overlap": int(consensus_min),
+                    "min_fraction": float(consensus_frac),
+                }
 
-            save_config(fresh_cfg)
+                # 4. 保存 comparisons 到 config.yaml（从 session_state 读取）
+                if "deeptools" not in fresh_cfg:
+                    fresh_cfg["deeptools"] = {}
+                fresh_cfg["deeptools"]["comparisons"] = (
+                    st.session_state.get("comparisons_list", []) if available_groups else []
+                )
 
-            # 保存后彻底重置编辑器：换 key 丢弃增量，
-            # 下一轮直接从刚写好的 csv 重读，避免旧增量被二次施加
-            # （删行增量叠到新表上会直接吃掉一行）。
-            for _p in projects_tab3:
-                _pid = f"{_p.get('species', '')}/{_p.get('experiment', '')}"
-                st.session_state[f"md_ver_{_pid}"] = st.session_state.get(f"md_ver_{_pid}", 0) + 1
-            st.session_state["_tab3_flash"] = "样本配对表、Consensus 参数、Comparisons 已全部保存！"
-            st.rerun()
+                save_config(fresh_cfg)
+
+                # 保存后彻底重置编辑器：换 key 丢弃增量，
+                # 下一轮直接从刚写好的 csv 重读，避免旧增量被二次施加
+                # （删行增量叠到新表上会直接吃掉一行）。
+                for _p in projects_tab3:
+                    _pid = f"{_p.get('species', '')}/{_p.get('experiment', '')}"
+                    st.session_state[f"md_ver_{_pid}"] = st.session_state.get(f"md_ver_{_pid}", 0) + 1
+                st.session_state["_tab3_flash"] = "样本配对表、Consensus 参数、Comparisons 已全部保存！"
+                st.rerun()
     else:
         st.warning("未找到 metadata.csv 文件")
         if st.button("创建空模板"):
