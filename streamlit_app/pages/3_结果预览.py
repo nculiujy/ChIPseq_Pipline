@@ -782,7 +782,7 @@ if selected_proj:
             for _w in _gb_contig_warn:
                 st.warning(_w)
 
-            # ---- 注释：先自动按「染色体命名与 bw 是否一致」挑，再允许手动改 ----
+            # ---- 注释：自动取与比对数据库同源的那份，再允许手动改 ----
             _gb_auto = genome_browser.resolve_annotation(
                 BASE_DIR, species, proj.get("index_dir", ""), proj.get("txdb", ""), _gb_chroms,
             )
@@ -792,7 +792,9 @@ if selected_proj:
                 _gb_paths = [c["path"] for c in _gb_cands]
                 _gb_labels = {
                     c["path"]: (f"{c['source']} · {os.path.basename(c['path'])}"
-                                 f"（染色体匹配 {c['score']:.0%}）")
+                                 f"（名字 {c['score']:.0%}"
+                                 + (f"，长度 {c['length_score']:.0%}" if c.get("n_regions") else "")
+                                 + "）")
                     for c in _gb_cands
                 }
                 _gb_default = (_gb_paths.index(_gb_auto["path"])
@@ -800,10 +802,22 @@ if selected_proj:
                 _gb_chosen = st.selectbox(
                     "注释文件", _gb_paths, index=_gb_default,
                     format_func=lambda p: _gb_labels.get(p, p), key="gb_anno_path",
-                    help="基因模型和基因名定位都来自这份注释。默认选染色体命名与 bigWig 一致的那份，"
+                    help="基因模型和基因名定位都来自这份注释。默认取与比对数据库（本项目"
+                         "的 bowtie2 索引）同源的那份——染色体名和长度都对得上；"
                          "换一份不兼容的会让基因坐标整体错位。",
                 )
                 _gb_anno_info = next(c for c in _gb_cands if c["path"] == _gb_chosen)
+
+            # 把「凭什么算同源」摆到明面上：用户在图上看到的基因模型，依据就是这行
+            _gb_ic = _gb_auto.get("index_contigs") or {}
+            if _gb_auto.get("index_fai"):
+                _gb_names = ", ".join(list(_gb_ic)[:4])
+                st.caption(
+                    ("✔ 背景注释与比对数据库同源　" if _gb_anno_info.get("same_genome") else "")
+                    + f"比对数据库：`{os.path.relpath(_gb_auto['index_fai'], BASE_DIR)}`"
+                    + (f"（{len(_gb_ic)} 条：{_gb_names}{' …' if len(_gb_ic) > 4 else ''}）"
+                       if _gb_ic else "")
+                )
             if _gb_anno_info.get("score", 0) < 0.5:
                 st.warning(
                     f"这份注释只有 {_gb_anno_info['score']:.0%} 的染色体名能对上 bigWig"
@@ -991,8 +1005,10 @@ if selected_proj:
                     "- **信号**：各样本 `3_ChIPseq/<样本>/<样本>.bw`，由 "
                     "`bamCoverage --binSize 5 --ignoreDuplicates --normalizeUsing BPM` 生成，"
                     "同项目内所有轨道归一化方式相同，可以直接比高低。\n"
-                    "- **注释**：与比对索引同源的那份 GFF/GTF（按染色体命名与 bigWig 的匹配率自动选），"
-                    "基因坐标与峰位置在同一坐标系里。\n"
+                    "- **注释**：自动选与**比对数据库**同源的那份 GFF/GTF。比对数据库就是这个项目"
+                    "跑 3_ChIPseq 用的 bowtie2 索引，bigWig 的染色体名与长度都来自建索引的 FASTA；"
+                    "选完后会同时校验染色体名与长度（长度取自索引的 `.fai`），两项都对上才算同源，"
+                    "所以基因坐标与峰位置必然在同一坐标系里。\n"
                     "- **差值**：`CHIP − INPUT` 按 `config/metadata.csv` 的配对逐 bin 相减，"
                     "只能在同 binSize、同归一化方式下做，本项目两者都满足。\n"
                     "- **平滑**：滑动均值，窗口宽度 = `平滑bp / bin宽度`，**只影响显示**；"

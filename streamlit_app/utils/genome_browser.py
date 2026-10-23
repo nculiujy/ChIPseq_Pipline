@@ -78,6 +78,9 @@ GFF_EXTS = (".gff", ".gff3", ".gtf", ".gff.gz", ".gff3.gz", ".gtf.gz")
 CACHE_SUBDIR = os.path.join("cache", "browser")
 
 DEFAULT_BINS = 1000
+
+# 注释里用来声明「整条染色体」的 feature 类型，用来提取长度做同源校验
+_REGION_FEATS = frozenset({"chromosome", "region", "supercontig", "contig"})
 MAX_BINS = 2000
 MIN_SPAN = 200                 # bp，最小视野
 MAX_SPAN = 2e8                 # bp，最大视野（≈整条染色体）
@@ -338,6 +341,50 @@ def _scan_gffs(folder: str) -> List[str]:
     return found
 
 
+def _index_contigs(index_dir: str, repo_root: str) -> Tuple[Dict[str, int], str]:
+    """从比对索引反推这套数据库的 seqid 与长度，返回 (染色体表, fai 路径)。
+
+    ``index_dir`` 指向 bowtie2 索引前缀（…/bowtie2_index_TAIR/TAIR10_Chr），
+    同目录的 ``<prefix>.fa.fai`` 前两列就是建索引那份 FASTA 的染色体名与长度。
+
+    为什么拿它当锚点：bigWig 的 header 本来就是 aligner 从这份 FASTA 抄过去的，
+    而「注释是不是同一套基因组」从此有了硬判据——名字可能巧合（哪个物种都有
+    Chr1），长度对不上就一定不是同一套。找不到 .fai 时返回空表，调用方退回
+    只用染色体名判断。
+    """
+    if not index_dir:
+        return {}, ""
+    base = index_dir if os.path.isabs(index_dir) else os.path.join(repo_root, index_dir)
+    folder, prefix = os.path.dirname(base), os.path.basename(base)
+    if not prefix or not os.path.isdir(folder):
+        return {}, ""
+
+    fai = ""
+    for ext in (".fa.fai", ".fasta.fai", ".fna.fai", ".fai"):
+        cand = os.path.join(folder, prefix + ext)
+        if os.path.isfile(cand):
+            fai = cand
+            break
+    if not fai:
+        # 前缀未必带扩展名（老索引叫 TAIR10_Chr，FASTA 却可能是 TAIR10.fa），
+        # 索引目录里通常只有一份 FASTA，退而取唯一的那个 .fai
+        found = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                 if n.endswith(".fai")]
+        fai = found[0] if len(found) == 1 else ""
+
+    contigs: Dict[str, int] = {}
+    if fai:
+        try:
+            with open(fai, "rt", errors="replace") as fh:
+                for line in fh:
+                    f = line.split("\t")
+                    if len(f) >= 2 and f[1].isdigit():
+                        contigs[f[0]] = int(f[1])
+        except OSError:
+            contigs = {}
+    return contigs, fai
+
+
 @lru_cache(maxsize=64)
 def _peek_seqids(path: str, _mtime: float, limit: int = 3000) -> Tuple[str, ...]:
     """扫 GFF 前若干行，收集 seqid。用来判断这份注释和 bw 是不是同一套命名。"""
@@ -370,26 +417,84 @@ def _chrom_score(seqids: Sequence[str], chroms: Iterable[str]) -> float:
     return sum(1 for s in seqids if s in pool) / len(seqids)
 
 
+@lru_cache(maxsize=64)
+def _peek_regions(path: str, _mtime: float, limit: int = 500) -> Dict[str, int]:
+    """从注释里读出它声明的染色体长度，返回 seqid → 长度。
+
+    这是判断「这份注释和比对数据库是不是同一套基因组」的唯一硬证据：光看
+    seqid 名字不够——Ensembl 哪天把 1/2/3 改成 Chr1/Chr2，照样能和 TAIR 官方
+    的 Chr1/Chr2 撞名，但两者基因模型差一个版本，基因坐标就会系统性偏差。
+
+    两种写法都认：GFF3 的 ``##sequence-region <id> <start> <end>``（头行），
+    以及 GFF/GTF 常见的 ``chromosome``/``region`` 特征行（带起止坐标）。
+    都没有时返回空表，调用方退回只按名字判断。
+    """
+    out: Dict[str, int] = {}
+    opener = gzip.open if path.endswith(".gz") else open
+    # 这里必须扫完，不能“拿到几条就停”：标注是按基因排的，TAIR 官方这份
+    # GFF 写完 Chr1 一行 chromosome 就是七万行基因，Chr2 的头行还在后面。
+    # 提前收手只会拿到 1 条，虽然照样能算出 1.0，但那是运气，不是证据。
+    # 代价（实测 44 MB / 55 万行 ≈ 300 ms）由 lru_cache 和调用方的
+    # “名字先对上才查长度”抵消，实际每个项目只扫一份。
+    try:
+        with opener(path, "rt", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("##FASTA"):
+                    break
+                if line.startswith("##sequence-region"):
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
+                        out.setdefault(parts[1], int(parts[3]) - int(parts[2]) + 1)
+                    continue
+                if line.startswith("#") or not line.strip():
+                    continue
+                f = line.rstrip("\n").split("\t")
+                if len(f) >= 5 and f[2].lower() in _REGION_FEATS \
+                        and f[3].isdigit() and f[4].isdigit():
+                    out.setdefault(f[0], int(f[4]) - int(f[3]) + 1)
+                if len(out) >= limit:
+                    break
+    except (OSError, EOFError):
+        pass
+    return out
+
+
+def _length_score(regions: Dict[str, int], index_contigs: Dict[str, int]) -> float:
+    """注释里能对上索引长度的染色体比例。1.0 = 就是同一套基因组。"""
+    if not regions or not index_contigs:
+        return 0.0
+    hit = sum(1 for c, n in regions.items() if index_contigs.get(c) == n)
+    return hit / len(regions)
+
+
 def resolve_annotation(repo_root: str, species: str, index_dir: str, txdb: str,
                        chroms: Iterable[str],
                        override: Optional[str] = None) -> Dict:
-    """挑一份与 bw 染色体命名兼容的 GFF/GTF。
+    """挑一份与**比对数据库**同源的 GFF/GTF 当背景注释。
 
-    顺序（先信任度高、再兜底）：
-      1. 用户显式指定的 override；
-      2. ``txdb`` 本身是本地 GFF 的情形（配置页「本地 GFF」选项就是这么存的）；
-      3. 索引目录同层的注释——下载流程把 FASTA 与注释放在同一个 bowtie2_index_*
-         下，seqid 天然一致，是坐标最可靠的一份；
-      4. 物种目录下所有子目录里扫，按 seqid 匹配率择优。
+    「比对数据库」就是本项目 3_ChIPseq 用的 bowtie2 索引：bigWig 的染色体名和
+    长度都来自建索引那份 FASTA。背景注释必须和它描的是同一套基因组，否则基因
+    模型会整体错位——而这种错位在图上很隐蔽，曲线照样好看，只是基因对不上号。
 
-    无论走到哪一步，最终都用「seqid 与 bw 染色体名的匹配率」把关：拟南芥这里
-    就有现成的反例——plantmart28 的 TxDb 用 1/2/3，TAIR 下载的索引用 Chr1/Chr2，
-    NCBI 那套又是 NC_003070.9，三套混用时空有注释却一个峰也对不上。
+    判定用两道，缺一不可：
+      * ``score``：seqid 名字能不能对上 bigWig 的染色体名；
+      * ``length_score``：注释声明的染色体长度与索引 ``.fai`` 是否逐条相等。
+    名字可能巧合（哪个物种都有 Chr1），长度几乎不可能。
+
+    扫描由内向外，越近越可信：
+      1. 手动 override / 配置里 txdb 就是本地 GFF（用户意图直接算数）；
+      2. 索引目录本身，以及新结构``<物种>__<源>/``里与 bowtie2 并列的注释；
+      3. 物种目录 ``workflow/anno/<物种>/*/`` 下的历史注释。
+
+    老结构（本项目 TAIR10 就是）索引目录里没放 GFF，注定落在第 3 层；
+    靠长度校验确认它确实是同一套基因组后，会把它标成「比对数据库同源」。
     """
     pool = list(chroms)
     cands: List[Dict] = []
+    # 比对数据库的指纹：建索引那份 FASTA 的 seqid 与长度
+    idx_contigs, idx_fai = _index_contigs(index_dir, repo_root)
 
-    def _add(path: str, source: str) -> None:
+    def _add(path: str, source: str, near: int = 2) -> None:
         if not path:
             return
         p = path if os.path.isabs(path) else os.path.join(repo_root, path)
@@ -398,26 +503,41 @@ def resolve_annotation(repo_root: str, species: str, index_dir: str, txdb: str,
         if any(c["path"] == p for c in cands):
             return
         seqs = _peek_seqids(p, _mt(p))
+        score = _chrom_score(seqs, pool)
+        # 名字都对不上的候选没资格谈同源，跳过全文件扫——否则十份历史的
+        # Ensembl/NCBI 注释每次冷启动都要各解一遍 gz，白白多花一秒
+        regions = _peek_regions(p, _mt(p)) if (score > 0 and idx_contigs) else {}
+        len_score = _length_score(regions, idx_contigs)
         cands.append({
             "path": p,
             "rel": _rel(p, repo_root),
             "source": source,
-            "score": round(_chrom_score(seqs, pool), 4),
+            "near": near,
+            "score": round(score, 4),
+            "length_score": round(len_score, 4),
+            # 长度逐条对上才算同一套基因组；注释里没写长度时不敢断言
+            "same_genome": bool(len_score >= 0.99),
             "seqid_sample": ", ".join(seqs[:4]),
+            "n_regions": len(regions),
         })
 
     if override:
-        _add(override, "手动指定")
+        _add(override, "手动指定", near=-1)
     if txdb and txdb.lower().endswith(GFF_EXTS):
-        _add(txdb, "配置 txdb")
+        _add(txdb, "配置 txdb", near=-1)
 
     idx = index_dir or ""
     if idx:
         idx_abs = idx if os.path.isabs(idx) else os.path.join(repo_root, idx)
         # index_dir 形如 .../bowtie2_index_TAIR/TAIR10_Chr，注释通常和索引前缀同层
-        _add_scan = _scan_gffs(os.path.dirname(idx_abs) or repo_root)
-        for p in _add_scan:
-            _add(p, "索引同层")
+        idx_dir = os.path.dirname(idx_abs) or repo_root
+        for p in _scan_gffs(idx_dir):
+            _add(p, "索引同层", near=0)
+        # 新结构 <物种>__<源>/：注释和 bowtie2_index_* 并列，而不是塞在索引目录里
+        parent = os.path.dirname(idx_dir) or repo_root
+        if "__" in os.path.basename(parent):
+            for p in _scan_gffs(parent):
+                _add(p, "变体目录", near=0)
 
     sp_dir = os.path.join(repo_root, "workflow", "anno", species) if species else ""
     if sp_dir and os.path.isdir(sp_dir):
@@ -425,21 +545,41 @@ def resolve_annotation(repo_root: str, species: str, index_dir: str, txdb: str,
             sub = os.path.join(sp_dir, name)
             if os.path.isdir(sub):
                 for p in _scan_gffs(sub):
-                    _add(p, f"物种目录 · {name}")
+                    _add(p, f"物种目录 · {name}", near=1)
 
     if not cands:
         return {"path": None, "rel": None, "source": None, "score": 0.0,
-                "candidates": [], "warning": "没找到任何 GFF/GTF，基因模型与基因名定位不可用"}
+                "candidates": [], "index_contigs": idx_contigs, "index_fai": idx_fai,
+                "warning": "没找到任何 GFF/GTF，基因模型与基因名定位不可用"}
 
-    cands.sort(key=lambda c: (-c["score"], c["path"].lower().endswith(".gz"), c["rel"]))
+    # 近的优先 → 能证明同一套基因组的优先 → 长度/名字匹配率高的优先。
+    # near 放在最前面：索引旁边那份天然和比对数据库同源，没理由让一个
+    # 名字碰巧对得上的远房注释盖过它。
+    cands.sort(key=lambda c: (c["near"], not c["same_genome"],
+                              -c["length_score"], -c["score"],
+                              c["path"].lower().endswith(".gz"), c["rel"]))
     best = cands[0]
+
+    # 来源文案：能在长度上证明同源的，直接说清楚，别让用户去猜目录名的含义
+    if best["near"] >= 1 and best["same_genome"]:
+        best["source"] = "比对数据库同源 · " + best["source"].split(" · ")[-1]
+
     warning = None
     if best["score"] < 0.5:
         warning = (
             f"最匹配的注释 `{best['rel']}` 只有 {best['score']:.0%} 的染色体名能对上 bigWig"
             f"（注释用 {best['seqid_sample']}）。基因模型可能整体错位，建议换一份与索引同源的注释。"
         )
-    return {**best, "candidates": cands, "warning": warning}
+    # 没拿到索引指纹时（有人只留了 bt2 把 .fai 删了），长度校验无从谈起，
+    # 这时候不能反过来说注释“不同源”，得明确退化成只按名字判断
+    elif best["n_regions"] and not best["same_genome"] and idx_contigs:
+        warning = (
+            f"注释 `{best['rel']}` 声明的染色体长度与比对数据库只有 "
+            f"{best['length_score']:.0%} 能对上，可能是同物种的另一个版本，"
+            "基因坐标会有系统偏差；最好换成建索引时配套的那一份。"
+        )
+    return {**best, "candidates": cands, "warning": warning,
+            "index_contigs": idx_contigs, "index_fai": idx_fai}
 
 
 def _parse_attrs(text: str) -> Dict[str, str]:
