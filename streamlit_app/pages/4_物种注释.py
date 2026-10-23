@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import time
@@ -58,6 +59,43 @@ CATALOG = load_catalog()
 SPECIES_DB: dict = CATALOG.get("species", {}) or {}
 
 
+# ---------- 物种 → 组装版本 → 参考源 ----------
+# catalog 里的条目是「一个组装」（Glycine_max_v4），但用户心里的一层是「一个物种」
+# （大豆）：大豆有三个组装，各自下面又挂着若干数据库源。界面先按物种归堆，
+# 抽屉里再分组装、再列源，免得 10 个条目平铺在页面上、同物种的散落各处。
+_VER_RE = re.compile(r"^(?P<group>.*?)\s*[（(]\s*(?P<ver>.*?)\s*[)）]\s*$")
+
+
+def split_display(name: str) -> tuple[str, str]:
+    """`大豆 Glycine max (Wm82.a4.v1，2019)` → (`大豆 Glycine max`, `Wm82.a4.v1，2019`)。
+
+    catalog 的 display_name 统一写成「物种 (版本)」，从它拆比再维护一套字段省事。
+    格式对不上就整串当组名——最多是不分组，不会崩。
+    """
+    m = _VER_RE.match(str(name or "").strip())
+    if m:
+        return m.group("group").strip(), m.group("ver").strip()
+    return str(name or "").strip(), ""
+
+
+def group_of(sid: str, entry: dict) -> tuple[str, str]:
+    """(物种组名, 版本标签)。catalog 里显式写了 group / version 就优先用。"""
+    g_default, v_default = split_display(entry.get("display_name", sid))
+    return (
+        str(entry.get("group") or g_default or sid),
+        str(entry.get("version") or v_default),
+    )
+
+
+def species_groups() -> dict:
+    """{物种组名: [(sid, 版本标签), ...]}，组内保持 catalog 原有顺序。"""
+    out: dict = {}
+    for sid, entry in SPECIES_DB.items():
+        g, v = group_of(sid, entry)
+        out.setdefault(g, []).append((sid, v))
+    return out
+
+
 # ---------- 顶部：依赖 & 环境 ----------
 def render_header() -> None:
     deps = am.check_dependencies()
@@ -67,7 +105,14 @@ def render_header() -> None:
     c1.metric("注释目录", str(ANNO_DIR).replace(str(BASE_DIR) + "/", ""))
     c2.metric("可用空间", f"{total_gb:.1f} GB")
     n_sources = sum(len((e.get("sources") or {})) for e in SPECIES_DB.values())
-    c3.metric("Catalog", f"{len(SPECIES_DB)} 物种", f"{n_sources} 个参考变体", delta_color="off")
+    # 「物种」按生物学物种数（大豆 1 个），组装与参考源分别计数；
+    # 直接拿条目数当物种数会把大豆算成 3 个
+    c3.metric(
+        "Catalog",
+        f"{len(species_groups())} 物种",
+        f"{len(SPECIES_DB)} 个组装 · {n_sources} 套参考",
+        delta_color="off",
+    )
 
     missing = [k for k, v in deps.items() if not v]
     with c4:
@@ -162,9 +207,9 @@ def _render_source_block(
     badge, _ = species_badge(status)
 
     with st.container(border=True):
-        st.markdown(
-            f"**{src.get('label', src_id)}**  ·  `{vid}`  ·  {badge}"
-        )
+        st.markdown(f"**{src.get('label', src_id)}**  ·  {badge}")
+        # 变体 ID 就是 anno 下的目录名，放小字里够用了，不必占标题行
+        st.caption(f"`{vid}`")
 
         if status.exists:
             if status.bowtie2_dir:
@@ -271,48 +316,64 @@ def render_catalog_tab() -> None:
     # 否则用户明明装了，抽屉头上却写「未装」，看起来像丢了。
     legacy: dict = {sid: am.list_legacy_index_dirs(ANNO_DIR, sid) for sid in SPECIES_DB}
 
-    order = sorted(
-        SPECIES_DB.keys(),
-        key=lambda s: (
-            -sum(1 for (sp, _x), stt in ready.items() if sp == s and stt.complete),
-            -len(legacy.get(s) or []),
-            s,
+    groups = species_groups()
+
+    def _srcs(sid: str) -> dict:
+        return SPECIES_DB[sid].get("sources") or {}
+
+    # 组间排序：已装的、有旧索引待归位的排前面，其余按名字
+    g_order = sorted(
+        groups,
+        key=lambda g: (
+            -sum(1 for s, _v in groups[g] for x in _srcs(s) if ready[(s, x)].complete),
+            -sum(len(legacy.get(s) or []) for s, _v in groups[g]),
+            g,
         ),
     )
 
-    for sid in order:
-        entry = SPECIES_DB[sid]
-        sources = entry.get("sources", {}) or {}
-        genome_mb = entry.get("genome_size_mb") or 0
-        done = [x for x in sources if ready[(sid, x)].complete]
+    for gname in g_order:
+        members = groups[gname]
+        n_ver = len(members)
+        n_src = sum(len(_srcs(s)) for s, _v in members)
+        n_done = sum(1 for s, _v in members for x in _srcs(s) if ready[(s, x)].complete)
+        n_legacy = sum(len(legacy.get(s) or []) for s, _v in members)
 
-        # 抽屉关着也要能看出装了哪几套，否则得逐个物种点开翻
-        if not sources:
-            head = "无下载源"
-        elif not done:
-            head = f"未装 · {len(sources)} 套可选"
-        elif len(done) == len(sources):
-            head = f"✓ 全部 {len(sources)} 套已装"
-        elif len(done) <= 2:
-            head = f"✓ 已装 {'、'.join(done)}（{len(done)}/{len(sources)}）"
+        # 抽屉头只写物种：版本、来源、状态都往下沉，不然一行摆四样东西看着累
+        parts = [f"{n_src} 套参考"]
+        if n_ver > 1:
+            parts.append(f"{n_ver} 个组装版本")
         else:
-            head = f"✓ 已装 {done[0]} 等 {len(done)} 套（{len(done)}/{len(sources)}）"
-
+            genome_mb = SPECIES_DB[members[0][0]].get("genome_size_mb") or 0
+            if genome_mb:
+                parts.append(f"~{genome_mb} MB")
+        if n_done and n_done == n_src:
+            parts.append("✓ 已装")
+        elif n_done:
+            parts.append(f"已装 {n_done}/{n_src}")
+        else:
+            parts.append("未装")
         # 有一批索引建在老结构里，没归到任何源，不提示就会以为没装过
-        n_legacy = len(legacy.get(sid) or [])
         if n_legacy:
-            head += f"  ·  另有 {n_legacy} 个旧索引待归位"
+            parts.append(f"另有 {n_legacy} 个旧索引待归位")
 
-        header = (
-            f"**{head}**  ·  {entry.get('display_name', sid)}  ·  `{sid}`  ·  ~{genome_mb} MB"
-        )
+        header = f"**{gname}**  ·  " + "  ·  ".join(parts)
         with st.expander(header, expanded=False):
-            _render_legacy_merge(sid, entry)
-            if not sources:
-                st.info("catalog 中无下载源，请用「自定义物种」标签页手填 URL")
-                continue
-            for src_id, src in sources.items():
-                _render_source_block(sid, entry, src_id, src, ready[(sid, src_id)])
+            for idx, (sid, ver) in enumerate(members):
+                entry = SPECIES_DB[sid]
+                sources = _srcs(sid)
+                # 一个物种能有好几个组装（大豆 a2/a4/a6），多个时才分节标版本；
+                # 单组装的物种（拟南芥）再挂个小标题纯属噪声
+                if n_ver > 1:
+                    genome_mb = entry.get("genome_size_mb") or 0
+                    st.markdown(f"#### {ver or sid}  ·  ~{genome_mb} MB")
+                _render_legacy_merge(sid, entry)
+                if not sources:
+                    st.info("catalog 中无下载源，请用「自定义物种」标签页手填 URL")
+                    continue
+                for src_id, src in sources.items():
+                    _render_source_block(sid, entry, src_id, src, ready[(sid, src_id)])
+                if n_ver > 1 and idx < n_ver - 1:
+                    st.divider()
 
 
 def _render_gff_patch(vid: str, entry: dict, src_id: str = "") -> None:
@@ -668,42 +729,64 @@ def render_existing_tab() -> None:
         st.info("注释目录为空")
         return
 
+    # 先扫一遍再分组：老目录（TAIR10）与它的变体目录（TAIR10__Ensembl_Plants_63）
+    # 要归到同一个物种抽屉里，否则同一个物种在页面上散成好几块
+    rows = []
     for d in subdirs:
         vid = d.name
         base, src_id = rt.split_variant(vid)
-        status = am.scan_species(ANNO_DIR, vid, source_id=src_id, species_base=base)
-        badge, _ = species_badge(status)
         entry = SPECIES_DB.get(base, {})
-        # 变体目录名里已经含了源，但源 ID 不好看，catalog 里有 label 就用 label
-        src_label = ((entry.get("sources") or {}).get(src_id) or {}).get("label", src_id)
-        name = entry.get("display_name", base)
-        header = (
-            f"{badge}  **{name}**  ·  `{vid}`"
-            + (f"  ·  {src_label}" if src_id else "")
-            + f"  ·  {am.human_size(status.size_bytes)}"
-        )
-        with st.expander(header, expanded=False):
-            if status.bowtie2_dir:
-                st.markdown(f"**索引目录**: `{status.bowtie2_dir}/`")
-                st.markdown(f"**索引前缀**: `{status.index_prefix}`")
-            if status.fasta_path:
-                st.markdown(f"**FASTA**: `{Path(status.fasta_path).name}`")
-            if status.gff_path:
-                st.markdown(f"**注释**: `{Path(status.gff_path).name}`")
-            if status.bt2_files:
-                st.caption(f"bt2 文件: {', '.join(status.bt2_files)}")
-            if status.missing:
-                st.warning(f"缺失: {', '.join(status.missing)}")
-            if not src_id and status.exists:
-                st.caption(
-                    "这个目录名不带数据库来源，所以结果目录也只能叫 `" + vid + "`。"
-                    "想按来源区分的话，到「物种 catalog」里把它迁移到某个源上。"
-                )
+        status = am.scan_species(ANNO_DIR, vid, source_id=src_id, species_base=base)
+        gname = group_of(base, entry)[0] if entry else base
+        rows.append((gname, vid, base, src_id, entry, status))
 
-            if status.complete:
-                _render_apply_button(vid, entry, status, base_species=base, scope="exist")
-            elif status.missing == ["gff"]:
-                _render_gff_patch(vid, entry, src_id=src_id)
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(r[0], []).append(r)
+
+    for gname, items in groups.items():
+        n_ok = sum(1 for _g, _v, _b, _s, _e, stt in items if stt.complete)
+        size = sum(stt.size_bytes for *_x, stt in items)
+        head = (
+            f"**{gname}**  ·  {len(items)} 个目录  ·  "
+            + ("✓ 已装" if n_ok == len(items) else f"已装 {n_ok}/{len(items)}")
+            + f"  ·  {am.human_size(size)}"
+        )
+        with st.expander(head, expanded=False):
+            for _g, vid, base, src_id, entry, status in items:
+                _render_existing_one(vid, base, src_id, entry, status)
+
+
+def _render_existing_one(vid, base, src_id, entry, status) -> None:
+    """一个具体目录的详情卡片。"""
+    badge, _ = species_badge(status)
+    # 变体目录名里已经含了源，但源 ID 不好看，catalog 里有 label 就用 label
+    src_label = ((entry.get("sources") or {}).get(src_id) or {}).get("label", src_id)
+
+    with st.container(border=True):
+        st.markdown(f"`{vid}`  ·  {badge}" + (f"  ·  {src_label}" if src_id else ""))
+
+        if status.bowtie2_dir:
+            st.markdown(f"**索引目录**: `{status.bowtie2_dir}/`")
+            st.markdown(f"**索引前缀**: `{status.index_prefix}`")
+        if status.fasta_path:
+            st.markdown(f"**FASTA**: `{Path(status.fasta_path).name}`")
+        if status.gff_path:
+            st.markdown(f"**注释**: `{Path(status.gff_path).name}`")
+        if status.bt2_files:
+            st.caption(f"bt2 文件: {', '.join(status.bt2_files)}")
+        if status.missing:
+            st.warning(f"缺失: {', '.join(status.missing)}")
+        if not src_id and status.exists:
+            st.caption(
+                "这个目录名不带数据库来源，所以结果目录也只能叫 `" + vid + "`。"
+                "想按来源区分的话，到「物种 catalog」里把它迁移到某个源上。"
+            )
+
+        if status.complete:
+            _render_apply_button(vid, entry, status, base_species=base, scope="exist")
+        elif status.missing == ["gff"]:
+            _render_gff_patch(vid, entry, src_id=src_id)
 
 
 # ---------- 主布局 ----------
