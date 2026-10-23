@@ -70,6 +70,79 @@ COMMON_TAXID: Dict[str, str] = {
     "gallus gallus": "9031", "chicken": "9031",
 }
 
+# ---------------------------------------------------------------------------
+# 常见物种模板：选一下就把 taxid / 属 / 种 / 包名都填好，不用去 NCBI 查
+# ---------------------------------------------------------------------------
+# official 非空 = Bioconductor 有官方 OrgDb 包，装包几分钟，不必 AnnotationForge 自建；
+# 为空 = 没有官方包，只能自建（这正是「OrgDb 构建」tab 存在的理由）。
+# 顺序：用户点名要的那几个在前，其余按「作物 → 模式动物」排。
+SPECIES_TEMPLATES: List[Dict[str, str]] = [
+    {"label": "小鼠 Mus musculus", "taxid": "10090", "genus": "Mus",
+     "species": "musculus", "official": "org.Mm.eg.db"},
+    {"label": "人 Homo sapiens", "taxid": "9606", "genus": "Homo",
+     "species": "sapiens", "official": "org.Hs.eg.db"},
+    {"label": "拟南芥 Arabidopsis thaliana", "taxid": "3702", "genus": "Arabidopsis",
+     "species": "thaliana", "official": "org.At.tair.db"},
+    {"label": "大豆 Glycine max", "taxid": "3847", "genus": "Glycine",
+     "species": "max", "official": ""},
+    {"label": "水稻 Oryza sativa", "taxid": "39947", "genus": "Oryza",
+     "species": "sativa", "official": ""},
+    {"label": "玉米 Zea mays", "taxid": "4577", "genus": "Zea",
+     "species": "mays", "official": ""},
+    {"label": "小麦 Triticum aestivum", "taxid": "4565", "genus": "Triticum",
+     "species": "aestivum", "official": ""},
+    {"label": "番茄 Solanum lycopersicum", "taxid": "4081", "genus": "Solanum",
+     "species": "lycopersicum", "official": ""},
+    {"label": "烟草 Nicotiana tabacum", "taxid": "4097", "genus": "Nicotiana",
+     "species": "tabacum", "official": ""},
+    {"label": "油菜 Brassica napus", "taxid": "3708", "genus": "Brassica",
+     "species": "napus", "official": ""},
+    {"label": "蒺藜苜蓿 Medicago truncatula", "taxid": "3880", "genus": "Medicago",
+     "species": "truncatula", "official": ""},
+    {"label": "大鼠 Rattus norvegicus", "taxid": "10116", "genus": "Rattus",
+     "species": "norvegicus", "official": "org.Rn.eg.db"},
+    {"label": "斑马鱼 Danio rerio", "taxid": "7955", "genus": "Danio",
+     "species": "rerio", "official": "org.Dr.eg.db"},
+    {"label": "果蝇 Drosophila melanogaster", "taxid": "7227", "genus": "Drosophila",
+     "species": "melanogaster", "official": "org.Dm.eg.db"},
+    {"label": "线虫 Caenorhabditis elegans", "taxid": "6239", "genus": "Caenorhabditis",
+     "species": "elegans", "official": "org.Ce.eg.db"},
+    {"label": "酵母 Saccharomyces cerevisiae", "taxid": "4932", "genus": "Saccharomyces",
+     "species": "cerevisiae", "official": "org.Sc.sd.eg.db"},
+    {"label": "猪 Sus scrofa", "taxid": "9823", "genus": "Sus",
+     "species": "scrofa", "official": "org.Ss.eg.db"},
+    {"label": "牛 Bos taurus", "taxid": "9913", "genus": "Bos",
+     "species": "taurus", "official": "org.Bt.eg.db"},
+    {"label": "鸡 Gallus gallus", "taxid": "9031", "genus": "Gallus",
+     "species": "gallus", "official": "org.Gg.eg.db"},
+]
+
+
+def template_by_label(label: str) -> Optional[Dict[str, str]]:
+    for t in SPECIES_TEMPLATES:
+        if t["label"] == label:
+            return t
+    return None
+
+
+def find_species_template(*texts: str) -> Optional[Dict[str, str]]:
+    """从 species ID / display_name 认出模板条目（Glycine_max_v4 -> 大豆那条）。"""
+    for text in texts:
+        t = re.sub(r"[_\-.,/]+", " ", (text or "").lower())
+        t = re.sub(r"\s+", " ", t).strip()
+        if not t:
+            continue
+        for tpl in SPECIES_TEMPLATES:
+            if f"{tpl['genus']} {tpl['species']}".lower() in t:
+                return tpl
+    return None
+
+
+def template_orgdb(tpl: Dict[str, str]) -> str:
+    """这条模板最终该用的包名：有官方包用官方的，没有就按 AnnotationForge 规则生成。"""
+    return tpl.get("official") or suggest_orgdb_pkg(tpl["genus"], tpl["species"])
+
+
 # 建包/装包默认用的 CRAN 镜像（BiocManager 会据此推 Bioconductor 版本）
 CRAN_MIRRORS: List[str] = [
     "https://mirrors.tuna.tsinghua.edu.cn/CRAN",

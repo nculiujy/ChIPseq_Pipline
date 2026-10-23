@@ -911,7 +911,7 @@ def _render_readiness(proj: dict, sp: str, ex: str) -> None:
             "检查项": "基因集来源",
             "状态": "✓" if (orgdb or t2g) else "✗",
             "当前": f"OrgDb `{orgdb}`" if orgdb else (f"TERM2GENE {len(t2g)} 套" if t2g else "还没有"),
-            "怎么补": "下面路线 A（自建 OrgDb）或路线 B（gene2go 基因集），二选一",
+            "怎么补": "下面路线 A：选物种模板 → 自建包 / 装官方包",
         },
         {
             "检查项": "id_strip（ID 对齐）",
@@ -1026,7 +1026,8 @@ def render_orgdb_tab() -> None:
     if "AnnotationForge" in missing:
         st.warning(
             "分析环境缺 **AnnotationForge**，无法自建 OrgDb。"
-            "两种选择：一键安装（需联网，几分钟），或改走下面的 gene2go 基因集（不装包，立刻可用）。"
+            "可以一键安装（需联网，几分钟）；已有官方包的物种（人 / 小鼠 / 拟南芥…）不装也能用；"
+            "实在装不上，展开最下面的「备选：gene2go 基因集」。"
         )
         cc1, cc2 = st.columns([1, 2])
         mirror = cc2.selectbox("CRAN 镜像", oh.CRAN_MIRRORS, index=0, key="orgdb_mirror")
@@ -1062,16 +1063,69 @@ def render_orgdb_tab() -> None:
     # ---- 路线 A：自建 OrgDb ----
     st.markdown("#### ② 路线 A：自建 OrgDb 包（AnnotationForge × NCBI）")
     st.caption("首次构建会在 NCBI 下载 gene_info / gene2go，常 30–90 分钟；同物种重建有缓存，分钟级。")
+
+    tpl_key = f"orgdb_tpl_{wkey}"
+    tax_key = f"orgdb_tax_{wkey}"
+    gen_key = f"orgdb_genus_{wkey}"
+    spc_key = f"orgdb_species_{wkey}"
+    pkg_key = f"orgdb_pkg_{wkey}"
+
+    def _apply_template(_wk: str = wkey) -> None:
+        """选模板就把四个输入框一起改掉。
+
+        on_change 回调在 script rerun 的最开头执行，那时这些输入框还没实例化，
+        改 session_state 不会撞上「已实例化的 widget 不能改 state」。"""
+        t = oh.template_by_label(st.session_state.get(f"orgdb_tpl_{_wk}") or "")
+        if not t:
+            return
+        st.session_state[f"orgdb_tax_{_wk}"] = t["taxid"]
+        st.session_state[f"orgdb_genus_{_wk}"] = t["genus"]
+        st.session_state[f"orgdb_species_{_wk}"] = t["species"]
+        st.session_state[f"orgdb_pkg_{_wk}"] = oh.template_orgdb(t)
+
+    # 常见物种模板：taxid / 属名 / 种名 / 包名一次填好，不用去 NCBI 查
+    auto_tpl = oh.find_species_template(sp, proj.get("display_name") or "")
+    tpl_labels = ["（不套模板，自己填）"] + [t["label"] for t in oh.SPECIES_TEMPLATES]
+    tpl_sel = st.selectbox(
+        "常见物种模板", tpl_labels,
+        index=tpl_labels.index(auto_tpl["label"]) if auto_tpl else 0,
+        key=tpl_key, on_change=_apply_template,
+        help="选一个就把 taxid / 属 / 种 / 包名全填好，选完仍可手动改",
+    )
+    tpl = oh.template_by_label(tpl_sel)
+
     g0, s0 = oh.guess_genus_species(sp, proj.get("display_name") or "")
     ca, cb, cc = st.columns(3)
-    tax_default = oh.guess_taxid(sp, proj.get("display_name") or "")
-    tax_id = ca.text_input("NCBI taxid", value=tax_default, key=f"orgdb_tax_{wkey}",
+    tax_default = (tpl["taxid"] if tpl else "") or oh.guess_taxid(sp, proj.get("display_name") or "")
+    tax_id = ca.text_input("NCBI taxid", value=tax_default, key=tax_key,
                            help="大豆 3847、玉米 4577、小麦 4565、番茄 4081")
-    genus = cb.text_input("属（genus）", value=g0, key=f"orgdb_genus_{wkey}")
-    species_latin = cc.text_input("种（species）", value=s0, key=f"orgdb_species_{wkey}")
+    genus = cb.text_input("属（genus）", value=(tpl["genus"] if tpl else g0), key=gen_key)
+    species_latin = cc.text_input("种（species）", value=(tpl["species"] if tpl else s0), key=spc_key)
     pkg_guess = oh.suggest_orgdb_pkg(genus, species_latin)
-    pkg_name = st.text_input("包名", value=pkg_guess, key=f"orgdb_pkg_{wkey}",
-                             help="留空按 org.<属首字母大写><种前 3 字母>.eg.db 生成") or pkg_guess
+    pkg_default = oh.template_orgdb(tpl) if tpl else pkg_guess
+    pkg_name = st.text_input("包名", value=pkg_default, key=pkg_key,
+                             help="留空按 org.<属首字母大写><种前 3 字母>.eg.db 生成") or pkg_default
+
+    # 有官方包的物种（人 / 小鼠 / 拟南芥…）：装包几分钟，比自建划算得多，摆到前面
+    if tpl and tpl.get("official"):
+        st.info(
+            f"`{tpl['label']}` 有 Bioconductor 官方包 **`{tpl['official']}`**，"
+            "装完就能用，不必自建（几分钟 vs 30–90 分钟）。"
+        )
+        installed_official = tpl["official"] in {d["pkg"] for d in installed}
+        if installed_official:
+            st.caption(f"✓ 本机 R 库里已经有 `{tpl['official']}`，直接用它")
+        elif st.button(f"安装官方包 {tpl['official']}", type="primary",
+                       key=f"orgdb_install_official_{wkey}"):
+            spec = am.rdeps_task(sp, f"R 依赖 / {sp}", str(ANNO_DIR), packages=tpl["official"],
+                                 orgdb_lib=orgdb_lib, cran_mirror=oh.CRAN_MIRRORS[0])
+            am.start_task(spec)
+            st.session_state["active_task"] = spec.task_id
+            st.toast(f"已开始安装 {tpl['official']}")
+            time.sleep(0.5)
+            st.rerun()
+        st.caption("确实要自建的话，下面的按钮也能用，只是慢很多。")
+
     ca, cb = st.columns([2, 3])
     ca.code(f"输出: {outdir}", language="text")
     if cb.button("开始构建 OrgDb 包", type="primary", key="orgdb_build",
@@ -1093,37 +1147,39 @@ def render_orgdb_tab() -> None:
 
     st.divider()
 
-    # ---- 路线 B：gene2go 基因集 ----
-    st.markdown("#### ③ 路线 B：gene2go 基因集（不装包，推荐先用这条）")
-    st.caption(
-        "从 NCBI gene2go.gz 抽当前物种的 GO 注释，生成 clusterProfiler 的 TERM2GENE / TERM2NAME；"
-        "GO 富集走 `enricher()`，输出列名与 `enrichGO()` 一致，图表代码完全复用。"
-    )
-    cb1, cb2, cb3 = st.columns([1, 1, 2])
-    tax_b = cb1.text_input("NCBI taxid", value=tax_default, key=f"t2g_tax_{wkey}")
-    prefix_b = cb2.text_input("文件前缀", value=(oh.guess_genus_species(sp)[0][:1].lower()
-                                                + oh.guess_genus_species(sp)[1][:3].lower()) or "gene2go",
-                              key=f"t2g_prefix_{wkey}", help="例：gmax → gmax_go_bp_term2gene.tsv")
-    cb3.code(f"输出目录: {outdir}", language="text")
-    if st.button("生成 / 更新基因集", type="primary", key="t2g_build", disabled=not tax_b):
-        spec = am.term2gene_task(sp, f"gene2go / {sp}", str(ANNO_DIR), tax_id=tax_b,
-                                 prefix=prefix_b, outdir=str(outdir))
-        am.start_task(spec)
-        st.session_state["active_task"] = spec.task_id
-        st.toast("已开始生成 gene2go 基因集")
-        time.sleep(0.5)
-        st.rerun()
-
-    manifest = oh.scan_term2gene(outdir)
-    if manifest:
-        st.success(
-            f"已有基因集：{manifest.get('n_genes', 0)} 个基因 / "
-            f"{sum((manifest.get('n_go_terms') or {}).values())} 个 GO term / "
-            f"{manifest.get('n_annotations', 0)} 条注释（{manifest.get('built_at', '?')}）"
+    # ---- 备选：gene2go 基因集 ----
+    # 主路径是路线 A；这条只在 AnnotationForge 装不上（离线 / 编译失败）时才需要，
+    # 默认收起，免得每次都要在两条路之间做选择。
+    with st.expander("备选：不装包，用 gene2go 基因集", expanded=False):
+        st.caption(
+            "从 NCBI gene2go.gz 抽当前物种的 GO 注释，生成 clusterProfiler 的 TERM2GENE / TERM2NAME；"
+            "GO 富集走 `enricher()`，输出列名与 `enrichGO()` 一致，图表代码完全复用。"
         )
-        st.code("\n".join(str(x) for x in (manifest.get("files") or [])), language="text")
-    else:
-        st.info("该物种还没有生成过基因集")
+        cb1, cb2, cb3 = st.columns([1, 1, 2])
+        tax_b = cb1.text_input("NCBI taxid", value=tax_default, key=f"t2g_tax_{wkey}")
+        prefix_b = cb2.text_input("文件前缀", value=(oh.guess_genus_species(sp)[0][:1].lower()
+                                                    + oh.guess_genus_species(sp)[1][:3].lower()) or "gene2go",
+                                  key=f"t2g_prefix_{wkey}", help="例：gmax → gmax_go_bp_term2gene.tsv")
+        cb3.code(f"输出目录: {outdir}", language="text")
+        if st.button("生成 / 更新基因集", key="t2g_build", disabled=not tax_b):
+            spec = am.term2gene_task(sp, f"gene2go / {sp}", str(ANNO_DIR), tax_id=tax_b,
+                                     prefix=prefix_b, outdir=str(outdir))
+            am.start_task(spec)
+            st.session_state["active_task"] = spec.task_id
+            st.toast("已开始生成 gene2go 基因集")
+            time.sleep(0.5)
+            st.rerun()
+
+        manifest = oh.scan_term2gene(outdir)
+        if manifest:
+            st.success(
+                f"已有基因集：{manifest.get('n_genes', 0)} 个基因 / "
+                f"{sum((manifest.get('n_go_terms') or {}).values())} 个 GO term / "
+                f"{manifest.get('n_annotations', 0)} 条注释（{manifest.get('built_at', '?')}）"
+            )
+            st.code("\n".join(str(x) for x in (manifest.get("files") or [])), language="text")
+        else:
+            st.info("该物种还没有生成过基因集")
 
     st.divider()
 
@@ -1231,19 +1287,33 @@ def render_orgdb_tab() -> None:
         else:
             st.caption("全局校验里这一段已经没有 error / warn 了")
 
+    # 能写进 config 的 orgdb 必须真的在：自建的在 outdir 里，官方包在 R 库里。
+    # ② 的包名输入框永远是填好的（模板自带默认值），不能拿它当「已就绪」的证据。
+    installed_pkgs = {d["pkg"] for d in installed}
+    if built:
+        write_orgdb = built[-1]["pkg"]
+    elif pkg_name and pkg_name in installed_pkgs:
+        write_orgdb = pkg_name
+    elif cfg_orgdb:
+        write_orgdb = cfg_orgdb
+    else:
+        write_orgdb = ""
+
     will_write = []
     if manifest and manifest.get("term2gene_go"):
         will_write.append(f"`term2gene_go`（{len(manifest['term2gene_go'])} 套）+ `term2name_go` + `universe`")
-    if built:
-        will_write.append(f"`orgdb` = `{built[-1]['pkg']}`")
-    elif cfg_orgdb:
-        will_write.append(f"`orgdb` = `{cfg_orgdb}`（沿用已配置的）")
+    if write_orgdb:
+        src = "（沿用已配置的）" if (write_orgdb == cfg_orgdb and not built
+                                  and write_orgdb != pkg_name) else ""
+        will_write.append(f"`orgdb` = `{write_orgdb}`{src}")
     if id_strip:
         will_write.append(f"`id_strip` = `{id_strip}`")
     will_write.append("`modules.5_gsea` = 开")
 
-    if not (built or (manifest and manifest.get("term2gene_go")) or cfg_orgdb):
-        st.info("还没有可写入的基因集：先在上面走路线 A（自建 OrgDb）或路线 B（生成 gene2go 基因集）")
+    if not (write_orgdb or (manifest and manifest.get("term2gene_go"))):
+        st.info("还没有可写入的基因集：先在上面走路线 A（选模板 → 建包 / 装官方包）")
+        if pkg_name:
+            st.caption(f"`{pkg_name}` 还没建出来或没装上，现在写进 config 也加载不到。")
     else:
         st.caption("将写入：" + "、".join(will_write))
         cw1, cw2 = st.columns([1, 2])
@@ -1257,10 +1327,8 @@ def render_orgdb_tab() -> None:
                     "term2name_go": manifest.get("term2name_go") or {},
                     "universe": manifest.get("universe") or "",
                 })
-            if built:
-                fields["orgdb"] = built[-1]["pkg"]
-            elif cfg_orgdb:
-                fields["orgdb"] = cfg_orgdb
+            if write_orgdb:
+                fields["orgdb"] = write_orgdb
             template = None
             if sel == MANUAL:
                 template = {
