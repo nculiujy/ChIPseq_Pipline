@@ -304,6 +304,88 @@ slim_gtf <- function(path) {
   out
 }
 
+# 剔除 GFF3 里「立不住」的 feature：start > end 的、带 exception=trans-splicing 的，
+# 以及指向它们的子孙。NCBI 会把 trans-splicing（远距离外显子拼接）的转录本写成
+# start > end，或者让同一转录本的外显子正负链混排，rtracklayer 两种都拒收；这类
+# feature 本来就无法表达成一条连续区间，留着只会让整份注释建不出库。
+# GFF3 规定父级先于子级出现，所以边扫边扩散就能把子孙找全，不必整份读进内存。
+# 没有可剔的 feature 时原样返回入参，调用方据此判断要不要 unlink。
+repair_gff <- function(path) {
+  gz <- grepl("\\.gz$", path)
+  open_con <- function(mode) if (gz) gzfile(path, mode) else file(path, mode)
+
+  # 第 9 列里某个属性的值（行首属性也能命中同一个正则）
+  attr_val <- function(attrs, key) {
+    a <- paste0(";", attrs)                    # 匹配串是 ";ID=xxx"，去前 3 个字符
+    m <- regexpr(paste0(";", key, "=[^;]*"), a)
+    out <- rep(NA_character_, length(a))
+    hit <- m > 0L
+    if (any(hit)) out[hit] <- substring(regmatches(a, m), nchar(key) + 3L)
+    out
+  }
+
+  # 解析一块正文行：ID / Parent / 这个 feature 本身能不能用
+  scan <- function(ln) {
+    f <- strsplit(ln, "\t", fixed = TRUE)
+    ok <- lengths(f) == 9L
+    f <- f[ok]
+    pick <- function(i) vapply(f, `[`, character(1), i)
+    attrs <- pick(9L)
+    s <- suppressWarnings(as.numeric(pick(4L)))
+    e <- suppressWarnings(as.numeric(pick(5L)))
+    list(
+      ok = ok,
+      id = attr_val(attrs, "ID"),
+      parent = attr_val(attrs, "Parent"),
+      bad = (!is.na(s) & !is.na(e) & s > e) |
+        grepl("exception=trans-splicing", attrs, fixed = TRUE)
+    )
+  }
+
+  # 第一遍：坏 feature 的 ID，连同指向它们的子孙
+  bad_ids <- character()
+  con <- open_con("r")
+  repeat {
+    ln <- readLines(con, n = 200000L, warn = FALSE)
+    if (!length(ln)) break
+    r <- scan(ln[!startsWith(ln, "#")])
+    bad_ids <- union(bad_ids, r$id[r$bad & !is.na(r$id)])
+    repeat {
+      p <- strsplit(r$parent, ",", fixed = TRUE)
+      child <- vapply(p, function(x) length(x) > 0L && any(x %in% bad_ids), logical(1))
+      add <- setdiff(r$id[child & !is.na(r$id)], bad_ids)
+      if (!length(add)) break
+      bad_ids <- union(bad_ids, add)
+    }
+  }
+  close(con)
+  if (!length(bad_ids)) return(path)
+
+  # 第二遍：写出一份剔干净的副本
+  out <- tempfile(fileext = if (gz) ".gff3.gz" else ".gff3")
+  con <- open_con("r")
+  con2 <- if (gz) gzfile(out, "w") else file(out, "w")
+  on.exit(close(con2), add = TRUE)   # 靠 on.exit 关，保证 gzip 尾部写完整
+  n_drop <- 0L
+  repeat {
+    ln <- readLines(con, n = 200000L, warn = FALSE)
+    if (!length(ln)) break
+    body <- which(!startsWith(ln, "#"))
+    keep <- rep(TRUE, length(ln))
+    if (length(body)) {
+      r <- scan(ln[body])
+      hit <- !is.na(r$id) & r$id %in% bad_ids       # 下标对应的是 r$ok 为真的行
+      keep[body[r$ok][hit]] <- FALSE
+    }
+    n_drop <- n_drop + sum(!keep)
+    writeLines(ln[keep], con2)
+  }
+  close(con)
+  cat("  剔除了", n_drop, "行（", length(bad_ids), "个 feature，",
+      paste(utils::head(bad_ids, 3), collapse = ", "), "…）\n")
+  out
+}
+
 txdb_from_file <- function(path) {
   cache <- txdb_cache_path(path)
   if (file.exists(cache) && file.info(cache)$mtime >= file.info(path)$mtime) {
@@ -319,21 +401,35 @@ txdb_from_file <- function(path) {
     }
   }
 
-  # 同目录同源的 GTF：NCBI 的 GFF3 里偶有 start > end 的 wrap-around feature，
-  # 会带出一批找不到 parent 的孤儿 exon，这种结构性问题没法就地修补，
-  # 只能换同批下载的 GTF（两者坐标体系一致，建出来的库等价）。
+  # 同目录同源的 GTF：GFF3 里偶有 start > end 的 wrap-around feature，会带出一批
+  # 找不到 parent 的孤儿 exon。下边会先尝试就地剔除（repair_gff），剔不干净才换
+  # 同批下载的 GTF（两者坐标体系一致，建出来的库等价）。
   gtf_alt <- sub("\\.gff3?(\\.gz)?$", ".gtf\\1", path)
   if (identical(gtf_alt, path) || !file.exists(gtf_alt)) gtf_alt <- NULL
 
-  # 超长属性行是两个根因里更好修的那个：NCBI 的 GTF 个别 transcript 行能到
-  # 280 KB，超过 rtracklayer 解析器的行宽上限，精简属性列后重试即可。
+  # 注释文件本身能修的问题就这两类：
+  #   too long                 —— NCBI 的 GTF 个别 transcript 行能到 280 KB，超过
+  #                               rtracklayer 解析器的行宽上限，精简属性列后重试即可；
+  #   start > end / 孤儿 exon  —— trans-splicing 的转录本，剔除后重试（见 repair_gff）。
   # 原文件和备用 GTF 都要过这一道，所以包在外面而不是写在处理 path 的分支里。
   build_any <- function(p) {
     tryCatch(build(p), error = function(e) {
-      if (!grepl("too long", conditionMessage(e), ignore.case = TRUE)) stop(e)
-      cat("  注释文件有超长属性行，精简后重试...\n")
-      slim <- slim_gtf(p)
-      tryCatch(build(slim), finally = unlink(slim))
+      msg <- conditionMessage(e)
+      if (grepl("too long", msg, ignore.case = TRUE)) {
+        cat("  注释文件有超长属性行，精简后重试...\n")
+        slim <- slim_gtf(p)
+        return(tryCatch(build(slim), finally = unlink(slim)))
+      }
+      if (grepl("greater or equal to its start|linked to transcripts not found",
+                msg, ignore.case = TRUE)) {
+        cat("  注释里有 trans-splicing / start>end 的 feature，剔除后重试...\n")
+        fixed <- repair_gff(p)
+        if (!identical(fixed, p)) {
+          return(tryCatch(build(fixed), finally = unlink(fixed)))
+        }
+        cat("  没找到可剔除的 feature，这个错误另有原因\n")
+      }
+      stop(e)
     })
   }
 
