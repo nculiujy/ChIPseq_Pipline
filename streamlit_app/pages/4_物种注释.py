@@ -272,9 +272,13 @@ def _render_download_form(
 
     # 能走到这里说明上面已经勾过「重建这套索引」，不再叠一层确认
     label = "重新下载并覆盖" if status.complete else "开始下载并构建索引"
+    raw_sp = rt.variant_species(sid)
+    # 只有真的挂了多个组装时才能说「共用」，单组装物种不用说这句
+    n_sib = sum(1 for k in SPECIES_DB if rt.variant_species(k) == raw_sp)
     st.caption(
-        f"构建开始时一并建好 `workflow/resources/{sid}/`；"
-        f"fastq 放在其下的 `{sid}/<实验名>/` 里，实验名与写入 config.yaml 时填的一致。"
+        f"构建开始时一并建好 `workflow/resources/{raw_sp}/`；"
+        f"fastq 放在其下的 `{raw_sp}/<实验名>/` 里，实验名与写入 config.yaml 时填的一致。"
+        + (f"该物种下的 {n_sib} 个组装共用这一个数据目录。" if n_sib > 1 else "")
     )
     if st.button(label, key=f"go_{vid}", type="primary"):
         spec = _build_spec(vid, entry, src_id, src, threads)

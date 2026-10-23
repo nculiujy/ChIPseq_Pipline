@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -22,6 +23,7 @@ import yaml
 # 项目根目录（runtime.py 位于 streamlit_app/utils/）
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = BASE_DIR / "config" / "config.yaml"
+CATALOG_PATH = BASE_DIR / "streamlit_app" / "annotations_catalog.yaml"
 LOGS_DIR = BASE_DIR / "logs"
 RESULT_DIR = BASE_DIR / "result"
 ANNO_DIR = BASE_DIR / "workflow" / "anno"
@@ -117,8 +119,50 @@ def split_variant(vid: str) -> tuple[str, str]:
 
 
 def variant_species(vid: str) -> str:
-    """变体对应的物种基础名，用来定位 workflow/resources/<物种>/<实验>/。"""
-    return split_variant(vid)[0]
+    """变体对应的物种名，用来定位 workflow/resources/<物种>/<实验>/。
+
+    这里的「物种」不是 catalog 条目 id，而是物种本身：大豆的三个组装
+    （v2/v4/v6）、小鼠的 GRCm39 与 mm10 都是同一个物种，共用一个数据目录。
+    同一批 fastq 换组装重跑时不用再拷一份几百 GB 的数据。
+
+    目录名由 catalog 的 species_group 字段决定，没写就回落到条目 id。
+    """
+    return species_group_of(split_variant(vid)[0])
+
+
+@lru_cache(maxsize=4)
+def _read_species_groups(_mtime: float) -> dict[str, str]:
+    """catalog 的物种分组表：条目 id → workflow/resources 下的目录名。
+
+    _mtime 只当缓存键用：catalog 改过就重读，否则每次拼路径都解析 300 行 YAML。
+    """
+    try:
+        with open(CATALOG_PATH, "r", encoding="utf-8") as f:
+            catalog = yaml.safe_load(f) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for sid, entry in (catalog.get("species") or {}).items():
+        g = str((entry or {}).get("species_group") or "").strip()
+        if g:
+            out[str(sid)] = g
+    return out
+
+
+def species_group_of(species_id: str) -> str:
+    """物种名/条目 id/参考变体 → workflow/resources 下的目录名。
+
+    已经是物种级名字的输入原样返回（幂等），catalog 里找不到的条目
+    （比如用户自定义物种）也回落到自己的 id。
+    """
+    sid = sanitize_name(species_id)
+    if not sid:
+        return ""
+    try:
+        groups = _read_species_groups(CATALOG_PATH.stat().st_mtime)
+    except OSError:
+        groups = {}
+    return sanitize_name(groups.get(sid, sid)) or sid
 
 
 # 原始数据目录里留一张便签：空目录在文件管理器里看不出用途，
@@ -194,7 +238,7 @@ def ensure_project_dirs(
     if not sp or not exp:
         raise ValueError("物种名与实验名都不能为空")
 
-    raw_sp = sanitize_name(base_species) or variant_species(sp) or sp
+    raw_sp = variant_species(base_species or sp) or sp
     custom_raw = (rawdata_dir or "").strip()
     dirs = project_dirs(sp, exp, raw_sp)
     if custom_raw:
@@ -241,14 +285,17 @@ config.yaml 里每个项目的 experiment 字段就是这里的 <实验名>，
 """
 
 
-def ensure_species_rawdata_dir(species: str) -> Path:
+def ensure_species_rawdata_dir(species_id: str) -> Path:
     """建 workflow/resources/<物种>/，已存在则原样返回。
 
     物种层只用来给各实验分目录，真正的 fastq 在 <物种>/<实验>/ 下。
     建索引时先备好这一层，用户构建完就能直接把数据拷进来，
     不用等到配置项目时才看到路径。
+
+    同一物种的多个组装落到同一个目录（species_group），
+    传条目 id 或带来源后缀的变体 id 都可以。
     """
-    sp = sanitize_name(species)
+    sp = variant_species(species_id)
     if not sp:
         raise ValueError("物种名不能为空")
     d = RESOURCES_DIR / sp
