@@ -265,12 +265,23 @@ if (!is.null(orgdb_name) && nzchar(as.character(orgdb_name))) {
 # 判断 txdb 是文件路径还是 Bioconductor 包名
 if (file.exists(txdb_name)) {
   cat("Loading TxDb from GFF/GTF file:", txdb_name, "\n")
-  # GenomicFeatures >= 1.61.1 将 makeTxDbFromGFF 迁移到 txdbmaker 包
-  if (requireNamespace("txdbmaker", quietly = TRUE)) {
-    txdb <- txdbmaker::makeTxDbFromGFF(txdb_name)
-  } else {
-    txdb <- GenomicFeatures::makeTxDbFromGFF(txdb_name)
-  }
+  # Bioc 3.19 起 makeTxDbFromGFF 的实现搬进了 txdbmaker，GenomicFeatures 里只剩
+  # 一个转发壳。缺包时它只报一句 "Could not load package txdbmaker"，看不出是
+  # 环境缺依赖，所以这里接住错误并给出修法。
+  txdb <- tryCatch({
+    if (requireNamespace("txdbmaker", quietly = TRUE)) {
+      txdbmaker::makeTxDbFromGFF(txdb_name)
+    } else {
+      GenomicFeatures::makeTxDbFromGFF(txdb_name)
+    }
+  }, error = function(e) {
+    stop("无法从 GFF/GTF 构建 TxDb：", conditionMessage(e), "\n",
+         "  Bioc 3.19 起 makeTxDbFromGFF 由 txdbmaker 提供，当前环境没装：\n",
+         "    BiocManager::install(\"txdbmaker\")\n",
+         "    conda install -c bioconda bioconductor-txdbmaker\n",
+         "  或把 config.yaml 里该项目的 txdb 换成 Bioconductor 包名。",
+         call. = FALSE)
+  })
 } else {
   library(txdb_name, character.only = TRUE)
   txdb <- get(txdb_name)

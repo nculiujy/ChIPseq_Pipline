@@ -285,6 +285,61 @@ def get_bowtie2_dirs(species):
 
 FASTQ_EXTS = (".fastq", ".fq", ".fastq.gz", ".fq.gz")
 
+GFF_EXTS = (".gff", ".gff3", ".gtf", ".gff.gz", ".gff3.gz", ".gtf.gz")
+
+
+def get_gff_candidates(species, bowtie2_folder=""):
+    """列出可用来建 TxDb 的本地 GFF/GTF。
+
+    优先索引目录里的：下载流程把 FASTA 与注释放在同一个 bowtie2_index_* 下，
+    两者 seqid 体系一致，拿它 makeTxDbFromGFF 出来的坐标才能直接和比对结果对上。
+    用 Bioconductor 包不一定对得上：比如拟南芥的 plantsmart28 用 1/2/3/Mt/Pt，
+    而 TAIR 下载的索引用 Chr1/Chr2，下游得先做一道染色体名转换。
+
+    早期手工整理的目录把注释单放在物种目录下的另一个子目录里
+    （workflow/anno/TAIR10/arabidopsis_TAIR10/TAIR10_GFF3_genes.gff），
+    索引目录里找不到时再扫这一层；能同目录配套时就不扫，免得满屏历史遗留的旧版本。
+
+    返回相对仓库根的路径，非压缩的排前面。
+    """
+    sp_dir = os.path.join(ANNO_DIR, species)
+    if not os.path.isdir(sp_dir):
+        return []
+
+    def _scan(folder):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        return sorted(
+            os.path.join(folder, n) for n in names
+            if n.lower().endswith(GFF_EXTS) and os.path.isfile(os.path.join(folder, n))
+        )
+
+    found = _scan(os.path.join(sp_dir, bowtie2_folder)) if bowtie2_folder else []
+    if not found:
+        for d in sorted(os.listdir(sp_dir)):
+            sub = os.path.join(sp_dir, d)
+            if d != bowtie2_folder and os.path.isdir(sub):
+                found.extend(_scan(sub))
+
+    uniq = []
+    for p in found:
+        if p not in uniq:
+            uniq.append(p)
+    # 稳定排序：非压缩的排前（makeTxDbFromGFF 对 .gz 要多走一层连接，能不压就不压）
+    uniq.sort(key=lambda p: p.lower().endswith(".gz"))
+    return [os.path.relpath(p, BASE_DIR) for p in uniq]
+
+
+def txdb_option_label(val):
+    """TxDb 下拉的显示文案：一眼看出是本地 GFF 还是现成的 R 包。"""
+    if val.lower().endswith(GFF_EXTS):
+        return f"本地 GFF · {os.path.basename(val)}"
+    if val.startswith(("TxDb.", "org.")):
+        return f"Bioconductor 包 · {val}"
+    return val
+
 
 def get_rawdata_candidates(species):
     """列出 workflow/resources/<物种>/ 下可作为 rawdata_dir 的实验目录。
@@ -863,6 +918,7 @@ with tab2:
                 # Bowtie2 索引选择
                 st.markdown("**Bowtie2 索引**")
                 bowtie2_dirs_i = get_bowtie2_dirs(selected_species)
+                selected_bt2_dir = ""
                 if bowtie2_dirs_i:
                     # 尝试从现有 index_dir 推断当前选中的 bowtie2 目录
                     current_index = proj.get("index_dir", "")
@@ -907,16 +963,42 @@ with tab2:
                     )
 
             with col2:
-                st.text_input(
-                    "TxDb（R 包名或本地 GFF3/GTF 路径）",
-                    value=proj.get("txdb", ""), key=f"txdb_{i}",
-                    help="填 Bioconductor TxDb 包名，或直接填 GFF3/GTF 文件路径（脚本自动识别）",
-                )
+                # 候选跟着物种走：本地 GFF（与索引同源）优先，其次是 catalog 的默认包。
+                # 当前值可能是手填的包名或旧路径，排首位保留，不会默默换掉。
+                _cur_txdb = proj.get("txdb", "")
+                _cur_orgdb = proj.get("orgdb", "")
+                _tx_opts = get_gff_candidates(selected_species, selected_bt2_dir)
+                _pkg_tx_i = rt.default_txdb(selected_species)
+                if _pkg_tx_i and _pkg_tx_i not in _tx_opts:
+                    _tx_opts.append(_pkg_tx_i)
+                if _cur_txdb and _cur_txdb not in _tx_opts:
+                    _tx_opts.insert(0, _cur_txdb)
+                if _tx_opts:
+                    st.selectbox(
+                        "TxDb",
+                        _tx_opts,
+                        index=_tx_opts.index(_cur_txdb) if _cur_txdb in _tx_opts else 0,
+                        key=f"txdb_sel_{i}",
+                        format_func=txdb_option_label,
+                        help="默认用索引目录下的 GFF 现场构建，坐标体系与比对结果一致；"
+                             "也可以改用 Bioconductor 的现成包",
+                    )
+                else:
+                    st.text_input(
+                        "TxDb（R 包名或 GFF 路径）", value=_cur_txdb, key=f"txdb_sel_{i}",
+                        help="本物种目录下没有 GFF/GTF，catalog 里也没有默认 TxDb 包",
+                    )
+
+                # OrgDb 没填过的按物种默认包补上，用户不用去查
+                _org_auto = rt.default_orgdb(selected_species)
                 st.text_input(
                     "OrgDb（R 包名，可留空）",
-                    value=proj.get("orgdb", ""), key=f"orgdb_{i}",
-                    help="基因符号注释与富集分析用；大豆等无官方 OrgDb 的物种可留空（注释仍可用，GO/KEGG 富集将跳过）",
+                    value=_cur_orgdb or _org_auto,
+                    key=f"orgdb_{i}",
+                    help="随物种自动绑定；留空则跳过基因符号注释，也可填自建包名",
                 )
+                if _org_auto and not _cur_orgdb:
+                    st.caption(f"catalog 已按物种绑定 OrgDb：`{_org_auto}`")
 
                 st.markdown("**模块开关：**")
                 modules = proj.get("modules", {})
@@ -948,7 +1030,7 @@ with tab2:
                         fresh_projects[i]["rawdata_dir"] = _ensure_project_dirs_or_stop(
                             _sp, _exp, st.session_state[f"raw_{i}"])
                         fresh_projects[i]["index_dir"] = final_index_dir
-                        fresh_projects[i]["txdb"] = st.session_state[f"txdb_{i}"]
+                        fresh_projects[i]["txdb"] = st.session_state[f"txdb_sel_{i}"]
                         fresh_projects[i]["orgdb"] = st.session_state[f"orgdb_{i}"]
                         fresh_projects[i]["modules"] = {
                             "1_download": m1,
@@ -984,12 +1066,20 @@ with tab2:
     if not available_species_new:
         available_species_new = ["TAIR10", "Glycine_max_v4", "homo", "mouse"]
 
+    # 默认落在已经建好索引的物种上。目录列表按字母排，空的物种目录（只下过注释
+    # 没建索引）很容易排在前面，默认选中它的话整张表下面全是告警。
+    _ready_sp = [s for s in available_species_new if get_bowtie2_dirs(s)]
     new_species = st.selectbox(
-        "物种", available_species_new, key="new_sp", format_func=species_label
+        "物种",
+        available_species_new,
+        key="new_sp",
+        index=available_species_new.index(_ready_sp[0]) if _ready_sp else 0,
+        format_func=species_label,
     )
 
     # 新项目：Bowtie2 索引目录选择
     new_bt2_dirs = get_bowtie2_dirs(new_species)
+    new_bt2_dir = ""
     if new_bt2_dirs:
         new_bt2_dir = st.selectbox("Bowtie2 索引目录", new_bt2_dirs, key="new_bt2dir")
         new_index_prefix = get_bowtie2_index_prefix(new_species, new_bt2_dir)
@@ -1057,14 +1147,57 @@ with tab2:
             st.caption(f"原始数据目录: `{new_rawdata or '（未填写）'}`")
             st.caption(f"Bowtie2 索引: `{new_index_value}`")
         with col2:
-            new_txdb = st.text_input(
-                "TxDb（R 包名或本地 GFF3/GTF 路径）",
-                help="填 Bioconductor TxDb 包名，或直接填 GFF3/GTF 文件路径（脚本自动识别）",
-            )
-            new_orgdb = st.text_input(
-                "OrgDb（R 包名，可留空）",
-                help="基因符号注释与富集分析用；大豆等无官方 OrgDb 的物种可留空（注释仍可用，GO/KEGG 富集将跳过）",
-            )
+            # TxDb / OrgDb 跟着物种走，不用用户去查包名：
+            # TxDb 优先用与索引同源的 GFF 现场构建，OrgDb 取 catalog 里的默认包。
+            _gffs = get_gff_candidates(new_species, new_bt2_dir)
+            _sp_dir = os.path.join(ANNO_DIR, new_species)
+            # 下拉文案带上所在子目录：同物种常有多个来源的注释，光看文件名分不清
+            _txdb_opts = [
+                (g, f"本地 GFF · {os.path.relpath(os.path.join(BASE_DIR, g), _sp_dir)}")
+                for g in _gffs
+            ]
+            _pkg_tx = rt.default_txdb(new_species)
+            if _pkg_tx:
+                _txdb_opts.append((_pkg_tx, f"Bioconductor 包 · {_pkg_tx}"))
+            if _txdb_opts:
+                _txdb_label = dict(_txdb_opts)
+                new_txdb = st.selectbox(
+                    "TxDb",
+                    options=[v for v, _ in _txdb_opts],
+                    format_func=lambda v: _txdb_label.get(v, v),
+                    key=f"new_txdb_{new_species}_{new_bt2_dir}",
+                    help="默认用索引目录下的 GFF 现场构建，坐标体系与比对结果一致；"
+                         "也可以改用 Bioconductor 的现成包",
+                )
+                # 实在没配套的才列出其他子目录的：染色体命名对不上会让注释错位
+                if new_bt2_dir and _gffs and not any(
+                    os.path.dirname(g) == f"workflow/anno/{new_species}/{new_bt2_dir}" for g in _gffs
+                ):
+                    st.caption(
+                        "索引目录里没有注释文件，列出的 GFF 来自同物种其他子目录；"
+                        "挑与索引同源的那套，染色体命名不一致会让 peak 注释错位"
+                    )
+            else:
+                st.warning(
+                    "该物种还没有可用的注释：目录下没找到 GFF/GTF，catalog 里也没有默认 "
+                    "TxDb 包。先去「物种注释」页把参考基因组和 GFF 下载下来"
+                )
+                new_txdb = st.text_input("TxDb（R 包名或 GFF 路径）", key="new_txdb_manual")
+
+            _pkg_org = rt.default_orgdb(new_species)
+            if _pkg_org:
+                new_orgdb = st.text_input(
+                    "OrgDb",
+                    value=_pkg_org,
+                    key=f"new_orgdb_{new_species}",
+                    help="随物种自动绑定；要换别的包直接改这里，留空则跳过基因符号注释",
+                )
+            else:
+                st.warning(
+                    "该物种在 Bioconductor 没有官方 OrgDb 包，GO/KEGG 富集将跳过；"
+                    "peak 到基因的注释不受影响。自己建了包可以填在这里"
+                )
+                new_orgdb = st.text_input("OrgDb（可留空）", key=f"new_orgdb_{new_species}")
 
         submitted = st.form_submit_button("添加项目")
         if submitted and new_experiment:

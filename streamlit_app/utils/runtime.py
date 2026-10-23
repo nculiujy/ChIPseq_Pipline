@@ -131,16 +131,53 @@ def variant_species(vid: str) -> str:
 
 
 @lru_cache(maxsize=4)
-def _read_species_groups(_mtime: float) -> dict[str, str]:
-    """catalog 的物种分组表：条目 id → workflow/resources 下的目录名。
+def _read_catalog(_mtime: float) -> dict:
+    """解析 annotations_catalog.yaml。
 
-    _mtime 只当缓存键用：catalog 改过就重读，否则每次拼路径都解析 300 行 YAML。
+    _mtime 只当缓存键用：文件改过就重读，否则每次拼路径都解析 300 行 YAML。
     """
     try:
         with open(CATALOG_PATH, "r", encoding="utf-8") as f:
-            catalog = yaml.safe_load(f) or {}
+            return yaml.safe_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def load_catalog() -> dict:
+    """物种注释 catalog（含 species 字段）。读不到时返回空 dict。"""
+    try:
+        return _read_catalog(CATALOG_PATH.stat().st_mtime)
+    except OSError:
+        return {}
+
+
+def catalog_entry(species_id: str) -> dict:
+    """catalog 里某个物种条目（按条目 id 查，不处理 __ 后缀）；找不到返回 {}。"""
+    sid = sanitize_name(species_id)
+    if not sid:
+        return {}
+    return (load_catalog().get("species") or {}).get(sid) or {}
+
+
+def default_txdb(species_id: str) -> str:
+    """该物种的默认 TxDb：catalog 里的 Bioconductor 包名，没有返回 ""。"""
+    return str(catalog_entry(split_variant(species_id)[0]).get("default_txdb_pkg") or "")
+
+
+def default_orgdb(species_id: str) -> str:
+    """该物种的默认 OrgDb：catalog 里的 Bioconductor 包名，没有返回 ""。
+
+    模式生物（拟南芥/人/小鼠/酵母）都有官方 OrgDb；大豆、玉米、水稻这类
+    作物在 Bioconductor 没有现成包，返回空串，调用方应据此提示 GSEA 会跳过，
+    而不是留一个空白框让人以为忘了填。
+    """
+    return str(catalog_entry(split_variant(species_id)[0]).get("default_orgdb_pkg") or "")
+
+
+@lru_cache(maxsize=4)
+def _read_species_groups(_mtime: float) -> dict[str, str]:
+    """catalog 的物种分组表：条目 id → workflow/resources 下的目录名。"""
+    catalog = _read_catalog(_mtime)
     out = {}
     for sid, entry in (catalog.get("species") or {}).items():
         g = str((entry or {}).get("species_group") or "").strip()

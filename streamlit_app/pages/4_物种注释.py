@@ -519,21 +519,46 @@ def _render_apply_button(
             )
             st.text_input("index_dir (相对项目根)", value=index_dir_rel, disabled=True, key=f"{key_prefix}_idx")
 
-            # txdb 选择
-            pkg = entry.get("default_txdb_pkg")
-            gff_rel = ""
-            if status.gff_path:
-                gff_rel = os.path.relpath(status.gff_path, BASE_DIR)
-            txdb_options = []
-            if pkg:
-                txdb_options.append(f"Bioconductor 包: {pkg}")
+            # txdb 来源：优先用下载下来的 GFF。它和 FASTA 是同一批下载、同一套
+            # seqid，由它现场构建的 TxDb 坐标才能和比对结果直接对上；Bioconductor
+            # 包常是另一套染色体命名（拟南芥 plantsmart28 用 1/2/3，TAIR 下载的索引
+            # 用 Chr1/Chr2），下游得先做一道改名才能注释。
+            pkg = entry.get("default_txdb_pkg") or ""
+            gff_rel = os.path.relpath(status.gff_path, BASE_DIR) if status.gff_path else ""
+            _txdb_opts = []  # [(写入 config 的值, 下拉显示的文案)]
             if gff_rel:
-                txdb_options.append(f"本地 GFF: {gff_rel}")
-            txdb_choice = st.selectbox("txdb 来源", txdb_options or ["(无)"], key=f"{key_prefix}_txc")
-            txdb_value = pkg if (pkg and txdb_choice.startswith("Bioconductor")) else gff_rel
+                _txdb_opts.append((gff_rel, f"本地 GFF · {os.path.basename(gff_rel)}"))
+            if pkg:
+                _txdb_opts.append((pkg, f"Bioconductor 包 · {pkg}"))
+            if _txdb_opts:
+                _txdb_label = dict(_txdb_opts)
+                txdb_value = st.selectbox(
+                    "txdb 来源",
+                    options=[v for v, _ in _txdb_opts],
+                    format_func=lambda v: _txdb_label.get(v, v),
+                    key=f"{key_prefix}_txc",
+                    help="GFF 与索引同源，坐标体系一致；Bioconductor 包的染色体命名"
+                         "可能与索引不同，需要下游先转换",
+                )
+            else:
+                st.warning("这套索引目录下没找到 GFF/GTF，catalog 里也没有默认 TxDb 包；"
+                           "注释模块需要两者之一")
+                txdb_value = st.text_input("txdb（包名或 GFF 路径）", key=f"{key_prefix}_txc_manual")
 
+            # orgdb：catalog 里跟着物种写好的，用户不用自己记包名
             orgdb_default = entry.get("default_orgdb_pkg") or ""
-            orgdb = st.text_input("orgdb (Bioconductor OrgDb 包名，可空)", value=orgdb_default, key=f"{key_prefix}_org")
+            if orgdb_default:
+                orgdb = st.text_input(
+                    "orgdb（Bioconductor OrgDb 包名）", value=orgdb_default,
+                    key=f"{key_prefix}_org",
+                    help="随物种自动绑定；要换别的包直接改这里",
+                )
+            else:
+                st.warning(
+                    "该物种在 Bioconductor 没有官方 OrgDb 包，GO/KEGG 富集将跳过；"
+                    "peak 到基因的注释不受影响。自己建了包可以填在这里"
+                )
+                orgdb = st.text_input("orgdb（自建包名，可留空）", key=f"{key_prefix}_org")
 
             submitted = st.form_submit_button("写入 config.yaml", type="primary")
             if submitted:

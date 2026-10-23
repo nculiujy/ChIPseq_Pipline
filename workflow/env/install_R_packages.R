@@ -12,7 +12,7 @@
 # 设计：
 #   - 全程非交互（NONINTERACTIVE=1）；被 bootstrap.sh / chipseq-app-update all 调用不挂起
 #   - R 版本 → Bioc 版本自动映射（4.3/4.4/4.5/4.6）
-#   - txdbmaker 仅在 Bioc ≥ 3.21 时装（旧版 GenomicFeatures 自带 makeTxDbFromGFF，脚本有回退）
+#   - txdbmaker 自 Bioc 3.19 起必装（makeTxDbFromGFF 的实现已从 GenomicFeatures 移出）
 #   - 已装包秒过（requireNamespace 判定）；可选包缺失不 fatal
 #   - 只有"必需包"缺失才 exit 1；调用方 (bootstrap) 用 || warn 兜住即可
 #   - 若系统 R lib 不可写，自动建 ~/R 作为 lib 目标
@@ -157,11 +157,15 @@ bioc_required <- c(
     "clusterProfiler", "DOSE", "GOSemSim", "enrichplot", "ggtree",
     "aplot", "AnnotationDbi", "GO.db", "qvalue"
 )
-# txdbmaker 仅在 Bioc >= 3.21 (R >= 4.5) 存在；旧版 GenomicFeatures 自带 makeTxDbFromGFF
-if (!is.na(BIOC_VERSION_NUM) && BIOC_VERSION_NUM >= 3.21) {
+# txdbmaker 自 Bioc 3.19 起提供，makeTxDbFromGFF 的实现也在那时搬了过去：
+# GenomicFeatures 里只剩一个转发壳，缺 txdbmaker 时直接报
+# "Could not load package txdbmaker"——从 GFF 建 TxDb 会整个跑不起来。
+# 源码编译失败时（缺 pkg-config）可用 conda 装预编译版：
+#   conda install -c bioconda -c conda-forge bioconductor-txdbmaker
+if (!is.na(BIOC_VERSION_NUM) && BIOC_VERSION_NUM >= 3.19) {
     bioc_required <- c(bioc_required, "txdbmaker")
 } else {
-    cat("[R] txdbmaker 在当前 Bioc 版本不存在，跳过（GenomicFeatures 自带 makeTxDbFromGFF）\n")
+    cat("[R] Bioc < 3.19，GenomicFeatures 自带 makeTxDbFromGFF，跳过 txdbmaker\n")
 }
 missing_bioc <- bioc_required[!vapply(bioc_required, has_pkg, logical(1))]
 if (length(missing_bioc)) {
