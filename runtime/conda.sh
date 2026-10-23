@@ -55,6 +55,19 @@ _installer() {
     if command -v mamba >/dev/null 2>&1; then echo mamba; else echo conda; fi
 }
 
+_create_launcher() {
+    local inst="$1" launcher="$2"
+    check_disk_space "$(dirname "$launcher")" 1
+    "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
+        || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
+    _chipseq_sanitize_environments_txt
+}
+
+# conda 只认带 conda-meta/ 的 prefix：目录在、python 也在，但 conda-meta 缺失时
+# `install -p` 会直接 `Expected environment not found at prefix` + Aborting。
+# 环境被 mv 过、装到一半中断、或曾被别的工具处理都可能造成这种「半不像」的状态。
+_launcher_is_conda_env() { [ -d "$CHIPSEQ_LAUNCH_ENV/conda-meta" ]; }
+
 runtime_install() {
     # A 的职责：确保有 conda/mamba → 建精简启动器 → 写 analysis_env 标记。
     # 不下载 4GB 分析环境（由命令行 provision_analysis_* / chipseq-app-update all 构建）。
@@ -68,19 +81,24 @@ runtime_install() {
     local miss; miss=$(_launcher_missing)
     if [ -x "$launcher/bin/streamlit" ] && [ -z "$miss" ]; then
         ok "启动器环境已就绪: $launcher（跳过重建；需要刷新用 CHIPSEQ_REFRESH_LAUNCHER=1）"
-    elif [ -x "$launcher/bin/python" ]; then
+    elif [ -x "$launcher/bin/python" ] && _launcher_is_conda_env; then
         # 环境在，只是缺包（比如后来结果预览页开始用 plotly）。整个重建要重新求解一遍
         # 依赖（慢盘上几十分钟），补装就几秒。
         log "启动器环境缺依赖（$miss），补齐: $launcher"
-        "$inst" install -p "$launcher" -y $miss \
-            || die "补齐启动器依赖失败（可手动重试：$inst install -p $launcher -y $miss）"
+        if ! "$inst" install -p "$launcher" -y $miss; then
+            # 不 rm -rf：网络/镜像抖一下也会走到这里，删了就彻底跑不起来；
+            # 缺的包页面会自己降级，先把能用的保住，提示稍后重试。
+            warn "补齐失败（多为网络/镜像问题）；环境已保留。"
+            warn "结果预览会自动退回内置柱状图，不影响其他页面。稍后重试：chipseq-app-update"
+        fi
         _chipseq_sanitize_environments_txt
     else
+        if [ -d "$launcher" ]; then
+            warn "启动器目录存在但不是 conda 能管理的前缀（缺 conda-meta/），重建: $launcher"
+            rm -rf "$launcher"
+        fi
         log "创建精简启动器环境（python=3.11 + $CHIPSEQ_LAUNCHER_PKGS）: $launcher"
-        check_disk_space "$(dirname "$launcher")" 1
-        "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
-            || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
-        _chipseq_sanitize_environments_txt
+        _create_launcher "$inst" "$launcher"
     fi
 
     # 写 analysis_env 标记（供 Streamlit 侧 env_paths.analysis_prefix() 读取）
@@ -261,8 +279,10 @@ runtime_status() {
     local miss; miss=$(_launcher_missing)
     if [ -x "$launcher/bin/streamlit" ] && [ -z "$miss" ]; then
         echo "  状态:      就绪"
-    elif [ -x "$launcher/bin/python" ]; then
+    elif [ -x "$launcher/bin/python" ] && _launcher_is_conda_env; then
         echo "  状态:      缺依赖（$miss）—— 跑 chipseq-app-update 补齐"
+    elif [ -d "$launcher" ]; then
+        echo "  状态:      环境不完整（缺 conda-meta/）—— 跑 chipseq-app-update 重建"
     else
         echo "  状态:      未安装（请跑 bootstrap.sh）"
     fi
