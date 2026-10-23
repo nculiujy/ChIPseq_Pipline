@@ -56,10 +56,31 @@ _installer() {
 }
 
 _create_launcher() {
-    local inst="$1" launcher="$2"
+    local inst="$1" launcher="$2" miss2
     check_disk_space "$(dirname "$launcher")" 1
-    "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
-        || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
+
+    # 重建走三步，能不联网就不联网：
+    #   1) 全套都用本地包缓存离线建（pkgs/ 里都当时是秒级）
+    #   2) 本地缺新的包（比如后来加的 plotly）时，先离线建基础件，缺的用 pip 补
+    #   3) 缓存实在不够才联网；联网要先拉十几个 channel 的 repodata，慢镜像上能拖很久
+    if "$inst" create -p "$launcher" -y --offline python=3.11 $CHIPSEQ_LAUNCHER_PKGS >/dev/null 2>&1; then
+        ok "启动器环境已创建（全部走本地包缓存，未联网）"
+    else
+        rm -rf "$launcher"
+        if "$inst" create -p "$launcher" -y --offline python=3.11 streamlit pyyaml >/dev/null 2>&1; then
+            ok "启动器基础环境已创建（本地包缓存）"
+            miss2=$(_launcher_missing)
+            if [ -n "$miss2" ]; then
+                log "本地缓存缺少 $miss2，用 pip 补装"
+                _launcher_pip_install $miss2 || warn "pip 补装 $miss2 失败；页面会自动降级，稍后重试：chipseq-app-update"
+            fi
+        else
+            rm -rf "$launcher"
+            log "本地包缓存不足，联网创建启动器环境（需拉取 repodata，可能较慢）…"
+            "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
+                || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
+        fi
+    fi
     _chipseq_sanitize_environments_txt
 }
 
@@ -67,6 +88,20 @@ _create_launcher() {
 # `install -p` 会直接 `Expected environment not found at prefix` + Aborting。
 # 环境被 mv 过、装到一半中断、或曾被别的工具处理都可能造成这种「半不像」的状态。
 _launcher_is_conda_env() { [ -d "$CHIPSEQ_LAUNCH_ENV/conda-meta" ]; }
+
+# 启动器能不能真的跑起来（streamlit + pyyaml 都在）。
+# 这是判断「该不该保留这个环境」的唯一依据——不是 conda 认不认，而是它能不能干活。
+_launcher_runnable() {
+    local py="$CHIPSEQ_LAUNCH_ENV/bin/python"
+    [ -x "$py" ] || return 1
+    "$py" -c "import streamlit, yaml" >/dev/null 2>&1
+}
+
+# 往现有 prefix 里用 pip 补包（不经过 conda，不需要 conda-meta）
+_launcher_pip_install() {
+    local py="$CHIPSEQ_LAUNCH_ENV/bin/python"
+    "$py" -m pip install --disable-pip-version-check -q "$@"
+}
 
 runtime_install() {
     # A 的职责：确保有 conda/mamba → 建精简启动器 → 写 analysis_env 标记。
@@ -81,20 +116,29 @@ runtime_install() {
     local miss; miss=$(_launcher_missing)
     if [ -x "$launcher/bin/streamlit" ] && [ -z "$miss" ]; then
         ok "启动器环境已就绪: $launcher（跳过重建；需要刷新用 CHIPSEQ_REFRESH_LAUNCHER=1）"
-    elif [ -x "$launcher/bin/python" ] && _launcher_is_conda_env; then
-        # 环境在，只是缺包（比如后来结果预览页开始用 plotly）。整个重建要重新求解一遍
-        # 依赖（慢盘上几十分钟），补装就几秒。
+    elif [ -z "$miss" ]; then
+        ok "启动器环境可用: $launcher"
+    elif _launcher_is_conda_env && _launcher_runnable; then
+        # 正常情况：conda 能管的环境，缺包用 conda 补（几秒）。
         log "启动器环境缺依赖（$miss），补齐: $launcher"
         if ! "$inst" install -p "$launcher" -y $miss; then
-            # 不 rm -rf：网络/镜像抖一下也会走到这里，删了就彻底跑不起来；
-            # 缺的包页面会自己降级，先把能用的保住，提示稍后重试。
-            warn "补齐失败（多为网络/镜像问题）；环境已保留。"
-            warn "结果预览会自动退回内置柱状图，不影响其他页面。稍后重试：chipseq-app-update"
+            # 不 rm -rf：网络/镜像抖一下也会走到这里，删了就彻底跑不起来。
+            warn "补齐失败（多为网络/镜像问题）；环境已保留，稍后重试：chipseq-app-update"
         fi
         _chipseq_sanitize_environments_txt
+    elif _launcher_runnable; then
+        # 缺 conda-meta（conda 不认这个 prefix），但 python 和 streamlit 都跑得起来。
+        # 环境里几百个包都是好的，为了一两个纯 Python 包把它删掉重建（先重新求解
+        # 整个环境、再下载几百 MB）纯属浪费——直接 pip 装进去，运行期完全等价。
+        log "启动器缺依赖（$miss），该前缀无 conda-meta（conda 管不了），改用 pip 补装"
+        if ! _launcher_pip_install $miss; then
+            warn "pip 补装失败；环境已保留，稍后重试：chipseq-app-update"
+        fi
     else
+        # 到这里说明这个环境真的跑不起来（没有 python，或者 streamlit 已经坏了），
+        # 没法就地修，只能重建。
         if [ -d "$launcher" ]; then
-            warn "启动器目录存在但不是 conda 能管理的前缀（缺 conda-meta/），重建: $launcher"
+            warn "启动器环境不可用（缺 python 或 streamlit 无法导入），重建: $launcher"
             rm -rf "$launcher"
         fi
         log "创建精简启动器环境（python=3.11 + $CHIPSEQ_LAUNCHER_PKGS）: $launcher"
