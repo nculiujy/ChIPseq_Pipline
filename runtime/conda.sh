@@ -26,9 +26,14 @@ _out_log()  { echo "$DATA_DIR/logs/streamlit.out"; }
 # ---------- 启动器环境需要哪些包 ----------
 # 启动器只跑 Streamlit UI，不碰分析，所以这里只要「页面里 import 到的第三方包」。
 # 加新依赖时改这一处：新建环境会带上，已装好的环境在 update 时自动补齐。
-# 格式 conda包名:python模块名，两者不同名（pyyaml -> yaml）不能省。
-CHIPSEQ_LAUNCHER_PKGS="streamlit pyyaml plotly"
-_LAUNCHER_IMPORTS="streamlit:streamlit pyyaml:yaml plotly:plotly"
+# 格式 conda包名:python模块名，两者不同名（pyyaml -> yaml，pymupdf -> fitz）不能省。
+#
+# pymupdf：结果预览页要把 PDF 渲成图片（deeptools 热图、ChIPseeker 饼图、motif logo）。
+# 旧方案 pdf2image 要配 poppler 的 pdftoppm 二进制，而那两样当初都装进了 analysis，
+# UI 却跑在 launch，import 必然失败，页面就永远提示“安装 pdf2image 和 poppler-utils”。
+# PyMuPDF 是单 wheel 自带渲染引擎，不需要任何系统二进制，跨机器部署也省心。
+CHIPSEQ_LAUNCHER_PKGS="streamlit pyyaml plotly pymupdf"
+_LAUNCHER_IMPORTS="streamlit:streamlit pyyaml:yaml plotly:plotly pymupdf:pymupdf"
 
 # 打印缺的 conda 包名（空格分隔）；全部齐了输出为空
 _launcher_missing() {

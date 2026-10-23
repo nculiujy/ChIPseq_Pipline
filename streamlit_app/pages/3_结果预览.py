@@ -44,11 +44,44 @@ def load_config():
 
 
 def pdf_to_images(pdf_path):
-    """尝试将 PDF 转换为图片以供预览（需要 pdf2image 库）"""
+    """把 PDF 前 3 页渲成图片，供 st.image 预览。
+
+    优先 PyMuPDF（import 名 fitz）：单 wheel 自带渲染引擎，不依赖任何系统二进制。
+    旧方案 pdf2image 要配 poppler 的 pdftoppm，而这两样当初都装进了 analysis 环境，
+    UI 却跑在 launch 环境，import 必然失败——这就是预览一直提示“安装 pdf2image
+    和 poppler-utils”的原因（包是装了的，只是装错了环境）。
+    pdf2image 仅作回退，兼容老环境里恰好装好的情况。
+    """
+    # 1) PyMuPDF（现役方案，依赖在 CHIPSEQ_LAUNCHER_PKGS 里）
+    # >=1.24 的正名是 pymupdf；fitz 只是向后兼容别名，已标弃用会打 FutureWarning
+    fitz = None
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz  # 老版本 PyMuPDF 只有这个入口
+        except ImportError:
+            pass
+    if fitz is not None:
+        from PIL import Image
+        try:
+            doc = fitz.open(pdf_path)
+            try:
+                out = []
+                for i in range(min(3, doc.page_count)):
+                    pix = doc[i].get_pixmap(dpi=150)
+                    out.append(Image.frombytes("RGB", (pix.width, pix.height), pix.samples))
+                return out
+            finally:
+                doc.close()
+        except Exception as e:
+            st.warning(f"PDF 转换失败（PyMuPDF）: {e}")
+            return None
+
+    # 2) pdf2image 回退
     try:
         from pdf2image import convert_from_path
-        images = convert_from_path(pdf_path, first_page=1, last_page=3, dpi=150)
-        return images
+        return convert_from_path(pdf_path, first_page=1, last_page=3, dpi=150)
     except ImportError:
         return None
     except Exception as e:
@@ -238,7 +271,7 @@ if selected_proj:
                                     if len(pdf_images) > 3:
                                         st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
                                 else:
-                                    st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF 文件")
+                                    st.info("当前启动器环境缺少 PDF 渲染库（PyMuPDF）；运行 `chipseq-app-update` 会自动补齐")
                             
                             # 下载按钮
                             with open(pdf_path, "rb") as f:
@@ -380,7 +413,7 @@ if selected_proj:
                                 if len(pdf_images) > 3:
                                     st.caption(f"...（共 {len(pdf_images)} 页，仅显示前 3 页）")
                             else:
-                                st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
+                                st.info("当前启动器环境缺少 PDF 渲染库（PyMuPDF）；运行 `chipseq-app-update` 会自动补齐")
                         
                         # 下载按钮
                         with open(img_path, "rb") as f:
@@ -472,7 +505,7 @@ if selected_proj:
                                     for idx, pimg in enumerate(pdf_images[:3]):
                                         st.image(pimg, caption=f"第 {idx+1} 页", use_container_width=True)
                                 else:
-                                    st.info("安装 `pdf2image` 和 `poppler-utils` 可预览 PDF")
+                                    st.info("当前启动器环境缺少 PDF 渲染库（PyMuPDF）；运行 `chipseq-app-update` 会自动补齐")
 
                                 with open(plot_path, "rb") as f:
                                     st.download_button(
