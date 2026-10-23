@@ -84,7 +84,7 @@ def _ensure_project_dirs_or_stop(species, experiment, rawdata_dir=""):
 
 
 # ------------------------------------------------------------
-# 样本名识别（供「样本配对表」按项目自动填表）
+# 样本名识别（供「样本配对表」列出可选样本）
 # ------------------------------------------------------------
 # 规则与 workflow/scripts/3_1_ChIPseq.pl 保持一致，顺序不能乱：
 # _1.clean.fq 必须排在 _1.fq 前面，否则 ".clean" 会被当成样本名的一部分。
@@ -150,43 +150,81 @@ def detect_fastq_samples(project: dict) -> dict:
     return found
 
 
-def build_pairs_from_samples(samples, existing=None) -> list:
-    """把识别到的样本名转成 IP/Input 配对建议。
+def _merge_options(primary, extra) -> list:
+    """候选名合并：识别到的排前面，文件里已有的跟后面，去重且保序。
 
-    只在拿得准的时候自动填 Input：
-      1. 恰好一个对照样本 → 所有非对照样本都配它（最常见的多 IP 共用一 Input）；
-      2. 多个对照 → 按数字后缀对齐（IP2 ↔ INPUT2），对不上就留空。
-    Input 拿不准一律留空，避免张冠李戴。
-
-    existing 传入当前已配置的行时，同名 IP 的人工分组（group）原样保留：
-    重复分组只能靠人判断，重新识别时不应把它冲掉。
+    老行里的样本名可能早就不在数据目录里了（换了批次、删了 fastq），
+    但它们仍是有效配置，不并进去的话下拉框会显示成空白，看着像数据没了。
     """
-    names = list(samples)
-    controls = [s for s in names if _is_input_sample(s)]
-    ips = [s for s in names if not _is_input_sample(s)]
+    out = []
+    for name in list(primary) + list(extra):
+        s = str(name or "").strip()
+        if s and s not in out:
+            out.append(s)
+    return out
 
-    old_group = {}
-    if existing is not None and len(existing):
-        for _, _r in existing.iterrows():
-            _ip = str(_r.get("IP sample", "") or "").strip()
-            _g = str(_r.get("group", "") or "").strip()
-            if _ip and _g:
-                old_group[_ip] = _g
 
-    rows = []
-    for ip in ips:
-        ctrl = ""
-        if len(controls) == 1:
-            ctrl = controls[0]
-        elif len(controls) > 1:
-            digits = re.sub(r"\D", "", ip)
-            if digits:
-                for cand in controls:
-                    if re.sub(r"\D", "", cand) == digits:
-                        ctrl = cand
-                        break
-        rows.append({"IP sample": ip, "Input": ctrl, "group": old_group.get(ip, "")})
-    return rows
+def rep_group_options(current=(), n_min: int = 3) -> list:
+    """重复组下拉选项：只给 rep1 / rep2 / rep3 这种写法。
+
+    下游按组名分组，写什么名字都能跑，但 WT/OE 这类名字表达的是处理组、
+    不是生物学重复，混进这一列会让人误以为同组样本是不同处理。
+    老文件里已经存在的非规范组名照样列进去，否则编辑框显示成空白，
+    用户会以为数据被清空了。
+    """
+    used = [str(g or "").strip() for g in current if str(g or "").strip()]
+    hi = max(1, n_min)
+    for g in used:
+        m = re.fullmatch(r"rep(\d+)", g, flags=re.IGNORECASE)
+        if m:
+            hi = max(hi, int(m.group(1)))
+    opts = [f"rep{i}" for i in range(1, hi + 1)]
+    opts += [g for g in used if g not in opts]
+    # 首项留空串，用户才有办法把某一行改回「不分组」
+    return [""] + opts
+
+
+def build_editor_columns(detected: dict, current) -> dict:
+    """配对表三列的下拉配置。
+
+    候选只用来「提示有哪些名字」，具体哪一行填什么由用户自己选：
+    同一个 Input 配几个 IP、哪些样本归到同一个 rep 组，都是实验设计问题，
+    靠命名规则猜必然出错——IP2 和 INPUT2 的数字后缀对得上，不代表它们就该配对。
+    """
+    def _col_values(col: str) -> list:
+        if current is None or not len(current) or col not in current.columns:
+            return []
+        vals = current[col].fillna("").astype(str).str.strip().tolist()
+        # 空格子经过 astype(str) 会变成 "nan"，不滤掉的话下拉里会多出个叫 nan 的样本
+        return [v for v in vals if v and v.lower() not in ("nan", "none")]
+
+    names = list(detected or {})
+    ip_opts = _merge_options(
+        [s for s in names if not _is_input_sample(s)], _col_values("IP sample"))
+    in_opts = _merge_options(
+        [s for s in names if _is_input_sample(s)], _col_values("Input"))
+    g_opts = rep_group_options(_col_values("group"), n_min=max(3, len(ip_opts)))
+
+    # 一个样本都没识别到、文件里也没写过时不留下拉：空列表会让这一列没法用
+    ip_col = (
+        st.column_config.SelectboxColumn(
+            "IP 样本", options=[""] + ip_opts, required=False,
+            help="从识别到的样本里选，留空表示这一行不用",
+        )
+        if ip_opts else st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名")
+    )
+    in_col = (
+        st.column_config.SelectboxColumn(
+            "Input 对照", options=[""] + in_opts, required=False,
+            help="这一对配哪个对照样本；留空则不做 IP vs Input",
+        )
+        if in_opts else st.column_config.TextColumn("Input 对照", help="对照组样本名")
+    )
+    g_col = st.column_config.SelectboxColumn(
+        "重复组", options=g_opts, required=False,
+        help="同组样本互为生物学重复，只填 rep1/rep2/rep3 这种写法；留空表示这一对单独分析",
+    )
+    return {"IP sample": ip_col, "Input": in_col, "group": g_col}
 
 
 def infer_row_projects(df_all, detected_by_project) -> list:
@@ -1082,7 +1120,9 @@ with tab3:
     st.info(
         "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
         "Pipeline 会自动对同组样本取 Consensus Peaks（重叠区域），"
-        "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。"
+        "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。\n\n"
+        "组名统一用 `rep1` / `rep2` / `rep3`，下拉框里只能选这种格式——"
+        "这一列表达的是「哪几对互为生物学重复」，不是处理组名。"
     )
 
     if os.path.exists(METADATA_PATH):
@@ -1110,14 +1150,6 @@ with tab3:
         df_all["project"] = df_all["project"].fillna("").astype(str).str.strip()
         df_all["group"] = df_all["group"].fillna("").astype(str).str.strip()
 
-        col_cfg = {
-            "IP sample": st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名"),
-            "Input": st.column_config.TextColumn("Input 对照", help="对照组样本名"),
-            "group": st.column_config.TextColumn(
-                "重复组",
-                help="相同组名的样本为生物学重复，留空表示独立分析",
-            ),
-        }
         meta_cols = ["IP sample", "Input", "group"]
 
         if not projects_tab3:
@@ -1136,7 +1168,7 @@ with tab3:
                 label = f"**{pid}** · {status}" if n_filled else f"**{pid}** · 未配置"
 
                 with st.expander(label, expanded=(n_filled > 0)):
-                    # ---- 自动识别 fastq 样本名 ----
+                    # ---- 识别 fastq 里的样本名，只当候选，填什么由用户自己选 ----
                     detected = detected_by_proj.get(pid) or {}
                     if detected:
                         n_pe = sum(1 for v in detected.values() if v == "PE")
@@ -1144,35 +1176,24 @@ with tab3:
                             f"从 fastq 识别到 {len(detected)} 个样本（双端 {n_pe} 个）："
                             + "、".join(f"`{s}`" for s in detected)
                         )
-                        if st.button("按识别结果生成配对表", key=f"auto_{pid}"):
-                            rows = build_pairs_from_samples(detected, sub)
-                            if rows:
-                                # data_editor 不接受用 session_state 回填，只能换 key：
-                                # 存下识别结果 + 版本号 +1，下一轮渲染成一个全新控件，
-                                # 再把结果作为它的初始数据。
-                                st.session_state[f"_md_pending_{pid}"] = pd.DataFrame(rows, columns=meta_cols)
-                                st.session_state[f"md_ver_{pid}"] = st.session_state.get(f"md_ver_{pid}", 0) + 1
-                                st.rerun()
-                            else:
-                                st.warning("只识别到对照样本，没有可配对的 IP 样本")
+                        st.caption(
+                            "下表三列都是下拉框，候选就是识别到的这些名字："
+                            "哪几个 IP 配哪个 Input、哪些归到同一个 rep 组，由你自己挑。"
+                        )
                     else:
-                        st.caption("未在项目数据目录中找到 fastq，无法自动识别样本名。")
+                        st.caption(
+                            "未在项目数据目录中找到 fastq，样本名无法识别；"
+                            "下表可直接手填。"
+                        )
 
-                    # 自动识别的结果要一直当成编辑器基线：data_editor 每次 rerun 都是
-                    # 「基线 + 增量修改」，基线要是换回 csv 里的旧行，回填就丢了。
+                    # data_editor 每次 rerun 都是「基线 + 增量修改」，基线必须稳定：
+                    # 直接拿 csv 读出来的行当基线，编辑增量存在 session_state 里。
                     _ver = st.session_state.get(f"md_ver_{pid}", 0)
-                    _pending = st.session_state.pop(f"_md_pending_{pid}", None)
-                    if _pending is not None:
-                        st.session_state[f"_md_base_{pid}"] = _pending
-                    _base = st.session_state.get(f"_md_base_{pid}")
-                    if _base is None:
-                        _base = sub
-
                     edf = st.data_editor(
-                        _base,
+                        sub,
                         num_rows="dynamic",
                         use_container_width=True,
-                        column_config=col_cfg,
+                        column_config=build_editor_columns(detected, sub),
                         key=f"md_editor_{pid}_{_ver}",
                     )
 
@@ -1192,6 +1213,11 @@ with tab3:
             # ---- 未分配的行（老数据/多项目时）----
             _un = df_all[df_all["project"] == ""][meta_cols].copy()
             if int((_un["IP sample"].astype(str).str.strip() != "").sum()) > 0:
+                # 这些行不知道属于哪个项目，候选池只能取所有项目识别结果的并集
+                _all_detected = {}
+                for _names in detected_by_proj.values():
+                    for _n in (_names or {}):
+                        _all_detected.setdefault(_n, "PE")
                 with st.expander(f"未分配 · {len(_un)} 行", expanded=True):
                     st.warning(
                         "这些行没有项目归属，目前对所有项目生效。"
@@ -1199,7 +1225,8 @@ with tab3:
                     )
                     _un_edf = st.data_editor(
                         _un, num_rows="dynamic", use_container_width=True,
-                        column_config=col_cfg, key="md_editor__unassigned",
+                        column_config=build_editor_columns(_all_detected, _un),
+                        key="md_editor__unassigned",
                     )
                 _u = _un_edf.copy()
                 _u["project"] = ""
@@ -1352,12 +1379,11 @@ with tab3:
 
             save_config(fresh_cfg)
 
-            # 保存后彻底重置编辑器：清基线 + 换 key 丢弃增量，
+            # 保存后彻底重置编辑器：换 key 丢弃增量，
             # 下一轮直接从刚写好的 csv 重读，避免旧增量被二次施加
             # （删行增量叠到新表上会直接吃掉一行）。
             for _p in projects_tab3:
                 _pid = f"{_p.get('species', '')}/{_p.get('experiment', '')}"
-                st.session_state.pop(f"_md_base_{_pid}", None)
                 st.session_state[f"md_ver_{_pid}"] = st.session_state.get(f"md_ver_{_pid}", 0) + 1
             st.session_state["_tab3_flash"] = "样本配对表、Consensus 参数、Comparisons 已全部保存！"
             st.rerun()
