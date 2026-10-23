@@ -212,18 +212,18 @@ def build_editor_columns(detected: dict, current) -> dict:
     if pool:
         ip_col = st.column_config.SelectboxColumn(
             "IP 样本", options=[""] + pool, required=False,
-            help="从识别到的样本里选，留空表示这一行不用；与 Input 列的候选相同",
+            help="实验组样本；候选为识别到的全部样本，留空表示该行不用",
         )
         in_col = st.column_config.SelectboxColumn(
             "Input 对照", options=[""] + pool, required=False,
-            help="这一对拿哪个样本做对照，留空则不做 IP vs Input；与 IP 列的候选相同",
+            help="配对用的对照样本，候选同上；留空则不做 IP vs Input 比较",
         )
     else:
         ip_col = st.column_config.TextColumn("IP 样本", help="ChIP/实验组样本名")
         in_col = st.column_config.TextColumn("Input 对照", help="对照组样本名")
     g_col = st.column_config.TextColumn(
         "重复组",
-        help="自己填 rep1 / rep2 / rep3 …（rep + 数字，组数不限）；留空表示这一对单独分析",
+        help="标注生物学重复，格式为 rep + 阿拉伯数字（rep1、rep2…），组数不限；留空则独立分析",
     )
     return {"IP sample": ip_col, "Input": in_col, "group": g_col}
 
@@ -1119,12 +1119,11 @@ with tab3:
         st.success(_t3_flash)
 
     st.info(
-        "**group 列说明：** 同一 group 名称的样本被视为生物学重复。"
-        "Pipeline 会自动对同组样本取 Consensus Peaks（重叠区域），"
-        "并用 deeptools 做重复间相关性分析。留空则每对样本独立分析。\n\n"
-        "组名统一用 `rep1` / `rep2` / `rep3` 这种写法，组数不限，接着往下排 `rep4`、`rep5` 即可——"
-        "格式只认小写 `rep` + 数字，写错了存盘时会被拦下。"
-        "这一列表达的是「哪几对互为生物学重复」，不是处理组名。"
+        "**group 列**用于标注生物学重复（biological replicates）。同一 group 内的样本视为"
+        "同一实验条件下的独立重复，流程将据此提取重叠峰（consensus peaks），"
+        "并基于 deeptools 计算重复间信号相关性；留空的样本对不参与重复统计，各自独立分析。\n\n"
+        "命名规范：`rep` 后接阿拉伯数字，小写（`rep1`、`rep2`、`rep3`…），组数不限。"
+        "不符合该格式的条目在保存时不予写入。"
     )
 
     if os.path.exists(METADATA_PATH):
@@ -1170,18 +1169,13 @@ with tab3:
                 label = f"**{pid}** · {status}" if n_filled else f"**{pid}** · 未配置"
 
                 with st.expander(label, expanded=(n_filled > 0)):
-                    # ---- 识别 fastq 里的样本名，只当候选，填什么由用户自己选 ----
+                    # ---- 识别 fastq 里的样本名，作为两列下拉的候选 ----
                     detected = detected_by_proj.get(pid) or {}
                     if detected:
                         n_pe = sum(1 for v in detected.values() if v == "PE")
                         st.caption(
                             f"从 fastq 识别到 {len(detected)} 个样本（双端 {n_pe} 个）："
                             + "、".join(f"`{s}`" for s in detected)
-                        )
-                        st.caption(
-                            "IP 样本与 Input 对照两列是下拉框，识别到的名字两边都能选；"
-                            "重复组直接手填 rep1 / rep2 / rep3 …，组数不限。"
-                            "哪几个配哪个对照、怎么分组，由你自己定。"
                         )
                     else:
                         st.caption(
@@ -1211,10 +1205,9 @@ with tab3:
                     _bad_g = bad_rep_groups(_g_set)
                     if _bad_g:
                         st.warning(
-                            "这些组名不符合格式：" + "、".join(f"`{x}`" for x in _bad_g)
-                            + "。应为小写 rep + 数字（rep1、rep2、rep15…）。"
-                            "下游按字符串分组，写错会把同一组拆成互不相干的几组，"
-                            "consensus peaks 和重复间相关性都会少算。"
+                            "group 命名不符合规范：" + "、".join(f"`{x}`" for x in _bad_g)
+                            + "。须为 `rep` + 阿拉伯数字（`rep1`、`rep2`、`rep15`…），"
+                            "否则同一重复组在分析中会被当作不同组分别处理。"
                         )
 
                 _d = edf.copy()
@@ -1376,9 +1369,9 @@ with tab3:
             _bad_to_save = bad_rep_groups(_out["group"])
             if _bad_to_save:
                 st.error(
-                    "重复组格式不对，本次未保存："
+                    "group 命名不符合规范，本次未保存："
                     + "、".join(f"`{x}`" for x in _bad_to_save)
-                    + "。应为小写 rep + 数字（rep1、rep2、rep15…），或者留空。"
+                    + "。须为 `rep` + 阿拉伯数字（`rep1`、`rep2`、`rep15`…），或留空。"
                 )
             else:
                 save_metadata(_out[meta_cols + ["project"]])
