@@ -49,7 +49,12 @@ option_list <- list(
   make_option("--min_gs_size",       type = "integer",   default = 10,     help = "基因集最小大小 [default: 10]"),
   make_option("--max_gs_size",       type = "integer",   default = 500,    help = "基因集最大大小 [default: 500]"),
   make_option("--top_n",             type = "integer",   default = 20,     help = "显示 top N [default: 20]"),
-  make_option("--promoter_only",     type = "logical",   default = FALSE,  action = "store_true",  help = "只用 Promoter 区域基因 [default: FALSE]")
+  make_option("--promoter_only",     type = "logical",   default = FALSE,  action = "store_true",  help = "只用 Promoter 区域基因 [default: FALSE]"),
+  # ---- 无官方 OrgDb 的物种：用 gene2go 生成的 TERM2GENE（enricher）----
+  make_option("--term2gene_go",      type = "character", default = NULL,   help = "自定义 GO 基因集，形如 bp=/p/a.tsv,mf=/p/b.tsv（覆盖 config）"),
+  make_option("--term2name_go",      type = "character", default = NULL,   help = "GO term 名称表，同 --term2gene_go 格式"),
+  make_option("--id_strip",          type = "character", default = NULL,   help = "正则：去掉该前缀即得到 gene2go/KEGG 的 ID，如 ^(gene-)?LOC"),
+  make_option("--universe",          type = "character", default = NULL,   help = "背景基因集文件（每行一个 ID，可选）")
 )
 
 opt_parser <- OptionParser(option_list = option_list)
@@ -80,6 +85,58 @@ for (p in config$projects) {
   }
 }
 
+# ============================================================
+# 基因集来源 2：gene2go 生成的 TERM2GENE（无官方 OrgDb 的物种走这条）
+# 项目级优先，其次 config$gsea 全局；路径可绝对可相对项目根
+# ============================================================
+term2gene_go <- list()
+term2name_go <- list()
+id_strip <- ""
+universe_file <- ""
+for (p in config$projects) {
+  if (is.null(p$species) || p$species != opt$species) next
+  if (!is.null(opt$experiment) && !is.null(p$experiment) && p$experiment != opt$experiment) next
+  if (!is.null(p$term2gene_go)) term2gene_go <- p$term2gene_go
+  if (!is.null(p$term2name_go)) term2name_go <- p$term2name_go
+  if (!is.null(p$id_strip) && nzchar(p$id_strip)) id_strip <- p$id_strip
+  if (!is.null(p$universe) && nzchar(p$universe)) universe_file <- p$universe
+  break
+}
+if (length(term2gene_go) == 0 && !is.null(config$gsea$term2gene_go)) {
+  term2gene_go <- config$gsea$term2gene_go
+}
+if (!nzchar(id_strip) && !is.null(config$gsea$id_strip)) id_strip <- config$gsea$id_strip
+if (!nzchar(universe_file) && !is.null(config$gsea$universe)) universe_file <- config$gsea$universe
+
+# 命令行覆盖（手动跑时用）
+if (!is.null(opt$term2gene_go) && nzchar(opt$term2gene_go)) {
+  term2gene_go <- list()
+  for (kv in strsplit(opt$term2gene_go, ",")[[1]]) {
+    parts <- strsplit(trimws(kv), "=")[[1]]
+    if (length(parts) == 2 && nzchar(parts[1]) && nzchar(parts[2])) {
+      term2gene_go[[tolower(parts[1])]] <- parts[2]
+    }
+  }
+}
+if (!is.null(opt$term2name_go) && nzchar(opt$term2name_go)) {
+  term2name_go <- list()
+  for (kv in strsplit(opt$term2name_go, ",")[[1]]) {
+    parts <- strsplit(trimws(kv), "=")[[1]]
+    if (length(parts) == 2 && nzchar(parts[1]) && nzchar(parts[2])) {
+      term2name_go[[tolower(parts[1])]] <- parts[2]
+    }
+  }
+}
+if (!is.null(opt$id_strip)) id_strip <- opt$id_strip
+if (!is.null(opt$universe) && nzchar(opt$universe)) universe_file <- opt$universe
+
+if (length(term2gene_go) > 0) {
+  names(term2gene_go) <- tolower(names(term2gene_go))
+  term2name_go <- if (length(term2name_go) > 0) term2name_go else list()
+  cat("自定义基因集(TERM2GENE):", paste(names(term2gene_go), collapse = ", "), "\n")
+}
+if (nzchar(id_strip)) cat("基因 ID 清洗正则:", id_strip, "\n")
+
 # fallback (支持带版本号的物种名)
 if (is.null(orgdb_name) || orgdb_name == "") {
   sp <- tolower(opt$species)
@@ -98,8 +155,9 @@ if (is.null(orgdb_name) || orgdb_name == "") {
   } else if (startsWith(sp, "sc") || startsWith(sp, "saccharomyces")) {
     "org.Sc.sgd.db"
   } else {
-    # 大豆等非模式物种无官方 OrgDb 包：可自建后在 config.yaml 中指定，否则跳过富集分析
-    cat("警告: 未配置 orgdb 且无该物种的默认 OrgDb（大豆等需自建），GO/KEGG 富集将被跳过\n")
+    # 大豆等非模式物种无官方 OrgDb 包：先去物种注释页自建包或生成 gene2go 基因集
+    cat("提示: 未配置 orgdb 且无该物种的默认 OrgDb（大豆等需自建），",
+        "可到「物种注释 → OrgDb 构建 / ID 映射」生成后用 enricher 跑 GO\n")
     NULL
   }
 }
@@ -119,7 +177,11 @@ if (!is.null(orgdb_name) && nzchar(orgdb_name)) {
   }
 }
 if (is.null(orgdb)) {
-  cat("警告: OrgDb 不可用，GO/KEGG 富集分析将被跳过（无法做基因 ID 转换）\n")
+  if (length(term2gene_go) > 0) {
+    cat("提示: 无 OrgDb，GO 富集将使用自建 TERM2GENE 基因集（enricher）\n")
+  } else {
+    cat("警告: OrgDb 不可用，且未配置 term2gene 基因集，GO 富集将被跳过\n")
+  }
 }
 
 # 物种 KEGG 代码（支持带版本号的物种名，如 TAIR10、mm10 等）
@@ -227,6 +289,49 @@ extract_genes_from_anno <- function(anno_file, promoter_only = FALSE) {
 }
 
 # ============================================================
+# 辅助函数：ID 对齐 + 自建基因集读取
+# ============================================================
+# ChIPseeker 吐出的 geneId 与 gene2go / KEGG 用的 ID 常常差一个前缀：
+#   LOC100808170 / gene-LOC100808170 / 100808170
+# 靠 id_strip 这个正则对齐；缺了它，enrichKEGG/enricher 会“成功但全部为空”。
+normalize_ids <- function(ids, pattern = id_strip) {
+  ids <- unique(as.character(ids))
+  ids <- ids[!is.na(ids) & ids != "" & ids != "NA"]
+  if (!is.null(pattern) && length(pattern) == 1 && nzchar(pattern)) {
+    ids <- unique(sub(pattern, "", ids))
+  }
+  ids[nzchar(ids)]
+}
+
+.t2g_cache <- new.env(parent = emptyenv())
+
+get_term2gene <- function(ont) {
+  key <- paste0("t2g_", tolower(ont))
+  if (!is.null(.t2g_cache[[key]])) return(.t2g_cache[[key]])
+  f <- term2gene_go[[tolower(ont)]]
+  if (is.null(f) || !file.exists(f)) return(NULL)
+  df <- read.delim(f, header = FALSE, stringsAsFactors = FALSE, quote = "",
+                   comment.char = "", col.names = c("term", "gene"))
+  df <- unique(df[nzchar(df$term) & nzchar(df$gene), , drop = FALSE])
+  .t2g_cache[[key]] <- df
+  df
+}
+
+get_term2name <- function(ont) {
+  f <- term2name_go[[tolower(ont)]]
+  if (is.null(f) || !file.exists(f)) return(NA)
+  read.delim(f, header = FALSE, stringsAsFactors = FALSE, quote = "",
+             comment.char = "", col.names = c("term", "name"))
+}
+
+# 背景基因集：有就用它收窄背景，没有就让 clusterProfiler 用全库
+load_universe <- function() {
+  if (!nzchar(universe_file) || !file.exists(universe_file)) return(NULL)
+  u <- normalize_ids(readLines(universe_file, warn = FALSE))
+  if (length(u) == 0) NULL else u
+}
+
+# ============================================================
 # 辅助函数：运行富集分析并输出结果
 # ============================================================
 run_enrichment <- function(gene_list, group_name, group_outdir) {
@@ -243,34 +348,65 @@ run_enrichment <- function(gene_list, group_name, group_outdir) {
   
   # 保存基因列表
   writeLines(gene_list, file.path(group_outdir, "consensus_gene_ids.txt"))
+  # 对齐到 gene2go/KEGG 的 ID 形状后再跑富集
+  gene_list_norm <- normalize_ids(gene_list)
+  if (!identical(gene_list_norm, unique(gene_list))) {
+    writeLines(gene_list_norm, file.path(group_outdir, "consensus_gene_ids_normalized.txt"))
+    cat("  ID 清洗后:", length(gene_list_norm), "/", length(unique(gene_list)), "个（剩下的是被 strip 去重掉的）\n")
+  }
   
   go_types <- strsplit(opt$go_types, ",")[[1]]
   go_types <- trimws(go_types)
   
   # ---- GO 富集 ----
   if (opt$run_go && length(go_types) > 0) {
-    if (is.null(orgdb)) {
-      cat("  跳过 GO 分析: OrgDb 不可用\n")
+    # 无 OrgDb 但有自建 TERM2GENE → 走 enricher；两者都没有才跳过
+    use_custom_go <- is.null(orgdb) && length(term2gene_go) > 0
+    if (is.null(orgdb) && !use_custom_go) {
+      cat("  跳过 GO 分析: OrgDb 不可用，且未配置 term2gene 基因集\n")
       for (ont in go_types) {
-        write.csv(data.frame(Message = "Skipped: OrgDb not available for this species"),
+        write.csv(data.frame(Message = "Skipped: no OrgDb and no TERM2GENE gene sets"),
                   file.path(group_outdir, paste0("GO_", ont, "_enrichment.csv")), row.names = FALSE)
       }
     } else {
-      cat("  运行 GO 分析...\n")
+      cat(if (use_custom_go) "  运行 GO 分析（enricher + 自建基因集）...\n" else "  运行 GO 分析...\n")
+      uni <- load_universe()
       for (ont in go_types) {
       tryCatch({
-        go_result <- enrichGO(
-          gene          = gene_list,
-          OrgDb         = orgdb,
-          keyType       = go_keytype,
-          ont           = ont,
-          pAdjustMethod = "BH",
-          pvalueCutoff  = opt$pvalue_cutoff,
-          qvalueCutoff  = opt$qvalue_cutoff,
-          minGSSize     = opt$min_gs_size,
-          maxGSSize     = opt$max_gs_size,
-          readable      = FALSE
-        )
+        go_result <- NULL
+        if (use_custom_go) {
+          t2g <- get_term2gene(ont)
+          if (is.null(t2g)) {
+            cat("    GO", ont, ": 未配置该类 term2gene，跳过\n")
+            write.csv(data.frame(Message = paste("Skipped: no TERM2GENE for", ont)),
+                      file.path(group_outdir, paste0("GO_", ont, "_enrichment.csv")), row.names = FALSE)
+          } else {
+            go_result <- enricher(
+              gene          = gene_list_norm,
+              TERM2GENE     = t2g,
+              TERM2NAME     = get_term2name(ont),
+              universe      = uni,
+              pAdjustMethod = "BH",
+              pvalueCutoff  = opt$pvalue_cutoff,
+              qvalueCutoff  = opt$qvalue_cutoff,
+              minGSSize     = opt$min_gs_size,
+              maxGSSize     = opt$max_gs_size
+            )
+          }
+        } else {
+          go_result <- enrichGO(
+            gene          = gene_list_norm,
+            OrgDb         = orgdb,
+            keyType       = go_keytype,
+            ont           = ont,
+            pAdjustMethod = "BH",
+            pvalueCutoff  = opt$pvalue_cutoff,
+            qvalueCutoff  = opt$qvalue_cutoff,
+            minGSSize     = opt$min_gs_size,
+            maxGSSize     = opt$max_gs_size,
+            readable      = FALSE
+          )
+        }
         
         if (!is.null(go_result) && nrow(as.data.frame(go_result)) > 0) {
           result_df <- as.data.frame(go_result)
@@ -283,7 +419,7 @@ run_enrichment <- function(gene_list, group_name, group_outdir) {
           ggsave(file.path(group_outdir, paste0("GO_", ont, "_dotplot.pdf")), p_dot, width = 10, height = 8)
           
           cat("    GO", ont, ":", nrow(result_df), "个显著条目\n")
-        } else {
+        } else if (!is.null(go_result)) {
           cat("    GO", ont, ": 无显著富集\n")
           write.csv(data.frame(Message = "No significant enrichment"),
                     file.path(group_outdir, paste0("GO_", ont, "_enrichment.csv")), row.names = FALSE)
@@ -384,8 +520,9 @@ run_enrichment <- function(gene_list, group_name, group_outdir) {
   
   # ---- KEGG 富集 ----
   if (opt$run_kegg) {
-    if (is.null(orgdb) || is.null(kegg_org)) {
-      reason <- if (is.null(orgdb)) "OrgDb 不可用" else "未知物种的 KEGG 代码"
+    # KEGG 只要 NCBI/Entrez ID，不依赖 OrgDb：无 OrgDb 的物种也能跑
+    if (is.null(kegg_org)) {
+      reason <- "未知物种的 KEGG 代码"
       cat("  跳过 KEGG 分析:", reason, "\n")
       write.csv(data.frame(Message = paste("Skipped:", reason)),
                 file.path(group_outdir, "KEGG_pathway_enrichment.csv"), row.names = FALSE)
@@ -393,7 +530,7 @@ run_enrichment <- function(gene_list, group_name, group_outdir) {
       cat("  运行 KEGG 分析...\n")
     tryCatch({
       kegg_result <- enrichKEGG(
-        gene          = gene_list,
+        gene          = gene_list_norm,
         organism      = kegg_org,
         pAdjustMethod = "BH",
         pvalueCutoff  = opt$pvalue_cutoff,
@@ -534,6 +671,9 @@ summary_lines <- c(
   paste("Group names:", paste(groups, collapse = ", ")),
   paste("Total unique genes (union):", length(unique(total_genes_all))),
   paste("GO types:", opt$go_types),
+  paste("Gene set source:", if (!is.null(orgdb)) paste0("OrgDb:", orgdb_name) else
+        if (length(term2gene_go) > 0) paste0("TERM2GENE:", paste(names(term2gene_go), collapse = "/")) else "none"),
+  paste("ID strip:", if (nzchar(id_strip)) id_strip else "(none)"),
   paste("KEGG analyzed:", opt$run_kegg),
   paste("Promoter only:", opt$promoter_only)
 )

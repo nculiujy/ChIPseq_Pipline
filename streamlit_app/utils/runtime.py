@@ -751,7 +751,11 @@ def _is_unconfigured(key: str, config: dict, species: str, experiment: str) -> b
         has_db = bool(mcfg.get("meme_db", ""))
         return (not _infer_genome_fasta(config, species, experiment)) and not has_db
     if key == "5_gsea":
-        return not (mods.get("txdb") and mods.get("orgdb"))
+        # 基因集来源二选一：官方/自建 OrgDb 包，或 gene2go 生成的 TERM2GENE。
+        # 大豆这类没有官方 OrgDb 的物种只有后者，只按 orgdb 判会让模块 5 一直显示
+        # 「未配置」，但它其实跑得起来（GO 走 enricher，KEGG 用 NCBI GeneID）。
+        t2g = mods.get("term2gene_go") or (config.get("gsea", {}) or {}).get("term2gene_go") or {}
+        return not (mods.get("txdb") and (mods.get("orgdb") or t2g))
     return False
 
 
@@ -1010,8 +1014,21 @@ def config_issues(config: dict | None = None) -> list[dict]:
         mods = proj.get("modules", {}) or {}
         if not any(mods.values()):
             add("info", f"{tag}.modules", "该项目未启用任何模块")
-        if mods.get("5_gsea") and not (proj.get("txdb") and proj.get("orgdb")):
-            add("error", f"{tag}", "启用 GSEA 但缺少 txdb/orgdb")
+        if mods.get("5_gsea") and not proj.get("txdb"):
+            add("error", f"{tag}", "启用 GSEA 但缺少 txdb")
+        # 基因集来源二选一：官方/自建 OrgDb 包，或 gene2go 生成的 TERM2GENE
+        _t2g = proj.get("term2gene_go") or (cfg.get("gsea", {}) or {}).get("term2gene_go") or {}
+        if mods.get("5_gsea") and not (proj.get("orgdb") or _t2g):
+            add("error", f"{tag}",
+                "启用 GSEA 但缺少 orgdb，也没有 term2gene 基因集（到「物种注释 → OrgDb 构建 / ID 映射」生成）")
+        if isinstance(_t2g, dict):
+            _missing = [k for k, v in _t2g.items() if v and not _exists_any(str(v))]
+            if _missing:
+                add("warn", f"{tag}.term2gene_go",
+                    f"term2gene 文件不存在：{', '.join(_missing)}（基因集被删/目录被改后需重新生成）")
+            elif _t2g and not (proj.get("orgdb") or ""):
+                add("info", f"{tag}.term2gene_go",
+                    f"GO 富集走 enricher() 自建基因集（{len(_t2g)} 套），KEGG 仍用 NCBI GeneID")
         if mods.get("6_motif") and not _infer_genome_fasta(cfg, sp, ex):
             add("warn", f"{tag}", "启用 Motif 但未推断到基因组 FASTA（可在 motif.genome_fasta 指定）")
 

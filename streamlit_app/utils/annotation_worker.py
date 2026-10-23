@@ -40,6 +40,17 @@ STAGES = [
     "done",
 ]
 
+# 与 annotation_manager.STAGES_BY_KIND 保持一致：三种任务各自的阶段表。
+# 阶段名不同、阶段数不同，_set_stage 必须按当前 kind 取表，否则进度条会错位。
+_STAGES_BY_KIND = {
+    "genome": STAGES,
+    "orgdb": ["init", "check_env", "build_orgdb", "install_orgdb", "verify", "done"],
+    "term2gene": ["init", "download_gene2go", "parse", "write", "verify", "done"],
+}
+
+# NCBI gene2go 的 Category 列 → clusterProfiler 的 ont 代号
+_GO_CATEGORY_MAP = {"process": "bp", "function": "mf", "component": "cc"}
+
 # ---------- 全局状态 ----------
 _STATE_FILE: Optional[Path] = None
 _STATE: Dict[str, Any] = {}
@@ -64,9 +75,16 @@ def _update(**kw: Any) -> None:
     _atomic_write_state()
 
 
+def _active_stages() -> list:
+    """当前任务的阶段表（kind 在校验阶段已写进 state）。"""
+    kind = (_STATE.get("kind") or "genome") if _STATE else "genome"
+    return _STAGES_BY_KIND.get(kind, STAGES)
+
+
 def _set_stage(name: str, message: Optional[str] = None, progress: Optional[float] = None) -> None:
-    idx = STAGES.index(name) if name in STAGES else 0
-    fields: Dict[str, Any] = {"stage": name, "stage_index": idx, "stage_total": len(STAGES)}
+    stages = _active_stages()
+    idx = stages.index(name) if name in stages else 0
+    fields: Dict[str, Any] = {"stage": name, "stage_index": idx, "stage_total": len(stages)}
     if message is not None:
         fields["message"] = message
     if progress is not None:
@@ -528,15 +546,21 @@ def _decompress_gz(src: Path, dst: Path) -> None:
 
 
 # ---------- 子进程执行 ----------
-def _run(cmd: list[str], stage_name: str, progress_markers: Optional[Dict[str, float]] = None) -> None:
+def _run(cmd: list[str], stage_name: str, progress_markers: Optional[Dict[str, float]] = None,
+         env: Optional[Dict[str, str]] = None) -> None:
     """
     执行外部命令，实时读 stdout/stderr。
     若提供 progress_markers（子串 → 进度值），匹配到就更新 progress；否则用不确定进度条。
+    env 只用于给 R 类命令定向库路径（R_LIBS），不覆盖整个运行环境。
     """
     _update(message=f"执行: {' '.join(cmd)}")
+    run_env = None
+    if env:
+        run_env = dict(os.environ)
+        run_env.update({k: str(v) for k, v in env.items()})
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, encoding="utf-8", errors="replace",
+        text=True, bufsize=1, encoding="utf-8", errors="replace", env=run_env,
     )
     start = time.time()
     last_ui = 0.0
@@ -567,7 +591,326 @@ def _run(cmd: list[str], stage_name: str, progress_markers: Optional[Dict[str, f
 
 
 # ---------- 主流程 ----------
+# ---------- 任务类型：OrgDb 自建 / gene2go 基因集 ----------
+def _which_or_raise(cmd: str, hint: str) -> str:
+    p = shutil.which(cmd)
+    if not p:
+        raise RuntimeError(f"未找到 {cmd}；{hint}")
+    return p
+
+
+def _r_lib_dir() -> str:
+    """分析环境的 R 库目录：由解析到的 Rscript 反推 <prefix>/lib/R/library。
+
+    R 脚本（5_1_gsea.R）就是靠 CONDA_PREFIX/lib/R/library 找包；worker 里
+    CONDA_PREFIX 可能是启动器环境，所以不能直接信它，必须按 Rscript 实际位置推。
+    """
+    rs = shutil.which("Rscript")
+    if rs:
+        lib = Path(rs).resolve().parents[1] / "lib" / "R" / "library"
+        if lib.is_dir():
+            return str(lib)
+    env_prefix = os.environ.get("CONDA_PREFIX") or ""
+    if env_prefix:
+        lib = Path(env_prefix) / "lib" / "R" / "library"
+        if lib.is_dir():
+            return str(lib)
+    return ""
+
+
+def _run_r(code: str, stage_name: str, message: str,
+           r_lib: Optional[str] = None) -> str:
+    """跑一段 Rscript。R 输出全进任务日志，失败时把尾部 30 行抛给 UI。"""
+    rscript = _which_or_raise("Rscript", "确认分析环境已装 R（Rscript 应在 PATH 里）")
+    _set_stage(stage_name, message=message, progress=0.1)
+    lib = r_lib if r_lib is not None else _r_lib_dir()
+    run_env = dict(os.environ)
+    if lib:
+        # R_LIBS 是追加语义：优先让人看到/装到分析环境那个库
+        run_env["R_LIBS"] = lib + (os.pathsep + run_env["R_LIBS"] if run_env.get("R_LIBS") else "")
+    # 不用 --vanilla：它会连 .Renviron 一起忽略，装包时拿不到代理/镜像设置。
+    # --no-init-file 只跳过 .Rprofile，足够避开项目根 renv 的启动钩子（那会让每次启动去联网）。
+    proc = subprocess.run(
+        [rscript, "--no-init-file", "-e", code],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=run_env,
+    )
+    out = proc.stdout or ""
+    print(out, flush=True)
+    _check_cancelled()
+    if proc.returncode != 0:
+        tail = "\n".join(out.splitlines()[-30:])
+        raise RuntimeError(f"Rscript 失败（exit {proc.returncode}）：\n{tail}")
+    return out
+
+
+def _anno_outdir(spec: Dict[str, Any]) -> Path:
+    """OrgDb / gene2go 产物默认目录：<ANNO_DIR>/<物种>/orgdb。"""
+    raw = str(spec.get("term2gene_outdir") or "").strip()
+    p = Path(raw).expanduser() if raw else \
+        Path(spec["anno_root"]) / str(spec["species_id"]) / "orgdb"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _run_orgdb_build(spec: Dict[str, Any]) -> None:
+    """从 NCBI 数据自建 OrgDb 包并装进分析环境 R 库。
+
+    AnnotationForge 自己下载 gene_info / gene2go / refseqmRNA；首建常 30–90 分钟，
+    NCBIFilesDir 保留缓存，同物种重建是分钟级。
+    """
+    tax = str(spec.get("tax_id") or "").strip()
+    genus = str(spec.get("ncbi_genus") or "").strip()
+    sp = str(spec.get("ncbi_species") or "").strip()
+    if not (tax and genus and sp):
+        raise RuntimeError("OrgDb 构建需要 tax_id、genus、species（例：3847 / Glycine / max）")
+
+    outdir = _anno_outdir(spec)
+    # AnnotationForge 包名规则：org.<属首字母大写><种名前 3 字母小写>.eg.db
+    pkg = str(spec.get("orgdb_pkg") or "") or f"org.{genus[0].upper()}{sp[:3].lower()}.eg.db"
+    ncbi_cache = outdir / "NCBI_files"
+    ncbi_cache.mkdir(parents=True, exist_ok=True)
+    _update(target_dir=str(outdir), orgdb_pkg=pkg)
+
+    _set_stage("check_env", message="检查 AnnotationForge 是否可用")
+    probe = _run_r(
+        'cat(if (requireNamespace("AnnotationForge", quietly=TRUE)) "HAS_FORGE" else "NO_FORGE", "\\n")',
+        "check_env", "检查 AnnotationForge")
+    if "NO_FORGE" in probe:
+        raise RuntimeError(
+            "分析环境缺少 AnnotationForge。安装后重试：\n"
+            "  BiocManager::install(c('AnnotationForge','AnnotationDbi','GO.db'))\n"
+            "或改用本页「gene2go 基因集」模式（不需要装包）")
+
+    _set_stage("build_orgdb",
+               message=f"构建 {pkg}（tax_id={tax}；NCBI 下载可能较久）", progress=0.05)
+    _run_r(
+        "AnnotationForge::makeOrgPackageFromNCBI("
+        'version="0.1", '
+        'maintainer="ChIPseq Pipeline <noreply@localhost>", '
+        'author="ChIPseq Pipeline", '
+        f'outputDir="{outdir}", tax_id="{tax}", genus="{genus}", species="{sp}", '
+        f'NCBIFilesDir="{ncbi_cache}", rebuildCache=TRUE)',
+        "build_orgdb", f"构建 {pkg}")
+
+    # 产物目录：优先推导包名，找不到就扫 org.*.db（不同版本命名略有差异）
+    pkg_dir = outdir / pkg
+    if not pkg_dir.is_dir():
+        cands = sorted(p for p in outdir.glob("org.*.db") if p.is_dir())
+        if not cands:
+            raise RuntimeError(f"未找到构建产物（{outdir} 下没有 org.*.db）")
+        pkg_dir = cands[-1]
+        pkg = pkg_dir.name
+        _update(orgdb_pkg=pkg)
+
+    _set_stage("install_orgdb", message=f"安装 {pkg} 到 R 库")
+    r_bin = _which_or_raise("R", "确认分析环境已装 R")
+    # 不指定库时就装进分析环境自己的库（5_1_gsea.R 只认 CONDA_PREFIX/lib/R/library）
+    lib = str(spec.get("orgdb_lib") or "").strip() or _r_lib_dir()
+    if not lib:
+        raise RuntimeError("无法推导分析环境的 R 库路径，请在 spec.orgdb_lib 显式指定")
+    cmd = [r_bin, "CMD", "INSTALL", "--no-multiarch"]
+    Path(lib).mkdir(parents=True, exist_ok=True)
+    cmd.append(f"--library={lib}")
+    cmd.append(str(pkg_dir))
+    _run(cmd, "install_orgdb", progress_markers=None, env={"R_LIBS": lib})
+
+    _set_stage("verify", message=f"验证 {pkg} 可加载、可查询")
+    out = _run_r(
+        f'suppressPackageStartupMessages(library({pkg})); '
+        f'cat("ORGDB_OK", length(AnnotationDbi::keys({pkg})), "\\n")',
+        "verify", f"验证 {pkg}", r_lib=lib)
+    m = re.search(r"ORGDB_OK\s+(\d+)", out)
+    if not m:
+        raise RuntimeError(f"{pkg} 已安装但 load/keys 失败，请看任务日志")
+    n_keys = int(m.group(1))
+
+    _set_stage("done", message=f"完成：{pkg}（{n_keys} 个 key）", progress=1.0)
+    _update(status="done", error=None, finished_at=time.time(), progress=1.0,
+            result_files=[str(pkg_dir)], orgdb_pkg=pkg, orgdb_lib=lib,
+            orgdb_n_keys=n_keys)
+
+
+def _run_term2gene(spec: Dict[str, Any]) -> None:
+    """NCBI gene2go → clusterProfiler 的 TERM2GENE/TERM2NAME（不装 OrgDb）。
+
+    gene2go 自带 term 名与 Category(Process/Function/Component)，一个文件即可产出
+    BP/MF/CC 三套映射 + 全基因背景集，适合大豆这类无官方 OrgDb 的物种。
+    """
+    tax = str(spec.get("tax_id") or "").strip()
+    if not tax:
+        raise RuntimeError("生成 gene2go 基因集需要 tax_id（例：大豆 3847）")
+
+    outdir = _anno_outdir(spec)
+    prefix = str(spec.get("term2gene_prefix") or "") or f"tax{tax}"
+    url = str(spec.get("gene2go_url") or "").strip() or \
+        "https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene2go.gz"
+    gz = outdir / "gene2go.gz"
+    _update(target_dir=str(outdir))
+
+    _set_stage("download_gene2go", message=f"下载 {url}", progress=0.0)
+    if gz.is_file() and gz.stat().st_size > 1024 * 1024:
+        # 同目录已有完整下载就复用；想强制刷新删掉 gene2go.gz 重跑
+        _update(message=f"{gz.name} 已存在（{_human(gz.stat().st_size)}），跳过下载", progress=1.0)
+    else:
+        if gz.is_file():
+            # 半截文件（上次断流）直接丢掉，否则会解析出空注释
+            gz.unlink()
+        _download(url, gz, None)
+    _check_cancelled()
+
+    _set_stage("parse", message=f"解析 tax_id={tax} 的 GO 注释", progress=0.0)
+    terms: Dict[str, Dict[str, list]] = {"bp": {}, "mf": {}, "cc": {}}
+    all_genes: set = set()
+    n_hit = n_line = 0
+    with gzip.open(gz, "rt", encoding="utf-8", errors="replace") as fh:
+        for ln in fh:
+            if ln.startswith("#"):
+                continue
+            n_line += 1
+            f = ln.rstrip("\n").split("\t")
+            if len(f) < 8 or f[0] != tax:
+                if n_line % 200000 == 0:
+                    _update(progress=min(0.95, n_line / 800000.0),
+                            message=f"扫描 {n_line} 行，命中 {n_hit} 条")
+                continue
+            gene, go, qual, term, cat = f[1], f[2], f[4], f[5], f[7]
+            if qual.upper().startswith("NOT"):     # NOT 限定不能当正注释用
+                continue
+            ont = _GO_CATEGORY_MAP.get(cat.strip().lower())
+            if not ont:
+                continue
+            ent = terms[ont].get(go)
+            if ent is None:
+                terms[ont][go] = [term, {gene}]
+            else:
+                ent[1].add(gene)
+            all_genes.add(gene)
+            n_hit += 1
+            if n_hit % 50000 == 0:
+                _update(progress=min(0.95, n_line / 800000.0),
+                        message=f"已收集 {n_hit} 条（{len(all_genes)} 基因）")
+            _check_cancelled()
+    if not all_genes:
+        raise RuntimeError(f"gene2go 中没有 tax_id={tax} 的记录：确认 taxid 是否正确")
+
+    _set_stage("write", message="写出 TERM2GENE / TERM2NAME / 背景基因集", progress=0.3)
+    made = []
+    for ont, d in terms.items():
+        if not d:
+            continue
+        t2g = outdir / f"{prefix}_go_{ont}_term2gene.tsv"
+        t2n = outdir / f"{prefix}_go_{ont}_term2name.tsv"
+        with open(t2g, "w", encoding="utf-8") as a, open(t2n, "w", encoding="utf-8") as b:
+            for go in sorted(d):
+                name, genes = d[go]
+                for g in sorted(genes):
+                    a.write(f"{go}\t{g}\n")
+                b.write(f"{go}\t{name}\n")
+        made += [str(t2g), str(t2n)]
+    universe = outdir / f"{prefix}_all_genes.txt"
+    universe.write_text("\n".join(sorted(all_genes)) + "\n", encoding="utf-8")
+    made.append(str(universe))
+
+    _set_stage("verify", message="校验产物", progress=0.6)
+    manifest = {
+        "tax_id": tax, "prefix": prefix, "source": url,
+        "n_go_terms": {k: len(v) for k, v in terms.items()},
+        "n_genes": len(all_genes), "n_annotations": n_hit,
+        "files": made, "built_at": time.strftime("%F %T"),
+    }
+    with open(outdir / f"{prefix}_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    for p in made:
+        if not Path(p).is_file() or Path(p).stat().st_size == 0:
+            raise RuntimeError(f"产物为空：{p}")
+
+    _set_stage("done",
+               message=f"完成：{len(all_genes)} 基因 / {sum(len(v) for v in terms.values())} GO term",
+               progress=1.0)
+    _update(status="done", error=None, finished_at=time.time(), progress=1.0,
+            result_files=made, term2gene_prefix=prefix,
+            term2gene_go={k: str(outdir / f"{prefix}_go_{k}_term2gene.tsv") for k in terms},
+            term2gene_name={k: str(outdir / f"{prefix}_go_{k}_term2name.tsv") for k in terms},
+            term2gene_universe=str(universe), n_genes=len(all_genes))
+
+
+def _run_rdeps(spec: Dict[str, Any]) -> None:
+    """在分析环境里装 R 依赖（默认 AnnotationForge 三件套）。
+
+    AnnotationForge 是建 OrgDb 的前置；不走 conda、只用 install.packages /
+    BiocManager，装到 Rscript 所属环境的库里，与 5_1_gsea.R 的 .libPaths 一致。
+    """
+    pkgs = [p.strip() for p in str(spec.get("r_packages") or "AnnotationForge").split(",") if p.strip()]
+    if not pkgs:
+        raise RuntimeError("未指定要安装的 R 包")
+    lib = str(spec.get("orgdb_lib") or "").strip() or _r_lib_dir()
+    if not lib:
+        raise RuntimeError("无法推导分析环境的 R 库路径，请在 spec.orgdb_lib 显式指定")
+    Path(lib).mkdir(parents=True, exist_ok=True)
+    _update(target_dir=lib, r_packages=",".join(pkgs))
+
+    mirror = str(spec.get("cran_mirror") or "").strip() or \
+        "https://mirrors.tuna.tsinghua.edu.cn/CRAN"
+
+    _set_stage("check_env", message="检查 BiocManager 与目标包状态")
+    r_lib_r = lib.replace("\\", "/")
+    quote_pkgs = ", ".join(f'"{p}"' for p in pkgs)
+    probe = _run_r(
+        f'.libPaths(c("{r_lib_r}", .libPaths())); '
+        f'pk <- c({quote_pkgs}); '
+        f'have <- vapply(pk, function(p) requireNamespace(p, quietly=TRUE), logical(1)); '
+        'cat("DEPS_STATUS", paste(pk, have, sep=":", collapse=";"), "\\n"); '
+        'cat("HAS_BIOC", requireNamespace("BiocManager", quietly=TRUE), "\\n")',
+        "check_env", "检查 R 依赖", r_lib=lib)
+    miss = [p for p in pkgs if f"{p}:FALSE" in probe]
+    if not miss:
+        _set_stage("verify", message="依赖已齐，无需安装", progress=0.9)
+        _run_r(
+            f'.libPaths(c("{r_lib_r}", .libPaths())); '
+            f'cat("DEPS_OK", paste(vapply(c({quote_pkgs}), function(p) as.character(packageVersion(p)), character(1)), collapse=","), "\\n")',
+            "verify", "确认版本", r_lib=lib)
+        _set_stage("done", message="依赖已满足", progress=1.0)
+        _update(status="done", error=None, finished_at=time.time(), progress=1.0,
+                result_files=[lib], r_packages=",".join(pkgs))
+        return
+
+    _set_stage("install", message=f"安装 {', '.join(miss)}（含 Bioconductor 依赖，可能较久）",
+               progress=0.05)
+    quote_miss = ", ".join(f'"{p}"' for p in miss)
+    _run_r(
+        f'.libPaths(c("{r_lib_r}", .libPaths())); '
+        f'options(repos = c(CRAN = "{mirror}")); '
+        'if (!requireNamespace("BiocManager", quietly=TRUE)) '
+        f'  install.packages("BiocManager", lib="{r_lib_r}", repos="{mirror}"); '
+        f'BiocManager::install(c({quote_miss}), lib="{r_lib_r}", update=FALSE, ask=FALSE)',
+        "install", f"安装 {', '.join(miss)}", r_lib=lib)
+
+    _set_stage("verify", message="验证依赖可加载")
+    out = _run_r(
+        f'.libPaths(c("{r_lib_r}", .libPaths())); '
+        f'ok <- vapply(c({quote_miss}), function(p) requireNamespace(p, quietly=TRUE), logical(1)); '
+        'cat("DEPS_OK", paste(names(ok), ok, sep=":", collapse=";"), "\\n")',
+        "verify", "验证依赖", r_lib=lib)
+    if "FALSE" in out.split("DEPS_OK")[-1]:
+        raise RuntimeError("安装后仍有包无法加载，请看任务日志")
+
+    _set_stage("done", message=f"完成：{', '.join(pkgs)}", progress=1.0)
+    _update(status="done", error=None, finished_at=time.time(), progress=1.0,
+            result_files=[lib], r_packages=",".join(pkgs))
+
+
 def run_task(spec: Dict[str, Any]) -> None:
+    kind = str(spec.get("kind") or "genome")
+    if kind == "rdeps":
+        _run_rdeps(spec)
+        return
+    if kind == "orgdb":
+        _run_orgdb_build(spec)
+        return
+    if kind == "term2gene":
+        _run_term2gene(spec)
+        return
+
     species_id = spec["species_id"]
     anno_root = Path(spec["anno_root"])
     bowtie2_dir_name = f"bowtie2_index_{species_id}"

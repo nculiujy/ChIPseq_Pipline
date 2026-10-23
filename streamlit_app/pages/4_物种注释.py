@@ -27,6 +27,7 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from utils import annotation_manager as am  # noqa: E402
+from utils import orgdb_helper as oh  # noqa: E402
 from utils import runtime as rt  # noqa: E402
 from utils.ui_theme import inject_theme, page_header, render_sidebar  # noqa: E402
 
@@ -838,6 +839,342 @@ def _render_existing_one(vid, base, src_id, entry, status) -> None:
             _render_gff_patch(vid, entry, src_id=src_id)
 
 
+# ---------- OrgDb 构建 / ID 映射 ----------
+def _project_choices() -> list[dict]:
+    return [p for p in rt.get_projects() if p.get("species") and p.get("experiment")]
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _scan_ids_cached(paths: tuple, promoter_only: bool) -> tuple:
+    ids, col, n_rows = oh.read_gene_ids(paths, promoter_only=promoter_only)
+    return ids, col, n_rows
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _preview_cached(ids: tuple, t2g_items: tuple, id_strip: str) -> dict:
+    return oh.preview_mapping(ids, dict(t2g_items), id_strip)
+
+
+def _render_orgdb_status() -> None:
+    """每个项目一行：orgdb / term2gene / 5_gsea 开关，一眼看出谁还缺东西。"""
+    rows = []
+    for p in _project_choices():
+        t2g = p.get("term2gene_go") or {}
+        orgdb = str(p.get("orgdb") or "")
+        mods = p.get("modules") or {}
+        if orgdb:
+            src = f"OrgDb: `{orgdb}`"
+        elif t2g:
+            src = f"TERM2GENE: {len(t2g)} 套"
+        else:
+            src = "**缺（富集会被跳过）**"
+        rows.append({
+            "项目": f"{p['species']}/{p['experiment']}",
+            "基因集来源": src,
+            "id_strip": p.get("id_strip") or "",
+            "5_gsea": "开" if mods.get("5_gsea") else "关",
+        })
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("config.yaml 里还没有项目，先到配置页保存一个项目再回来")
+
+
+def render_orgdb_tab() -> None:
+    st.subheader("OrgDb 自建 / ID 映射")
+    st.caption(
+        "非模式物种没有官方 OrgDb 包时，用这里把「基因 ↔ 基因集」的映射补齐。"
+        "两条路二选一：自建 OrgDb 包（走 GO 官方注释），或直接生成 TERM2GENE 基因集（更快，不装包）。"
+    )
+
+    projects = _project_choices()
+
+    # ---- 任务：orgdb / term2gene / rdeps ----
+    my_kinds = ("orgdb", "term2gene", "rdeps")
+    my_tasks = [t for t in am.list_tasks(ANNO_DIR) if (t.get("kind") or "genome") in my_kinds]
+    running = [t for t in my_tasks if t.get("status") in ("pending", "running")]
+    if running:
+        st.markdown("#### 运行中的构建任务")
+        for t in running:
+            _render_task_progress(t)
+        if st.toggle("自动刷新（任务运行中每 1 秒）", value=True, key="orgdb_auto"):
+            time.sleep(1.0)
+            st.rerun()
+        st.divider()
+
+    # ---- 已配置项目一览 ----
+    with st.expander("当前项目的基因集来源状态", expanded=True):
+        _render_orgdb_status()
+
+    st.divider()
+
+    # ---- 选项目 ----
+    labels = [f"{p['species']}/{p['experiment']}" for p in projects]
+    default_idx = 0
+    for i, p in enumerate(projects):
+        if (p.get("modules") or {}).get("5_gsea"):
+            default_idx = i
+            break
+    MANUAL = "手动指定（config 里还没有这一条）"
+    sel = st.selectbox("作用于哪个项目", labels + [MANUAL], index=default_idx, key="orgdb_proj")
+    if sel == MANUAL:
+        cm1, cm2 = st.columns(2)
+        sp = cm1.text_input("species（与 result/ 下的目录同名）", key="orgdb_manual_sp",
+                            placeholder="例：Glycine_max_v4__NCBI_RefSeq_v4")
+        ex = cm2.text_input("experiment", key="orgdb_manual_ex",
+                            placeholder="例：NAC35andNAC27")
+        st.caption("这一条还不在 config.yaml 里：写入时会自动新建，之后回「配置编辑」补 txdb 与结果目录")
+        proj = {"species": sp, "experiment": ex, "modules": {}}
+    else:
+        proj = projects[labels.index(sel)]
+        sp, ex = proj["species"], proj["experiment"]
+    if not (sp and ex):
+        st.info("填上 species 与 experiment，下面才会出现环境体检和构建表单")
+        return
+    # 控件 key 里带物种名：切项目时默认值才会跟着变（否则会留着上一个物种的 taxid）
+    wkey = re.sub(r"[^0-9A-Za-z_]+", "_", sp)
+    outdir = oh.species_orgdb_dir(ANNO_DIR, sp)
+    orgdb_lib = oh.r_lib_dir()
+
+    # ---- 环境体检 ----
+    st.markdown("#### ① 环境体检")
+    cfg_orgdb = str(proj.get("orgdb") or "").strip()
+    check_pkgs = ["AnnotationForge", "AnnotationDbi", "clusterProfiler", "enrichplot", "GO.db"]
+    if cfg_orgdb and cfg_orgdb not in check_pkgs:
+        check_pkgs.append(cfg_orgdb)
+    with st.spinner("查询 R 环境…"):
+        env = oh.r_packages_status(check_pkgs, lib=orgdb_lib)
+    c1, c2 = st.columns(2)
+    c1.code(f"Rscript: {env['rscript'] or '未找到'}\nR 库:    {env['lib'] or '未找到'}", language="text")
+    missing = [k for k, v in env["packages"].items() if not v["ok"]]
+    with c2:
+        for name, stt in env["packages"].items():
+            st.markdown(f"{'✓' if stt['ok'] else '✗'} `{name}` {stt['version']}")
+
+    if "AnnotationForge" in missing:
+        st.warning(
+            "分析环境缺 **AnnotationForge**，无法自建 OrgDb。"
+            "两种选择：一键安装（需联网，几分钟），或改走下面的 gene2go 基因集（不装包，立刻可用）。"
+        )
+        cc1, cc2 = st.columns([1, 2])
+        mirror = cc2.selectbox("CRAN 镜像", oh.CRAN_MIRRORS, index=0, key="orgdb_mirror")
+        if cc1.button("安装 AnnotationForge", type="secondary", key="orgdb_install_deps"):
+            spec = am.rdeps_task(sp, f"R 依赖 / {sp}", str(ANNO_DIR),
+                                 packages=oh.RDEPS_DEFAULT, orgdb_lib=orgdb_lib,
+                                 cran_mirror=mirror)
+            am.start_task(spec)
+            st.session_state["active_task"] = spec.task_id
+            st.toast("已开始安装 AnnotationForge")
+            time.sleep(0.5)
+            st.rerun()
+
+    installed = oh.list_orgdb_packages(orgdb_lib)
+    if installed:
+        st.caption("已装的 OrgDb 包：" + "、".join(
+            f"{d['pkg']} {d['version']}" for d in installed))
+
+    # 项目里已经填了 orgdb，但当前 R 库加载不到 —— 模块 5 的 enrichGO 会直接失败
+    if cfg_orgdb and not (env["packages"].get(cfg_orgdb) or {}).get("ok"):
+        st.warning(f"项目配置的 OrgDb `{cfg_orgdb}` 在这个 R 库里加载不到，模块 5 的 GO 富集跑不起来")
+        if st.button(f"安装 {cfg_orgdb}", key=f"orgdb_install_cfg_{wkey}"):
+            spec = am.rdeps_task(sp, f"R 依赖 / {sp}", str(ANNO_DIR), packages=cfg_orgdb,
+                                 orgdb_lib=orgdb_lib, cran_mirror=oh.CRAN_MIRRORS[0])
+            am.start_task(spec)
+            st.session_state["active_task"] = spec.task_id
+            st.toast(f"已开始安装 {cfg_orgdb}")
+            time.sleep(0.5)
+            st.rerun()
+
+    st.divider()
+
+    # ---- 路线 A：自建 OrgDb ----
+    st.markdown("#### ② 路线 A：自建 OrgDb 包（AnnotationForge × NCBI）")
+    st.caption("首次构建会在 NCBI 下载 gene_info / gene2go，常 30–90 分钟；同物种重建有缓存，分钟级。")
+    g0, s0 = oh.guess_genus_species(sp, proj.get("display_name") or "")
+    ca, cb, cc = st.columns(3)
+    tax_default = oh.guess_taxid(sp, proj.get("display_name") or "")
+    tax_id = ca.text_input("NCBI taxid", value=tax_default, key=f"orgdb_tax_{wkey}",
+                           help="大豆 3847、玉米 4577、小麦 4565、番茄 4081")
+    genus = cb.text_input("属（genus）", value=g0, key=f"orgdb_genus_{wkey}")
+    species_latin = cc.text_input("种（species）", value=s0, key=f"orgdb_species_{wkey}")
+    pkg_guess = oh.suggest_orgdb_pkg(genus, species_latin)
+    pkg_name = st.text_input("包名", value=pkg_guess, key=f"orgdb_pkg_{wkey}",
+                             help="留空按 org.<属首字母大写><种前 3 字母>.eg.db 生成") or pkg_guess
+    ca, cb = st.columns([2, 3])
+    ca.code(f"输出: {outdir}", language="text")
+    if cb.button("开始构建 OrgDb 包", type="primary", key="orgdb_build",
+                 disabled=("AnnotationForge" in missing) or not (tax_id and genus and species_latin)):
+        spec = am.orgdb_task(sp, f"OrgDb / {sp}", str(ANNO_DIR), tax_id=tax_id,
+                             genus=genus, species=species_latin,
+                             orgdb_pkg=pkg_name, orgdb_lib=orgdb_lib)
+        am.start_task(spec)
+        st.session_state["active_task"] = spec.task_id
+        st.toast("已开始构建 OrgDb")
+        time.sleep(0.5)
+        st.rerun()
+    if "AnnotationForge" in missing:
+        st.caption("（按钮置灰：先装 AnnotationForge）")
+
+    built = oh.scan_orgdb_outdir(outdir)
+    if built:
+        st.markdown("已构建：" + "、".join(f"`{d['pkg']}`（{d['size_mb']} MB）" for d in built))
+
+    st.divider()
+
+    # ---- 路线 B：gene2go 基因集 ----
+    st.markdown("#### ③ 路线 B：gene2go 基因集（不装包，推荐先用这条）")
+    st.caption(
+        "从 NCBI gene2go.gz 抽当前物种的 GO 注释，生成 clusterProfiler 的 TERM2GENE / TERM2NAME；"
+        "GO 富集走 `enricher()`，输出列名与 `enrichGO()` 一致，图表代码完全复用。"
+    )
+    cb1, cb2, cb3 = st.columns([1, 1, 2])
+    tax_b = cb1.text_input("NCBI taxid", value=tax_default, key=f"t2g_tax_{wkey}")
+    prefix_b = cb2.text_input("文件前缀", value=(oh.guess_genus_species(sp)[0][:1].lower()
+                                                + oh.guess_genus_species(sp)[1][:3].lower()) or "gene2go",
+                              key=f"t2g_prefix_{wkey}", help="例：gmax → gmax_go_bp_term2gene.tsv")
+    cb3.code(f"输出目录: {outdir}", language="text")
+    if st.button("生成 / 更新基因集", type="primary", key="t2g_build", disabled=not tax_b):
+        spec = am.term2gene_task(sp, f"gene2go / {sp}", str(ANNO_DIR), tax_id=tax_b,
+                                 prefix=prefix_b, outdir=str(outdir))
+        am.start_task(spec)
+        st.session_state["active_task"] = spec.task_id
+        st.toast("已开始生成 gene2go 基因集")
+        time.sleep(0.5)
+        st.rerun()
+
+    manifest = oh.scan_term2gene(outdir)
+    if manifest:
+        st.success(
+            f"已有基因集：{manifest.get('n_genes', 0)} 个基因 / "
+            f"{sum((manifest.get('n_go_terms') or {}).values())} 个 GO term / "
+            f"{manifest.get('n_annotations', 0)} 条注释（{manifest.get('built_at', '?')}）"
+        )
+        st.code("\n".join(str(x) for x in (manifest.get("files") or [])), language="text")
+    else:
+        st.info("该物种还没有生成过基因集")
+
+    st.divider()
+
+    # ---- ID 体检 + 映射预览 ----
+    st.markdown("#### ④ ID 体检与映射预览（决定 id_strip）")
+    st.caption(
+        "ChIPseeker 输出的 geneId 与 gene2go/KEGG 的 ID 不是一套字串："
+        "`LOC100808170`、`gene-LOC100808170`、`100808170` 三者必须靠 strip 规则对齐。"
+    )
+    anno_files = oh.find_peak_anno(BASE_DIR / "result", sp, ex, limit=5)
+    ids_key = f"orgdb_ids_{wkey}"
+    meta_key = f"orgdb_ids_meta_{wkey}"
+    pv_key = f"orgdb_preview_{wkey}"
+    if anno_files:
+        st.caption("扫描文件：" + "、".join(f"`{Path(f).name}`" for f in anno_files))
+        promoter_only = st.checkbox("只看 Promoter 区域（与 GSEA 的 promoter_only 对齐）",
+                                   value=False, key=f"orgdb_prom_only_{wkey}")
+        if st.button("扫描 geneId", key=f"orgdb_scan_ids_{wkey}"):
+            ids, col, n_rows = _scan_ids_cached(tuple(str(f) for f in anno_files), promoter_only)
+            st.session_state[ids_key] = ids
+            st.session_state[meta_key] = {"col": col, "rows": n_rows}
+            st.session_state.pop(pv_key, None)
+    else:
+        st.warning("还没找到 4_analyse/annoChIPPeaks 下的 *_peak_anno.csv（模块 4 还没跑完？）")
+        st.caption("也可以先把任意来源的 geneId 粘进来，提前确认 strip 规则对不对：")
+        pasted = st.text_area("粘贴 geneId（换行 / 逗号 / 斜杠分隔均可）", height=110,
+                              key=f"orgdb_paste_{wkey}",
+                              placeholder="LOC100808170\ngene-LOC100808171\n100808172")
+        if st.button("用这些 ID 体检", key=f"orgdb_paste_btn_{wkey}"):
+            got = oh.parse_id_text(pasted)
+            if got:
+                st.session_state[ids_key] = got
+                st.session_state[meta_key] = {"col": "手动粘贴", "rows": len(got)}
+                st.session_state.pop(pv_key, None)
+            else:
+                st.toast("没解析出任何 ID")
+    ids = st.session_state.get(ids_key) or []
+    if ids:
+        meta = st.session_state.get(meta_key) or {}
+        summary = oh.summarize_ids(ids)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("唯一 geneId", summary["n_total"])
+        c2.metric("纯数字", summary["n_numeric"])
+        c3.metric("LOC 前缀", summary["n_loc"] + summary["n_gene_loc"])
+        c4.metric("带版本号", summary["n_with_version"])
+        st.caption(f"列名 `{meta.get('col', '?')}` · 扫描 {meta.get('rows', 0)} 行 · 示例："
+                   + "、".join(f"`{x}`" for x in summary["samples"]))
+        if summary["prefix_top"]:
+            st.caption("前缀分布：" + "、".join(f"{p} × {n}" for p, n in summary["prefix_top"]))
+
+        suggest = oh.suggest_id_strip(ids)
+        id_strip = st.text_input(
+            "id_strip（正则，去掉这个前缀即得到 gene2go/KEGG 的 ID）",
+            value=proj.get("id_strip") or suggest, key=f"orgdb_strip_{wkey}",
+            help="例：^(gene-)?LOC → LOC100808170 / gene-LOC100808170 都变成 100808170",
+        )
+        st.caption(f"推荐值：`{suggest or '（无）'}`")
+
+        if manifest and manifest.get("term2gene_go"):
+            if st.button("预览映射命中率", key=f"orgdb_preview_btn_{wkey}"):
+                pv = _preview_cached(tuple(ids), tuple(sorted(manifest["term2gene_go"].items())), id_strip)
+                st.session_state[pv_key] = pv
+            pv = st.session_state.get(pv_key)
+            if pv and pv.get("id_strip") == id_strip:
+                rows = []
+                for ont, d in pv["per_ont"].items():
+                    rows.append({
+                        "GO 类别": ont,
+                        "term 数": d["n_terms"],
+                        "库内基因": d["n_genes_in_db"],
+                        "命中": d["n_hit"],
+                        "命中率": f"{d['hit_rate']*100:.1f}%",
+                    })
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+                worst = min((d["hit_rate"] for d in pv["per_ont"].values()), default=0.0)
+                if worst < 0.2:
+                    st.error("命中率过低：strip 规则大概写错了。先看下面的未命中示例对齐一下 ID 形状。")
+                elif worst < 0.6:
+                    st.warning("命中率偏低：确认 GFF 与 GTF 是否混用、LOC 前缀是否漏掉")
+                else:
+                    st.success("命中率正常，可以写入 config 并跑模块 5")
+                miss = next(iter(pv["per_ont"].values()), {}).get("samples_miss") or []
+                if miss:
+                    st.caption("未命中示例：" + "、".join(f"`{x}`" for x in miss))
+
+        st.markdown("---")
+        cw1, cw2 = st.columns([1, 2])
+        if cw1.button("写入 config", type="primary", key=f"orgdb_write_{wkey}"):
+            fields: dict = {"id_strip": id_strip}
+            if manifest and manifest.get("term2gene_go"):
+                fields.update({
+                    "term2gene_go": manifest["term2gene_go"],
+                    "term2name_go": manifest.get("term2name_go") or {},
+                    "universe": manifest.get("universe") or "",
+                })
+            if built:
+                fields["orgdb"] = built[-1]["pkg"]
+            elif cfg_orgdb:
+                fields["orgdb"] = cfg_orgdb
+            template = None
+            if sel == MANUAL:
+                template = {
+                    "display_name": sp,
+                    "modules": {"1_download": False, "2_QC": False, "3_ChIPseq": True,
+                                "4_analyse": True, "5_gsea": True, "6_motif": False},
+                }
+            ok, msg = oh.update_project(CONFIG_PATH, sp, ex, fields,
+                                        create_missing=(sel == MANUAL), template=template)
+            if ok:
+                ok2, msg2 = oh.enable_gsea_module(CONFIG_PATH, sp, ex, True)
+                st.success(f"{msg}；{msg2}。到「配置编辑 → GSEA 参数」确认后即可跑模块 5")
+                _scan_ids_cached.clear()
+                _preview_cached.clear()
+                time.sleep(0.6)
+                st.rerun()
+            else:
+                st.error(msg)
+        cw2.caption(
+            "写入内容：项目的 `orgdb`（若已建包）+ `term2gene_go`/`term2name_go`/`universe` + `id_strip`，"
+            "并顺手打开 `5_gsea` 开关；config 里没有这一条时会自动新建。"
+        )
+
+
 # ---------- 主布局 ----------
 render_header()
 st.divider()
@@ -855,9 +1192,10 @@ if active_id:
                         text=f"{t.get('species_id')} · {t.get('stage')} · {overall*100:.1f}% · {t.get('message', '')[:80]}")
         st.divider()
 
-tab_cat, tab_custom, tab_tasks, tab_existing = st.tabs([
+tab_cat, tab_custom, tab_orgdb, tab_tasks, tab_existing = st.tabs([
     f"物种 catalog ({len(SPECIES_DB)})",
     "自定义物种",
+    "OrgDb 构建 / ID 映射",
     f"任务面板",
     f"已配置",
 ])
@@ -866,6 +1204,8 @@ with tab_cat:
     render_catalog_tab()
 with tab_custom:
     render_custom_tab()
+with tab_orgdb:
+    render_orgdb_tab()
 with tab_tasks:
     render_tasks_tab()
 with tab_existing:

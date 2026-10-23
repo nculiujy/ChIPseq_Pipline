@@ -41,6 +41,20 @@ STAGES: List[str] = [
     "done",
 ]
 
+# 同一套后台任务框架服务三种活：建基因组索引 / 自建 OrgDb 包 / 生成 gene2go 基因集。
+# 各 kind 的阶段数不同，进度条按 kind 取自己的 stage 列表，否则阶段索引会错位。
+STAGES_BY_KIND: Dict[str, List[str]] = {
+    "genome": STAGES,
+    "orgdb": ["init", "check_env", "build_orgdb", "install_orgdb", "verify", "done"],
+    "term2gene": ["init", "download_gene2go", "parse", "write", "verify", "done"],
+    "rdeps": ["init", "check_env", "install", "verify", "done"],
+}
+
+
+def stages_for(spec: "TaskSpec") -> List[str]:
+    """该任务对应的阶段名列表（UI 与 worker 必须一致）。"""
+    return STAGES_BY_KIND.get(getattr(spec, "kind", "genome") or "genome", STAGES)
+
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
@@ -72,6 +86,64 @@ class TaskSpec:
     default_orgdb_pkg: Optional[str] = None
     genome_size_mb: Optional[int] = None
     estimated_time_min: Optional[int] = None
+
+    # ---- 任务类型：genome(默认，旧的下载+索引) / orgdb / term2gene ----
+    kind: str = "genome"
+
+    # ---- kind=orgdb：AnnotationForge 自建 OrgDb（NCBI taxid 驱动）----
+    tax_id: str = ""                 # 例: 3847 (Glycine max)
+    ncbi_genus: str = ""             # 例: Glycine
+    ncbi_species: str = ""           # 例: max
+    orgdb_pkg: str = ""              # 目标包名，如 org.Gmax.eg.db（留空按属种推导）
+    orgdb_lib: str = ""              # 安装到哪个 R library（分析环境 lib 路径）
+
+    # ---- kind=term2gene：NCBI gene2go → clusterProfiler TERM2GENE ----
+    term2gene_outdir: str = ""       # 输出目录（默认 <ANNO_DIR>/<species_id>/orgdb）
+    term2gene_prefix: str = "gmax"   # 输出文件名前缀，如 gmax_go_bp_term2gene.tsv
+    gene2go_url: str = "https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene2go.gz"
+
+    # ---- kind=rdeps：在分析环境装 R 包（AnnotationForge 等）----
+    r_packages: str = "AnnotationForge"
+    cran_mirror: str = ""            # 留空=worker 默认（清华 TUNA）
+
+
+def orgdb_task(species_id: str, display_name: str, anno_root: str, tax_id: str,
+               genus: str, species: str, orgdb_pkg: str = "", orgdb_lib: str = "") -> TaskSpec:
+    """自建 OrgDb 包的后台任务（kind=orgdb）。"""
+    return TaskSpec(
+        task_id=new_task_id(), species_id=species_id, display_name=display_name,
+        source_id="orgdb", anno_root=anno_root,
+        fasta_url="", fasta_filename="", gff_url="", gff_filename="",
+        kind="orgdb", tax_id=str(tax_id).strip(), ncbi_genus=genus.strip(),
+        ncbi_species=species.strip(), orgdb_pkg=orgdb_pkg.strip(),
+        orgdb_lib=orgdb_lib.strip(),
+    )
+
+
+def term2gene_task(species_id: str, display_name: str, anno_root: str, tax_id: str,
+                   prefix: str = "", outdir: str = "") -> TaskSpec:
+    """NCBI gene2go → TERM2GENE/TERM2NAME 的后台任务（kind=term2gene）。"""
+    return TaskSpec(
+        task_id=new_task_id(), species_id=species_id, display_name=display_name,
+        source_id="gene2go", anno_root=anno_root,
+        fasta_url="", fasta_filename="", gff_url="", gff_filename="",
+        kind="term2gene", tax_id=str(tax_id).strip(),
+        term2gene_prefix=prefix.strip() or f"tax{str(tax_id).strip()}",
+        term2gene_outdir=outdir.strip(),
+    )
+
+
+def rdeps_task(species_id: str, display_name: str, anno_root: str,
+               packages: str = "AnnotationForge,AnnotationDbi,GO.db",
+               orgdb_lib: str = "", cran_mirror: str = "") -> TaskSpec:
+    """在分析环境装 R 依赖的后台任务（kind=rdeps）。"""
+    return TaskSpec(
+        task_id=new_task_id(), species_id=species_id, display_name=display_name,
+        source_id="rdeps", anno_root=anno_root,
+        fasta_url="", fasta_filename="", gff_url="", gff_filename="",
+        kind="rdeps", r_packages=packages, orgdb_lib=orgdb_lib.strip(),
+        cran_mirror=cran_mirror.strip(),
+    )
 
 
 # ---------- 内部工具 ----------
@@ -120,9 +192,10 @@ def start_task(spec: TaskSpec) -> Dict[str, Any]:
         "source_id": spec.source_id,
         "anno_root": str(anno_root),
         "status": STATUS_PENDING,
+        "kind": getattr(spec, "kind", "genome") or "genome",
         "stage": "init",
         "stage_index": 0,
-        "stage_total": len(STAGES),
+        "stage_total": len(stages_for(spec)),
         "progress": 0.0,
         "downloaded_bytes": 0,
         "total_bytes": 0,

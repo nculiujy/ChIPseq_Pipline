@@ -1931,6 +1931,28 @@ with tab5:
         st.warning("未找到 metadata.csv")
 
     st.markdown("---")
+    st.markdown("#### 基因集来源（决定 GO/KEGG 能不能跑）")
+    # OrgDb 与 term2gene 都在「物种注释 → OrgDb 构建 / ID 映射」里生成并写回；
+    # 这里只做展示，避免同一个字段在两个页面各写一份。
+    projects_cfg = config.get("projects", []) or []
+    if projects_cfg:
+        src_rows = []
+        for p in projects_cfg:
+            t2g = p.get("term2gene_go") or {}
+            src_rows.append({
+                "项目": f"{p.get('species', '')}/{p.get('experiment', '')}",
+                "OrgDb": p.get("orgdb") or "—",
+                "TERM2GENE": (f"{len(t2g)} 套" if t2g else "—"),
+                "id_strip": p.get("id_strip") or "—",
+                "5_gsea": "开" if (p.get("modules") or {}).get("5_gsea") else "关",
+            })
+        st.dataframe(src_rows, use_container_width=True, hide_index=True)
+    st.caption(
+        "非模式物种（大豆等）没有官方 OrgDb：到「物种注释 → OrgDb 构建 / ID 映射」"
+        "生成自建包或 gene2go 基因集，写入后这里会自动出现。"
+    )
+
+    st.markdown("---")
     st.markdown("#### 分析内容开关")
     col1, col2 = st.columns(2)
     with col1:
@@ -2006,6 +2028,11 @@ with tab5:
     )
 
     st.markdown("---")
+    id_strip_default = st.text_input(
+        "全局 ID 清洗正则（项目未配置时生效）",
+        value=gsea.get("id_strip", ""),
+        help="例：^(gene-)?LOC → LOC100808170 / gene-LOC100808170 都变成 100808170；项目级 id_strip 优先",
+    )
     if st.button("保存 GSEA 参数", type="primary", key="save_gsea"):
         # 重新读取最新 config，避免覆盖其他 Tab 的修改
         fresh_cfg = load_config()
@@ -2019,6 +2046,7 @@ with tab5:
             "max_gs_size":    int(max_gs_size),
             "top_n":          int(top_n),
             "promoter_only":  promoter_only,
+            "id_strip":       id_strip_default.strip(),
         }
         save_config(fresh_cfg)
         st.success("GSEA 参数已保存到 config/config.yaml！")
