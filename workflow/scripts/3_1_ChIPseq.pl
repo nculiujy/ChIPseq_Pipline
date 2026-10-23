@@ -42,6 +42,45 @@ sub find_in_path {
     return 0;
 }
 
+# 同 find_in_path，但返回绝对路径——挑 java 版本时得知道具体是哪一个。
+sub which_cmd {
+    my ($cmd) = @_;
+    return "" unless $ENV{PATH};
+    for my $d (split(/:/, $ENV{PATH})) {
+        next unless $d;
+        return "$d/$cmd" if -x "$d/$cmd";
+    }
+    return "";
+}
+
+# java 主版本号，解析不出来回 0。
+# Java 8 及以前报 "1.8.0_362"，之后报 "17.0.2"。
+sub java_major {
+    my ($java) = @_;
+    return 0 unless $java && -x $java;
+    my $out = `"$java" -version 2>&1`;
+    return $out =~ /version\s+"1\.(\d+)/ ? $1
+         : $out =~ /version\s+"(\d+)/    ? $1
+         : 0;
+}
+
+# Picard 3.x 编到 class file version 61，要 Java 17+；低于它的 JRE 会直接抛
+# UnsupportedClassVersionError。conda 的 picard 是个 wrapper，它挑 java 的顺序是
+# JAVA_HOME > 同 prefix 自带的 JVM，于是系统 JAVA_HOME 指着 JDK 8 时反而会把
+# 配套的 JDK 23 盖掉。这里找出 picard 自带的那份 JVM，跑之前把 JAVA_HOME 钉上去。
+# 找不到合适的返回空串，调用方退回原环境。
+sub picard_java_home {
+    my $picard = which_cmd('picard');
+    return "" unless $picard;
+    my $prefix = dirname(dirname($picard));    # <prefix>/bin/picard
+    for my $cand ("$prefix/lib/jvm", $prefix) {
+        my $java = "$cand/bin/java";
+        next unless -x $java;
+        return $cand if java_major($java) >= 17;
+    }
+    return "";
+}
+
 log_message("ChIP-seq 步骤1: 比对与去重 开始");
 
 # 查找样本文件 (兼容不同 QC 输出或原始文件格式)
@@ -154,10 +193,30 @@ sub process_sample {
     # jar 存在且 java 在 PATH 里才走 -jar；否则回退到环境里的 picard 命令。
     # 只判 jar 不判 java 的话，机器上没 JRE 时会在 system() 里报 command not found。
     my $picard_jar = $picarddir ? "$picarddir/picard.jar" : "";
-    my $picard_cmd = ($picard_jar && -e $picard_jar && find_in_path('java'))
+    my $use_jar = $picard_jar && -e $picard_jar && find_in_path('java');
+    my $picard_cmd = $use_jar
         ? "java -Xmx15g -jar \"$picard_jar\" MarkDuplicates"
         : "picard MarkDuplicates";
-    system($picard_cmd . " I=\"$accepted_sorted_bam\" O=\"$accepted_unique_bam\" METRICS_FILE=\"$metrics_file\" REMOVE_DUPLICATES=true") == 0 or die "错误: Picard 失败 ($sample_id)\n";
+
+    # 在子进程里钉住 picard 自带的 JVM，别让系统的老 JAVA_HOME 生效（见上面函数注释）
+    my ($picard_rc, $picard_jh);
+    {
+        my $own = $use_jar ? "" : picard_java_home();
+        local $ENV{JAVA_HOME} = $own || ($ENV{JAVA_HOME} // "");
+        $picard_jh = $ENV{JAVA_HOME};
+        $picard_rc = system($picard_cmd
+            . " I=\"$accepted_sorted_bam\" O=\"$accepted_unique_bam\""
+            . " METRICS_FILE=\"$metrics_file\" REMOVE_DUPLICATES=true");
+    }
+    if ($picard_rc != 0) {
+        my $hint = "";
+        if (!$use_jar && $picard_jh ne "" && java_major("$picard_jh/bin/java") < 17) {
+            $hint = "  Picard 3.x 需要 Java 17+（class file version 61），"
+                  . "而 JAVA_HOME=$picard_jh 下的 java 版本不够。\n"
+                  . "  装个新版 JDK，或让环境里的 picard 用自带的 JVM。\n";
+        }
+        die "错误: Picard 失败 ($sample_id)\n$hint";
+    }
 
     system("samtools index \"$accepted_unique_bam\"") == 0 or die "错误: SAMtools index 失败 ($sample_id)\n";
 

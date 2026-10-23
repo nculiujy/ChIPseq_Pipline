@@ -87,30 +87,52 @@ OPTIONAL_R_BIOCG: List[tuple[str, str]] = [
 
 _VER_RE = re.compile(r"(\d+(?:\.\d+)+)")
 
+# class file version 与 Java 大版本相差 44：52 → Java 8，61 → Java 17
+_CLASS_TO_JAVA = 44
 
-def _probe_version(exe: str, args: List[str], timeout: int = 12) -> str:
-    """运行 `<exe> <args>` 抓第一个版本号；失败返回空串（视为“已装、版本未知”）。
 
-    只扫描前几行非空输出：支持 --version/-version 的工具版本一般都在首行；
+def _probe_version(exe: str, args: List[str], timeout: int = 12) -> tuple[str, str]:
+    """运行 `<exe> <args>`，返回 (版本号, 跑不起来的原因)。
+
+    版本号只扫描前几行非空输出：支持 --version/-version 的工具版本一般都在首行；
     不支持的工具会打整页 usage（里面全是无关数字），限定行数可避免误抓。
+
+    第二个返回值只在命令**找到了却没起来**时才给——最典型的是 java 版本不够，
+    picard 直接抛 UnsupportedClassVersionError。这种时候 UI 不能笼统写“已装
+    （版本未知）”，那会让人以为只是没取到版本号。
     """
     try:
         r = subprocess.run([exe, *args], capture_output=True, text=True,
                            timeout=timeout)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return "", ""
     out = (r.stdout or "") + "\n" + (r.stderr or "")
+
+    # java 类加载失败时，堆栈里也带着 "class file version 61.0" 这种数字，
+    # 会被下面的版本正则误当成工具版本号，所以先认错再抓版本。
+    if "UnsupportedClassVersionError" in out or "LinkageError" in out:
+        need = re.search(r"class file version (\d+)", out)
+        cur = re.search(r"recognizes class file versions up to (\d+)", out)
+        note = "java 版本过低"
+        if need:
+            note += f"（需要 Java {int(need.group(1)) - _CLASS_TO_JAVA}）"
+        if cur:
+            note += f"，当前只支持到 Java {int(cur.group(1)) - _CLASS_TO_JAVA}"
+        return "", note
+
+    ver = ""
     scanned = 0
     for line in out.splitlines():
         if not line.strip():
             continue
         m = _VER_RE.search(line)
         if m:
-            return m.group(1)
+            ver = m.group(1)
+            break
         scanned += 1
         if scanned >= 3:          # 前 3 行非空仍无版本号 → 判为“版本未知”
             break
-    return ""
+    return ver, ""
 
 
 def check_tools() -> List[Dict]:
@@ -120,10 +142,10 @@ def check_tools() -> List[Dict]:
         for name, vargs in items:
             path = env_paths.resolved_tool_path(name)
             present = path is not None
-            version = _probe_version(path, vargs) if present else ""
+            version, note = _probe_version(path, vargs) if present else ("", "")
             rows.append({
                 "group": group, "name": name, "present": present,
-                "path": path, "version": version,
+                "path": path, "version": version, "note": note,
                 "optional": group in OPTIONAL_TOOL_GROUPS,
             })
     return rows
@@ -231,6 +253,10 @@ def check_environment() -> Dict:
                      if not t["present"] and not t.get("optional")]
     optional_tools_missing = [t["name"] for t in tools
                               if not t["present"] and t.get("optional")]
+    # 找到了但跑不起来（典型：java 版本不够，picard 起不来）与“没装”同等致命，
+    # 只按 present 判的话流程会在第 3 步才炸，且报错跟依赖完全对不上。
+    broken_tools = [t["name"] for t in tools
+                    if t["present"] and t.get("note") and not t.get("optional")]
     missing_r = [p["name"] for p in r["packages"]
                  if not p["present"] and not p.get("optional")]
 
@@ -248,7 +274,8 @@ def check_environment() -> Dict:
         "tools": tools,
         "r": r,
         "missing_tools": missing_tools,
+        "broken_tools": broken_tools,
         "optional_tools_missing": optional_tools_missing,
         "missing_r": missing_r,
-        "ok": not missing_tools and r["available"] and not missing_r,
+        "ok": not missing_tools and not broken_tools and r["available"] and not missing_r,
     }

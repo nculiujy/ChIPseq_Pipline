@@ -110,6 +110,20 @@ st.caption(f"架构 {sysi.get('arch')} · {sysi.get('sysname')} · glibc {sysi.g
 if meta["container"]:
     st.info("当前为**容器模式**（apptainer/podman/docker）：工具由镜像提供，本页检测的是镜像内 PATH 可见的命令与 R 包。")
 
+
+def _tool_sub(present: bool, version: str, path: str, note: str) -> str:
+    """命令的副标题：版本 / 跑不起来的原因 / 未找到，末尾带上解析到的路径。"""
+    if version:
+        s = f"v{version}"
+    elif present and note:
+        s = f"跑不起来 · {note}"
+    elif present:
+        s = "已装（版本未知）"
+    else:
+        s = "未找到"
+    return s + (f" · {path}" if path else "")
+
+
 # ---------------------------------------------------------------------------
 # ① 核心 CLI 命令
 # ---------------------------------------------------------------------------
@@ -123,14 +137,15 @@ for gname, rows in _groups.items():
     render_html_list([
         list_row(
             main=name,
-            sub=(f"v{version}" if version else ("已装（版本未知）" if present else "未找到"))
-                + (f" · {path}" if path else ""),
-            right_html=(pill("就位", "ok") if present
+            sub=_tool_sub(present, version, path, note),
+            right_html=(pill("就位", "ok") if present and not note
+                        else pill("跑不起来", "warn") if present
                         else pill("可选·未装", "idle") if optional
                         else pill("缺失", "err")),
         )
-        for name, present, version, path, optional in (
-            (x["name"], x["present"], x["version"], x["path"], x.get("optional"))
+        for name, present, version, path, note, optional in (
+            (x["name"], x["present"], x["version"], x["path"],
+             x.get("note", ""), x.get("optional"))
             for x in rows
         )
     ])
@@ -171,6 +186,13 @@ if not report["ok"]:
     _ap = meta["analysis_prefix"]
     if n_tools_missing:
         st.warning("缺失命令：" + ", ".join(report["missing_tools"]))
+    if report.get("broken_tools"):
+        st.warning(
+            "命令找到了但跑不起来：" + ", ".join(report["broken_tools"])
+            + "\n\n常见原因是 Java 版本过低——Picard 3.x 需要 Java 17+，"
+            "而系统 JAVA_HOME 指向 JDK 8/11 时会盖掉 conda 自带的 JVM。"
+            "升级 JDK 或让 JAVA_HOME 指向分析环境的 lib/jvm。"
+        )
     if r["available"] and n_r_missing:
         st.warning("缺失 R 包：" + ", ".join(report["missing_r"]))
     st.markdown(
