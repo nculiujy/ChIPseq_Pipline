@@ -61,8 +61,10 @@ REQUIRED_TOOLS: List[tuple[str, List[tuple[str, List[str]]]]] = [
 
 # 可选工具组：缺失**不**判「不满足」（与 OPTIONAL_R_BIOCG 同一套口径）。
 # MEME suite 的 meme 包把 perl 钉在 5.32.1，与 conda-forge 的 r-base 4.6 冲突，
-# 装它会连累 r-base 及约 10 个包降级，故不放进 environment.yml，按需单独装；
-# 只有启用 6_motif 模块时才需要。
+# 装进分析环境会连累 r-base 及约 10 个包降级，故不放进 environment.yml。
+# 现在改走独立 prefix（<runtime>/meme，见 env_paths.meme_prefix）：由「配置编辑」
+# 页的「安装 MEME suite」按钮装到那里，再经 tool_search_path() 注入 PATH，
+# 与 analysis 完全隔离。只有启用 6_motif 模块时才需要。
 OPTIONAL_TOOL_GROUPS = {"motif (MEME suite)"}
 
 # R 必需包（CRAN）
@@ -242,12 +244,36 @@ def check_system() -> Dict:
     return info
 
 
+def analysis_python(prefix: str) -> tuple[str, str]:
+    """探测**分析 prefix** 的 Python 版本，返回 (版本号, 解释器路径)。
+
+    不能用 UI 进程的 sys.version：启动器（launch）与分析环境（analysis）是两套
+    独立 prefix，Python 版本可以完全不同。直接用 sys.version 会把启动器的
+    3.13 当成分析环境的版本显示，排查 ABI/包兼容问题时会被彻底带偏。
+    探测不到时退回当前进程的值（容器模式下两者同体，这个回退是对的）。
+    """
+    cand = os.path.join(prefix, "bin", "python")
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        try:
+            out = subprocess.run(
+                [cand, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+                capture_output=True, text=True, timeout=10,
+            )
+            ver = (out.stdout or "").strip()
+            if out.returncode == 0 and ver:
+                return ver, cand
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return sys.version.split()[0], sys.executable
+
+
 def check_environment() -> Dict:
     """汇总一次完整监测。返回结构化报告，供页面渲染 + 顶层结论。"""
     prefix = env_paths.analysis_prefix()
     container = env_paths.uses_container_runtime()
     tools = check_tools()
     r = check_r()
+    _py_ver, _py_bin = analysis_python(prefix)
 
     missing_tools = [t["name"] for t in tools
                      if not t["present"] and not t.get("optional")]
@@ -268,7 +294,8 @@ def check_environment() -> Dict:
             "analysis_prefix": prefix,
             "prefix_exists": os.path.isdir(os.path.join(prefix, "bin")),
             "sys_prefix": sys.prefix,
-            "python": sys.version.split()[0],
+            "python": _py_ver,
+            "python_bin": _py_bin,
         },
         "system": check_system(),
         "tools": tools,

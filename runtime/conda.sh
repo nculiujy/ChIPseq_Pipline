@@ -56,27 +56,26 @@ _installer() {
 }
 
 _create_launcher() {
-    local inst="$1" launcher="$2" miss2
+    local inst="$1" launcher="$2"
     check_disk_space "$(dirname "$launcher")" 1
 
-    # 重建走三步，能不联网就不联网：
-    #   1) 全套都用本地包缓存离线建（pkgs/ 里都当时是秒级）
-    #   2) 本地缺新的包（比如后来加的 plotly）时，先离线建基础件，缺的用 pip 补
-    #   3) 缓存实在不够才联网；联网要先拉十几个 channel 的 repodata，慢镜像上能拖很久
+    # 三条路，从快到慢：
+    #   1) conda 全离线 create —— 包缓存齐全时秒级（装过一次的机器才有缓存）
+    #   2) venv + pip —— 不依赖任何缓存，实测约 30 秒（2.5s 建 venv + 29s 装包）
+    #   3) conda 联网 create —— 兜底；光拉十几个 channel 的 repodata 就要十几秒到十几分钟
+    #
+    # 中间那条以前是「离线建基础件 + pip 补剩下的」。问题是缓存为空时第一条断、
+    # 第二条也断（它还依赖 --offline），最后仍然掉到联网。venv 不看 pkgs/，
+    # 只要系统里有 python3.9+ 就能建，这才是缓存缺失时真正的快路径。
     if "$inst" create -p "$launcher" -y --offline python=3.11 $CHIPSEQ_LAUNCHER_PKGS >/dev/null 2>&1; then
         ok "启动器环境已创建（全部走本地包缓存，未联网）"
     else
         rm -rf "$launcher"
-        if "$inst" create -p "$launcher" -y --offline python=3.11 streamlit pyyaml >/dev/null 2>&1; then
-            ok "启动器基础环境已创建（本地包缓存）"
-            miss2=$(_launcher_missing)
-            if [ -n "$miss2" ]; then
-                log "本地缓存缺少 $miss2，用 pip 补装"
-                _launcher_pip_install $miss2 || warn "pip 补装 $miss2 失败；页面会自动降级，稍后重试：chipseq-app-update"
-            fi
+        if _create_launcher_venv "$launcher" && [ -z "$(_launcher_missing)" ]; then
+            ok "启动器环境已创建（venv + pip）: $launcher"
         else
             rm -rf "$launcher"
-            log "本地包缓存不足，联网创建启动器环境（需拉取 repodata，可能较慢）…"
+            log "venv 路径不可用，改用 conda 联网创建（需拉取 repodata，可能较慢）…"
             "$inst" create -p "$launcher" -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS \
                 || die "创建启动器环境失败（可重试：$inst create -p $launcher -y python=3.11 $CHIPSEQ_LAUNCHER_PKGS）"
         fi
@@ -97,10 +96,47 @@ _launcher_runnable() {
     "$py" -c "import streamlit, yaml" >/dev/null 2>&1
 }
 
+# pip 源：默认走清华镜像。PyPI 官方源在国内慢网络下单包就要几十秒，
+# 而启动器要装二十来个依赖（含 pyarrow/numpy/pandas 这类几十 MB 的）。
+# 海外机器或内网私有源用 CHIPSEQ_PIP_INDEX 覆盖。
+_pip_index() {
+    echo "${CHIPSEQ_PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+}
+
+# 找可用的 base python（建 venv 用）。streamlit 要求 >=3.9，从新到旧挑第一个能用的。
+_base_python() {
+    local c v
+    for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+        command -v "$c" >/dev/null 2>&1 || continue
+        v=$("$c" -c 'import sys; print("%d%02d" % sys.version_info[:2])' 2>/dev/null) || continue
+        if [ "${v:-0}" -ge 309 ]; then command -v "$c"; return 0; fi
+    done
+    return 1
+}
+
+# 用 venv + pip 建启动器：不经过 conda 求解、不拉 channel 的 repodata，
+# 只下二十来个纯 Python wheel。目录结构与 conda 环境一致（bin/python、bin/streamlit），
+# 所以下游判断（_launcher_missing / runtime_install 的就绪分支）一行都不用改。
+_create_launcher_venv() {
+    local launcher="$1" base idx
+    base=$(_base_python) || { warn "未找到 Python >= 3.9，无法用 venv 建启动器"; return 1; }
+    log "用 venv 创建启动器（跳过 conda 求解）: $base → $launcher"
+    "$base" -m venv "$launcher" || { warn "venv 创建失败"; rm -rf "$launcher"; return 1; }
+    idx=$(_pip_index)
+    log "pip 安装 $CHIPSEQ_LAUNCHER_PKGS（源: $idx）"
+    if ! "$launcher/bin/python" -m pip install --disable-pip-version-check -q \
+            -i "$idx" --timeout 60 --retries 3 $CHIPSEQ_LAUNCHER_PKGS; then
+        warn "pip 安装失败（可用 CHIPSEQ_PIP_INDEX 换源后重试）"
+        rm -rf "$launcher"
+        return 1
+    fi
+    return 0
+}
+
 # 往现有 prefix 里用 pip 补包（不经过 conda，不需要 conda-meta）
 _launcher_pip_install() {
     local py="$CHIPSEQ_LAUNCH_ENV/bin/python"
-    "$py" -m pip install --disable-pip-version-check -q "$@"
+    "$py" -m pip install --disable-pip-version-check -q -i "$(_pip_index)" --timeout 60 --retries 3 "$@"
 }
 
 runtime_install() {

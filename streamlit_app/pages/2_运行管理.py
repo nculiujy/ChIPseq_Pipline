@@ -750,7 +750,12 @@ def _build_cmd():
 
 
 def _start_snakemake(cmd):
-    """后台启动 Snakemake（带 loading / 成功 / 失败 / 可重试反馈）。"""
+    """后台启动 Snakemake（带 loading / 成功 / 失败 / 可重试反馈）。
+
+    启动成功后立即 st.rerun()，让页面切到「运行中」形态（按钮置灰、出现暂停按钮），
+    否则用户点完启动看到的还是点击前的旧页面，必须手动刷新一次。
+    rerun 会丢弃本次渲染的 st.success，所以提示先存进 session_state，重跑后再弹出。
+    """
     st.session_state.snakemake_running = True
     st.session_state.snakemake_target_project = _proj_options[selected_idx]
     with st.spinner("正在后台启动 Snakemake…"):
@@ -765,16 +770,23 @@ def _start_snakemake(cmd):
                     env=env_paths.routed_env(),
                 )
             st.session_state.snakemake_pid = proc.pid
-            st.success(
-                f"✅ 已启动 (PID: {proc.pid}) · 仅运行 `{_proj_options[selected_idx]}`（{len(_sel_enabled)} 个启用模块） · "
-                f"日志：`{os.path.relpath(log_file, BASE_DIR)}`"
-            )
-            st.caption(f"命令：`{' '.join(cmd)}`  —  可在下方「日志查看」选择该 snakemake_run_*.log 实时跟进进度。")
+            st.session_state["_launch_notice"] = {
+                "msg": (
+                    f"✅ 已启动 (PID: {proc.pid}) · 仅运行 `{_proj_options[selected_idx]}`"
+                    f"（{len(_sel_enabled)} 个启用模块）"
+                ),
+                "detail": (
+                    f"日志：`{os.path.relpath(log_file, BASE_DIR)}`"
+                    f" · 命令：`{' '.join(cmd)}`"
+                ),
+            }
         except Exception as e:
             st.error(f"❌ 启动失败：{e}")
             st.session_state.snakemake_running = False
             st.session_state.snakemake_pid = None
             st.info("可再次点击上方“运行所选项目管线”按钮重试（若之前有残留锁，先执行：snakemake --unlock）。")
+            return
+    st.rerun()
 
 
 # —— 分析环境就绪性早失败校验（launcher/analysis 解耦后，工具可能尚未构建）——
@@ -788,6 +800,13 @@ if not _analysis_ready:
     )
 
 _disable_launch = st.session_state.snakemake_running or _sel_blocked or not _analysis_ready
+
+# 启动成功的提示（_start_snakemake 里存下、rerun 后在此弹出；pop 保证只显示一次）
+_launch_note = st.session_state.pop("_launch_notice", None)
+if _launch_note:
+    st.success(_launch_note["msg"])
+    if _launch_note.get("detail"):
+        st.caption(_launch_note["detail"])
 
 # ——待确认状态：dry-run 预览已完成，等待用户核对后确认启动——
 if st.session_state.get("pending_launch"):

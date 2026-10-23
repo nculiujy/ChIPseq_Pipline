@@ -571,10 +571,25 @@ def stage_rail(stages: list[dict]) -> None:
     st.markdown(f'<div class="ux-rail">{nodes}</div>', unsafe_allow_html=True)
 
 
+def render_html(html: str) -> None:
+    """渲染原生 HTML 片段。
+
+    优先走 st.html：它不经过 markdown 解析，因此 <pre> 里的换行能被保留。
+    用 st.markdown(unsafe_allow_html=True) 时，日志正文会被当成 markdown 处理——
+    `# Command line: ...` 被识别成标题、行间单个换行被折叠成空格，
+    最终整段日志挤成一坨，正是日志“看不清”的原因。
+    老版本 Streamlit 没有 st.html 时回退到 markdown。
+    """
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
 def log_console(text: str, title: str = "console") -> None:
     """深色等宽日志面板（替代 st.code 用于日志展示）。"""
     esc = _html.escape(text or "")
-    st.markdown(
+    render_html(
         '<div class="ux-console">'
         '<div class="ux-console-bar">'
         '<span class="ux-console-dotc" style="background:#FF5F56"></span>'
@@ -583,8 +598,7 @@ def log_console(text: str, title: str = "console") -> None:
         f'<span class="t">&nbsp;&nbsp;{_html.escape(title)}</span>'
         "</div>"
         f"<pre>{esc}</pre>"
-        "</div>",
-        unsafe_allow_html=True,
+        "</div>"
     )
 
 

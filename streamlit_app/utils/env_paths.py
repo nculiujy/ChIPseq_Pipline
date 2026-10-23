@@ -99,10 +99,27 @@ def analysis_bin() -> str:
     return os.path.join(analysis_prefix(), "bin")
 
 
+def meme_prefix() -> str:
+    """MEME suite 的独立 prefix（可选组件，<runtime>/meme）。
+
+    刻意不进 analysis：conda 装 meme 会重新求解整个环境，bioconda 的 meme
+    依赖链会把 numpy 抬到 2.x，而已装好的 macs2 2.2.7.1 的 Cython .so 是按
+    numpy 1.x 编译的，一升就 `numpy.dtype size changed` 直接炸。
+    单独一个 prefix，装不装、装坏都不影响主分析环境。
+    """
+    return str(runtime_dir() / "meme")
+
+
+def meme_bin() -> str:
+    """MEME suite 的 bin 目录（meme / streme / meme-chip 都在这里）。"""
+    return os.path.join(meme_prefix(), "bin")
+
+
 def tool_search_path() -> str:
-    """分析工具命令搜索路径：<prefix>/bin : sys.prefix/bin : 系统 PATH。
+    """分析工具命令搜索路径：<prefix>/bin : <meme>/bin : sys.prefix/bin : 系统 PATH。
 
     - <prefix>/bin：命令行构建的分析环境（生产/发行包模式的主命中目录）。
+    - <meme>/bin：可选的 MEME suite（装到独立 prefix，存在才参与）。
     - sys.prefix/bin：当前运行 Streamlit 的 Python 环境 bin。开发态直接
       `streamlit run`（在已含工具的命名环境里）时，prefix 不存在，落到这里保持兼容。
     - 系统 PATH：其余（conda、git 等宿主命令）。
@@ -111,6 +128,9 @@ def tool_search_path() -> str:
     ab = analysis_bin()
     if os.path.isdir(ab):
         parts.append(ab)
+    mb = meme_bin()
+    if os.path.isdir(mb) and mb not in parts:
+        parts.append(mb)
     sp_bin = os.path.join(sys.prefix, "bin")
     if sp_bin not in parts:
         parts.append(sp_bin)

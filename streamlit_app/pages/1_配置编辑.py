@@ -28,8 +28,10 @@ from utils.ui_theme import (  # noqa: E402
     code_html,
     list_row,
     render_html_list,
+    log_console,
 )
 from utils import runtime as rt  # noqa: E402
+from utils import env_paths, meme_setup  # noqa: E402
 
 from utils.version import APP_FULL_NAME  # noqa: E402
 
@@ -2123,6 +2125,72 @@ with tab6:
         "需要先运行模块4（含 consensus peaks 步骤）才能执行 Motif 分析\n\n"
         "首次运行时会自动下载 MEME motif 数据库（~200MB），后续复用"
     )
+
+    st.markdown("---")
+
+    # ---------- MEME suite 软件本身（可选组件，装在独立 prefix） ----------
+    st.markdown("#### MEME suite 软件")
+    _meme_st = meme_setup.read_status()
+    _meme_tools = meme_setup.installed_tools()
+    _meme_running = _meme_st.get("state") == "running"
+
+    _has_core = bool(_meme_tools.get("meme") and _meme_tools.get("streme"))
+    # meme-chip 是 6_1_motif.py 真正调用的命令，而它是 perl 脚本：命令在但缺
+    # XML::Simple 之类模块时照样跑不起来，所以「装好没有」要连它一起判
+    _chip_ok, _chip_why = meme_setup.meme_chip_ok() if _has_core else (False, "")
+
+    if _has_core and _chip_ok:
+        st.success("✅ MEME suite 已就位，模块 6 可直接运行")
+        for _n, _p in _meme_tools.items():
+            _v = meme_setup.tool_version(_p) if _n != "meme-chip" else ""
+            st.caption(f"`{_n}` → {_p}" + (f" · {_v}" if _v else ""))
+        st.caption(f"安装位置：`{env_paths.meme_prefix()}`（独立 prefix，不影响分析环境）")
+    elif _meme_running:
+        st.info(
+            f"⏳ 正在后台安装（PID {_meme_st.get('pid')}，开始于 {_meme_st.get('started')}）"
+        )
+        st.caption("安装完成后本区块会自动变为「已就位」；现在可关闭页面，稍后回来刷新查看")
+        if st.button("刷新状态", key="meme_refresh_status"):
+            st.rerun()
+    else:
+        if _has_core:
+            st.warning("`meme` / `streme` 在，但 `meme-chip` 跑不起来 —— 模块 6 会静默失败")
+            st.caption(f"原因：`{_chip_why}`")
+            st.caption(
+                "`6_1_motif.py` 调 meme-chip 用的是 allow_fail，失败只会留一句 warning，"
+                "最终得到的是空报告。建议重装一份自带 perl 依赖的完整版。"
+            )
+        else:
+            st.warning("未检测到 MEME suite（`meme` / `streme` 命令都不在）—— 模块 6 跑不了")
+        if _meme_st.get("state") == "failed":
+            st.error(f"上次安装未完成：{_meme_st.get('note') or '进程异常退出'}")
+        st.caption(
+            "会装到项目目录 `" + env_paths.meme_prefix() + "`，**不动分析环境**。"
+            "直接 conda 装进分析环境会把 numpy 抬到 2.x，也会连累 r-base 降级。"
+        )
+        _mc1, _mc2 = st.columns([1, 3])
+        with _mc1:
+            if st.button("安装 MEME suite", type="primary", key="install_meme"):
+                _ok, _msg = meme_setup.start_install()
+                if _ok:
+                    st.success(_msg)
+                    st.rerun()
+                else:
+                    st.error(_msg)
+        with _mc2:
+            st.caption("预计 5-15 分钟，后台执行；装中间可关闭页面，不影响安装进程")
+
+    # 安装中 / 失败的日志（失败时默认展开，方便直接看到原因）
+    if _meme_st.get("state") in ("running", "failed"):
+        _meme_log = meme_setup.tail_log(30)
+        if _meme_log:
+            with st.expander(
+                "安装日志（末尾 30 行）",
+                expanded=(_meme_st.get("state") == "failed"),
+            ):
+                log_console(_meme_log, title="meme install")
+
+    st.caption(f"手动安装（等价命令）：`{meme_setup.install_command()}`")
 
     st.markdown("---")
 

@@ -30,6 +30,7 @@ if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
 from utils import env_check  # noqa: E402
+from utils import env_paths  # noqa: E402
 from utils.ui_theme import (  # noqa: E402
     inject_theme,
     page_header,
@@ -210,8 +211,10 @@ else:
     if report.get("optional_tools_missing"):
         st.info(
             "可选工具未安装：" + ", ".join(report["optional_tools_missing"]) + "\n\n"
-            "它们只服务于 motif 分析（6_motif 模块），未启用该模块时不影响流程。需要时单独安装：\n\n"
-            f"`mamba install -p {meta['analysis_prefix']} -y -c bioconda meme`\n\n"
-            "注意：MEME suite 把 perl 钉在 5.32.1，与 r-base 4.6 冲突，可能连带降级 r-base，"
-            "建议确定要做 motif 后再装。"
+            "它们只服务于 motif 分析（6_motif 模块），未启用该模块时不影响流程。\n\n"
+            "需要时到「配置编辑 → 模块6 · MEME"
+            " suite」页点「安装 MEME suite」，会装到项目内的独立目录：\n\n"
+            f"`{env_paths.meme_prefix()}`\n\n"
+            "**不要**用 conda 直接装进分析环境：MEME 把 perl 钉在 5.32.1，与 r-base 4.6"
+            " 冲突，会连带降级十几个包；装在独立 prefix 里两者互不干扰。"
         )

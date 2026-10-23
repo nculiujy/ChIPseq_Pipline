@@ -6,6 +6,14 @@ channels:
 dependencies:
   # ---------- 命令行 / 流程工具 ----------
   - python=3.9
+  # numpy 必须压在 1.x：macs2 2.2.7.1 的 Cython 扩展（IO/Parser 等 .so）按 numpy 1.x
+  # 编译，numpy 2.0 把 PyArray_Descr 的 hash 字段外移、结构体从 96 字节缩到 88，
+  # 编译期尺寸硬编码进 .so，import 时校验不过就抛
+  #   ValueError: numpy.dtype size changed, expected 96 from C header, got 88
+  # 注意 macs2 自身只声明 numpy >=1.17（无上界），不显式 pin 的话求解器会选 2.x，
+  # 装完看着成功、跑到 peak calling 才炸。deeptools 新版声明 numpy>=2，
+  # 加了这条后求解器会自动把它降到兼容 numpy 1.x 的构建。
+  - numpy<2
   - snakemake
   - samtools
   - fastqc
