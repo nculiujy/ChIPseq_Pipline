@@ -332,6 +332,35 @@ def get_gff_candidates(species, bowtie2_folder=""):
     return [os.path.relpath(p, BASE_DIR) for p in uniq]
 
 
+def get_planned_gffs(species):
+    """catalog 里这套参考会下载哪些注释，按将来落盘的路径返回。
+
+    新部署的机器上 workflow/anno/ 还是空的，磁盘上扫不到 GFF，但下载流程
+    一定会把与 FASTA 同源同版本的注释一起拉下来，落盘位置是确定的：
+        workflow/anno/<变体>/bowtie2_index_<变体>/<GFF 文件名>
+    列出来是为了在还没建索引时告诉用户该下哪一套、下完在哪里找。
+
+    传变体（TAIR10__Ensembl_Plants_63）时只返回那一源的；
+    传纯物种时把该物种所有源的注释都列出来。
+    """
+    catalog = rt.load_catalog().get("species") or {}
+    sid, want_src = rt.split_variant(species)
+    entry = catalog.get(sid) or {}
+    out = []
+    for src_id, s in (entry.get("sources") or {}).items():
+        if want_src and src_id != want_src:
+            continue
+        g = (s or {}).get("gff") or {}
+        if not g.get("url"):
+            continue
+        vid = rt.variant_id(sid, src_id)
+        out.append(
+            f"workflow/anno/{vid}/bowtie2_index_{vid}/"
+            f"{g.get('filename') or 'annotation.gff3.gz'}"
+        )
+    return out
+
+
 def txdb_option_label(val):
     """TxDb 下拉的显示文案：一眼看出是本地 GFF 还是现成的 R 包。"""
     if val.lower().endswith(GFF_EXTS):
@@ -967,7 +996,8 @@ with tab2:
                 # 当前值可能是手填的包名或旧路径，排首位保留，不会默默换掉。
                 _cur_txdb = proj.get("txdb", "")
                 _cur_orgdb = proj.get("orgdb", "")
-                _tx_opts = get_gff_candidates(selected_species, selected_bt2_dir)
+                _gffs_i = get_gff_candidates(selected_species, selected_bt2_dir)
+                _tx_opts = list(_gffs_i)
                 _pkg_tx_i = rt.default_txdb(selected_species)
                 if _pkg_tx_i and _pkg_tx_i not in _tx_opts:
                     _tx_opts.append(_pkg_tx_i)
@@ -990,6 +1020,13 @@ with tab2:
                     )
 
                 # OrgDb 没填过的按物种默认包补上，用户不用去查
+                if not _gffs_i:
+                    _planned_i = get_planned_gffs(selected_species)
+                    if _planned_i:
+                        st.caption(
+                            "该物种目录下还没有注释文件；去「物种注释」页构建索引时 "
+                            "GFF 会和 FASTA 一起下载（同源同版本），下完这里就能直接选"
+                        )
                 _org_auto = rt.default_orgdb(selected_species)
                 st.text_input(
                     "OrgDb（R 包名，可留空）",
@@ -1159,6 +1196,22 @@ with tab2:
             _pkg_tx = rt.default_txdb(new_species)
             if _pkg_tx:
                 _txdb_opts.append((_pkg_tx, f"Bioconductor 包 · {_pkg_tx}"))
+
+            # 新部署的机器上 workflow/anno/ 还是空的，磁盘上扫不到 GFF。
+            # 下载流程会把同源同版本的注释和 FASTA 一起拉下来，把落盘路径先告诉用户，
+            # 总比只能退回去选一个坐标体系对不上的包好。
+            if not _gffs:
+                _planned = get_planned_gffs(new_species)
+                if _planned:
+                    st.warning(
+                        "本物种目录下还没有注释文件，暂只能选 Bioconductor 包"
+                        + ("；而它的染色体命名可能与索引不一致（如拟南芥 plantsmart28 用 1/2/3，"
+                           "TAIR 索引用 Chr1/Chr2），注释会错位" if _pkg_tx else "")
+                        + "。\n\n去「物种注释」页构建索引时，GFF/GTF 会和 FASTA "
+                          "一起下载（同源同版本），落到：\n\n"
+                        + "\n".join(f"- `{p}`" for p in _planned[:4])
+                    )
+
             if _txdb_opts:
                 _txdb_label = dict(_txdb_opts)
                 new_txdb = st.selectbox(

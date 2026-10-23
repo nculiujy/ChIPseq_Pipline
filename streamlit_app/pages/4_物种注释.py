@@ -256,8 +256,14 @@ def _render_download_form(
         st.caption(f"约 {fasta_size} MB · 保存为 `{fasta.get('filename', '')}`")
     with c2:
         st.markdown("**注释 GFF/GTF**")
-        st.code(gff.get("url", ""), language="text")
-        st.caption(f"约 {gff_size} MB · 保存为 `{gff.get('filename', '')}`")
+        if gff.get("url"):
+            st.code(gff.get("url", ""), language="text")
+            st.caption(
+                f"约 {gff_size} MB · 保存为 `{gff.get('filename', '')}` · "
+                "与上面的 FASTA 同源同版本，peak 注释直接用这份建 TxDb"
+            )
+        else:
+            st.warning("catalog 里这套源没配注释文件，建好索引后配不了 TxDb")
 
     total_mb = fasta_size + gff_size
     st.info(

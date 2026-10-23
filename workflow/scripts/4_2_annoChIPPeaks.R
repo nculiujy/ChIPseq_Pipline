@@ -262,26 +262,107 @@ if (!is.null(orgdb_name) && nzchar(as.character(orgdb_name))) {
   cat("未配置 OrgDb，跳过基因符号注释 (annoDb = NULL)\n")
 }
 
-# 判断 txdb 是文件路径还是 Bioconductor 包名
-if (file.exists(txdb_name)) {
-  cat("Loading TxDb from GFF/GTF file:", txdb_name, "\n")
-  # Bioc 3.19 起 makeTxDbFromGFF 的实现搬进了 txdbmaker，GenomicFeatures 里只剩
-  # 一个转发壳。缺包时它只报一句 "Could not load package txdbmaker"，看不出是
-  # 环境缺依赖，所以这里接住错误并给出修法。
-  txdb <- tryCatch({
-    if (requireNamespace("txdbmaker", quietly = TRUE)) {
-      txdbmaker::makeTxDbFromGFF(txdb_name)
-    } else {
-      GenomicFeatures::makeTxDbFromGFF(txdb_name)
+# ---- 本地 GFF/GTF → TxDb ---------------------------------------------------
+# 下载注释时 GFF/GTF 与 FASTA 是同源同版本的，由它建库坐标才能和比对结果直接对应；
+# 但下载来的注释不能保证一口气解析成功，这里把几种已知情况的兜底都收在一处。
+
+# 每对 IP/Input 都会跑一遍本脚本，人类 GFF 建一次要几分钟，所以建完落一个
+# 同名 .txdb.sqlite 缓存盘，后续直接 loadDb（秒级）。
+# 缓存文件名挂在原文件名后面，不会落进 GFF 候选列表（那边只认 .gff/.gtf 结尾）。
+txdb_cache_path <- function(path) paste0(path, ".txdb.sqlite")
+
+# 把超长 GTF 属性列砍成只剩 gene_id / transcript_id。
+# NCBI 的 GTF 里个别 transcript 行带几十个 db_xref / tag，单行能到 280 KB，
+# 超过 rtracklayer 解析器的行宽上限，直接喂会报 "line is too long"。
+# 建 TxDb 只用到这两个属性，其余丢掉不影响结果。
+slim_gtf <- function(path) {
+  con <- if (grepl("\\.gz$", path)) gzfile(path, "r") else file(path, "r")
+  on.exit(close(con), add = TRUE)
+  out <- tempfile(fileext = ".gtf")
+  ocon <- file(out, "w")
+  on.exit(close(ocon), add = TRUE)
+  fixed <- 0
+  repeat {
+    ln <- readLines(con, n = 100000, warn = FALSE)
+    if (!length(ln)) break
+    long <- nchar(ln) > 60000
+    if (any(long)) {
+      ln[long] <- vapply(ln[long], function(s) {
+        f <- strsplit(s, "\t", fixed = TRUE)[[1]]
+        if (length(f) < 9) return(s)
+        a <- strsplit(f[9], "; ", fixed = TRUE)[[1]]
+        keep <- a[grepl("^(gene_id|transcript_id) ", a)]
+        if (!length(keep)) return(s)
+        f[9] <- paste0(paste(keep, collapse = "; "), ";")
+        paste(f, collapse = "\t")
+      }, character(1), USE.NAMES = FALSE)
+      fixed <- fixed + sum(long)
     }
-  }, error = function(e) {
-    stop("无法从 GFF/GTF 构建 TxDb：", conditionMessage(e), "\n",
-         "  Bioc 3.19 起 makeTxDbFromGFF 由 txdbmaker 提供，当前环境没装：\n",
+    writeLines(ln, ocon)
+  }
+  cat("  精简了", fixed, "行超长属性（只保留 gene_id / transcript_id）\n")
+  out
+}
+
+txdb_from_file <- function(path) {
+  cache <- txdb_cache_path(path)
+  if (file.exists(cache) && file.info(cache)$mtime >= file.info(path)$mtime) {
+    cat("Loading cached TxDb:", cache, "\n")
+    return(AnnotationDbi::loadDb(cache))
+  }
+
+  build <- function(p) {
+    if (requireNamespace("txdbmaker", quietly = TRUE)) {
+      txdbmaker::makeTxDbFromGFF(p)
+    } else {
+      GenomicFeatures::makeTxDbFromGFF(p)
+    }
+  }
+
+  # 同目录同源的 GTF：NCBI 的 GFF3 里偶有 start > end 的 wrap-around feature，
+  # 会带出一批找不到 parent 的孤儿 exon，这种结构性问题没法就地修补，
+  # 只能换同批下载的 GTF（两者坐标体系一致，建出来的库等价）。
+  gtf_alt <- sub("\\.gff3?(\\.gz)?$", ".gtf\\1", path)
+  if (identical(gtf_alt, path) || !file.exists(gtf_alt)) gtf_alt <- NULL
+
+  # 超长属性行是两个根因里更好修的那个：NCBI 的 GTF 个别 transcript 行能到
+  # 280 KB，超过 rtracklayer 解析器的行宽上限，精简属性列后重试即可。
+  # 原文件和备用 GTF 都要过这一道，所以包在外面而不是写在处理 path 的分支里。
+  build_any <- function(p) {
+    tryCatch(build(p), error = function(e) {
+      if (!grepl("too long", conditionMessage(e), ignore.case = TRUE)) stop(e)
+      cat("  注释文件有超长属性行，精简后重试...\n")
+      slim <- slim_gtf(p)
+      tryCatch(build(slim), finally = unlink(slim))
+    })
+  }
+
+  txdb <- tryCatch(build_any(path), error = function(e) {
+    msg <- conditionMessage(e)
+    if (!is.null(gtf_alt)) {
+      cat("  解析失败（", msg, "），改用同源 GTF:", gtf_alt, "\n")
+      r <- tryCatch(build_any(gtf_alt), error = function(e2) e2)
+      if (!inherits(r, "error")) return(r)
+      msg <- paste0(msg, "；同目录的 GTF 也不可用: ", conditionMessage(r))
+    }
+    stop("无法从 GFF/GTF 构建 TxDb：", msg, "\n",
+         "  Bioc 3.19 起 makeTxDbFromGFF 由 txdbmaker 提供，先确认环境里有它：\n",
          "    BiocManager::install(\"txdbmaker\")\n",
          "    conda install -c bioconda bioconductor-txdbmaker\n",
+         "  注释文件本身有问题时换一套同源的 GFF3（Ensembl 的 gff3 最稳），\n",
          "  或把 config.yaml 里该项目的 txdb 换成 Bioconductor 包名。",
          call. = FALSE)
   })
+
+  # 缓存失败不影响本次分析，下次重建而已
+  try(AnnotationDbi::saveDb(txdb, cache), silent = TRUE)
+  txdb
+}
+
+# 判断 txdb 是文件路径还是 Bioconductor 包名
+if (file.exists(txdb_name)) {
+  cat("Building TxDb from GFF/GTF:", txdb_name, "\n")
+  txdb <- txdb_from_file(txdb_name)
 } else {
   library(txdb_name, character.only = TRUE)
   txdb <- get(txdb_name)
