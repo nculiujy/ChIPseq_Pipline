@@ -32,8 +32,13 @@ _out_log()  { echo "$DATA_DIR/logs/streamlit.out"; }
 # 旧方案 pdf2image 要配 poppler 的 pdftoppm 二进制，而那两样当初都装进了 analysis，
 # UI 却跑在 launch，import 必然失败，页面就永远提示“安装 pdf2image 和 poppler-utils”。
 # PyMuPDF 是单 wheel 自带渲染引擎，不需要任何系统二进制，跨机器部署也省心。
-CHIPSEQ_LAUNCHER_PKGS="streamlit pyyaml plotly pymupdf"
-_LAUNCHER_IMPORTS="streamlit:streamlit pyyaml:yaml plotly:plotly pymupdf:pymupdf"
+#
+# pybigwig：结果预览页的「基因组浏览器」要直读 3_ChIPseq 产出的 .bw。
+# 信号虽然是分析产物，但“看”是 UI 的活，跑 Streamlit 的是 launch 环境；
+# 和 pdf2image 那次一样，只装进 analysis 的话 UI 永远 import 不到。
+# 注意模块名是 pyBigWig（大写 B 和 W），conda 包名才是全小写。
+CHIPSEQ_LAUNCHER_PKGS="streamlit pyyaml plotly pymupdf pybigwig"
+_LAUNCHER_IMPORTS="streamlit:streamlit pyyaml:yaml plotly:plotly pymupdf:pymupdf pybigwig:pyBigWig"
 
 # 打印缺的 conda 包名（空格分隔）；全部齐了输出为空
 _launcher_missing() {
@@ -163,8 +168,14 @@ runtime_install() {
         # 正常情况：conda 能管的环境，缺包用 conda 补（几秒）。
         log "启动器环境缺依赖（$miss），补齐: $launcher"
         if ! "$inst" install -p "$launcher" -y $miss; then
-            # 不 rm -rf：网络/镜像抖一下也会走到这里，删了就彻底跑不起来。
-            warn "补齐失败（多为网络/镜像问题）；环境已保留，稍后重试：chipseq-app-update"
+            # conda 补不上很常见：pybigwig 只在 bioconda，而创建这个 prefix 时
+            # 不一定带了那个 channel。PyPI 有现成 wheel，装进去运行期完全等价，
+            # 没必要为了一个纯扩展包去折腾 channel 优先级。
+            log "conda 补齐失败，改用 pip: $miss"
+            if ! _launcher_pip_install $miss; then
+                # 不 rm -rf：网络/镜像抖一下也会走到这里，删了就彻底跑不起来。
+                warn "补齐失败（多为网络/镜像问题）；环境已保留，稍后重试：chipseq-app-update"
+            fi
         fi
         _chipseq_sanitize_environments_txt
     elif _launcher_runnable; then
