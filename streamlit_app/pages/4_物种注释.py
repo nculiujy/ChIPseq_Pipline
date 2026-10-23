@@ -272,8 +272,17 @@ def _render_download_form(
 
     # 能走到这里说明上面已经勾过「重建这套索引」，不再叠一层确认
     label = "重新下载并覆盖" if status.complete else "开始下载并构建索引"
+    st.caption(
+        f"构建开始时一并建好 `workflow/resources/{sid}/`；"
+        f"fastq 放在其下的 `{sid}/<实验名>/` 里，实验名与写入 config.yaml 时填的一致。"
+    )
     if st.button(label, key=f"go_{vid}", type="primary"):
         spec = _build_spec(vid, entry, src_id, src, threads)
+        # 索引要建几十分钟，期间用户就可以把 fastq 拷进去；建目录失败不拦住索引
+        try:
+            rt.ensure_species_rawdata_dir(sid)
+        except (OSError, ValueError) as e:  # noqa: BLE001
+            st.warning(f"原始数据目录创建失败（不影响索引构建）：{e}")
         try:
             st_info = am.start_task(spec)
             st.session_state["active_task"] = st_info["task_id"]
@@ -612,6 +621,11 @@ def render_custom_tab() -> None:
                     default_orgdb_pkg=orgdb_pkg.strip() or "",
                     genome_size_mb=int(genome_mb),
                 )
+                try:
+                    # 与内置物种一致：建索引的同时备好放数据的物种目录
+                    rt.ensure_species_rawdata_dir(sid)
+                except (OSError, ValueError) as e:  # noqa: BLE001
+                    st.warning(f"原始数据目录创建失败（不影响索引构建）：{e}")
                 try:
                     st_info = am.start_task(spec)
                     st.session_state["active_task"] = st_info["task_id"]

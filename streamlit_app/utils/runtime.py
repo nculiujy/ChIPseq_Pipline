@@ -134,11 +134,11 @@ _RESOURCES_NOTE = """\
   INPUT2_1.fastq.gz    INPUT2_2.fastq.gz    单端也行
 
 文件名里 _1 前面的部分就是样本名（上面几行分别是 IP2 和 INPUT2）。
-带 input / ctrl / control / mock / igg / ck 字样的样本会被当成对照。
+哪个样本配哪个对照、哪些归到同一个重复组，由你在配对表里自己选。
 
 放好之后：
   1. 打开「配置编辑 → 样本配对表」
-  2. 在 {species} 项目的抽屉里点「按识别结果生成配对表」
+  2. 在 {species} 项目的抽屉里逐行选 IP 样本、Input 对照，填重复组
   3. 核对一遍配对和重复组，保存
 
 这个说明文件可以直接删，不影响流程。
@@ -223,6 +223,40 @@ def ensure_project_dirs(
         "existed": existed,
         "rawdata_dir": _rel_path(dirs["rawdata"]),
     }
+
+
+# 物种层便签。索引建完，用户下一步就是把 fastq 拷进来；但流程读的是
+# <物种>/<实验>/ 那一层，不写清楚的话文件会平铺在物种目录下，跑起来找不到。
+_SPECIES_NOTE = """\
+这里是物种 {species} 的原始数据目录，由「物种注释」页建索引时自动创建。
+
+fastq 按实验再分一层子目录存放：
+
+  workflow/resources/{species}/<实验名>/
+
+config.yaml 里每个项目的 experiment 字段就是这里的 <实验名>，
+「配置编辑 → 添加项目」或「物种注释 → 写入 config.yaml」会自动建好子目录。
+
+这个说明文件可以直接删，不影响流程。
+"""
+
+
+def ensure_species_rawdata_dir(species: str) -> Path:
+    """建 workflow/resources/<物种>/，已存在则原样返回。
+
+    物种层只用来给各实验分目录，真正的 fastq 在 <物种>/<实验>/ 下。
+    建索引时先备好这一层，用户构建完就能直接把数据拷进来，
+    不用等到配置项目时才看到路径。
+    """
+    sp = sanitize_name(species)
+    if not sp:
+        raise ValueError("物种名不能为空")
+    d = RESOURCES_DIR / sp
+    d.mkdir(parents=True, exist_ok=True)
+    note = d / "README.txt"
+    if not note.exists():
+        note.write_text(_SPECIES_NOTE.format(species=sp), encoding="utf-8")
+    return d
 
 
 def check_marker(species: str, experiment: str, marker_path: str) -> bool:
