@@ -279,6 +279,23 @@ def _remote_size(url: str, timeout: float = 6.0) -> int:
         return 0
 
 
+def _size_matches(path: Path, remote: int) -> bool:
+    """本地这份是不是完整的一份。
+
+    「文件存在且不为 0」不足以说明它下完了：跨境外链上截断是常态（实测一张
+    4.4 GB 的表每次都断在 350 MB，且因为不支持续传，重试四次全是同一个截断点）。
+    拿这样的半截文件去解析，得到的是一张看起来正常、实际缺一大块的注释表，
+    比直接报错更难发现。
+
+    探测不到远端大小（remote=0，HEAD 被墙或超时）时只能放过——总比因为一次
+    探测失败就把 1.3 GB 删了重下强。
+    """
+    if remote <= 0:
+        return True
+    got = path.stat().st_size
+    return abs(got - remote) <= max(1 << 20, remote // 200)   # 1 MB 或 0.5%
+
+
 def _download_aria2(aria2: str, url: str, part: Path, dest: Path,
                     sha256_expected: Optional[str]) -> None:
     """aria2c 多连接分段下载；-c 断点续传，进度靠轮询 part 大小计算（不解析终端输出）。"""
@@ -682,15 +699,33 @@ def _run_orgdb_build(spec: Dict[str, Any]) -> None:
             "或改用本页「gene2go 基因集」模式（不需要装包）")
 
     _set_stage("build_orgdb",
-               message=f"构建 {pkg}（tax_id={tax}；NCBI 下载可能较久）", progress=0.05)
-    _run_r(
-        "AnnotationForge::makeOrgPackageFromNCBI("
-        'version="0.1", '
-        'maintainer="ChIPseq Pipeline <noreply@localhost>", '
-        'author="ChIPseq Pipeline", '
-        f'outputDir="{outdir}", tax_id="{tax}", genus="{genus}", species="{sp}", '
-        f'NCBIFilesDir="{ncbi_cache}", rebuildCache=TRUE)',
-        "build_orgdb", f"构建 {pkg}")
+               message=f"构建 {pkg}（tax_id={tax}；NCBI 全物种表约 7.5 GB，可能数小时）",
+               progress=0.05)
+    # AnnotationForge 用 R 的 download.file 取数：单连接、不支持断点续传，且受
+    # options(timeout) 约束。默认 60 秒对 4.4 GB 的 gene2accession 等于必失败。
+    # 放到 6 小时，让「网速够、只是慢」的机器有机会一趟跑完；真下不动时下面的
+    # except 会把它引到 gene2go 路线，而不是让用户对着 83 分钟的日志猜。
+    try:
+        _run_r(
+            "options(timeout = 21600); "
+            "AnnotationForge::makeOrgPackageFromNCBI("
+            'version="0.1", '
+            'maintainer="ChIPseq Pipeline <noreply@localhost>", '
+            'author="ChIPseq Pipeline", '
+            f'outputDir="{outdir}", tax_id="{tax}", genus="{genus}", species="{sp}", '
+            f'NCBIFilesDir="{ncbi_cache}", rebuildCache=TRUE)',
+            "build_orgdb", f"构建 {pkg}")
+    except RuntimeError as exc:
+        detail = str(exc)
+        if any(k in detail for k in ("gene2accession", "url access failed", "Timeout")):
+            raise RuntimeError(
+                "NCBI 全物种表下载失败（断流或超时）。这条路线要下 6 张表共约 7.5 GB，"
+                "其中 gene2accession 单个就有 4.4 GB；而 R 的 download.file 是单连接、"
+                "不支持断点续传，每次重试都从 0 字节开始，网络一般时永远下不完。\n"
+                "建议改用本页的「路线 A：gene2go 基因集」——只需 1.3 GB，走 aria2c "
+                "16 连接 + 断点续传，产出的 TERM2GENE 拿去做 GO 富集结果等效。"
+            ) from exc
+        raise
 
     # 产物目录：优先推导包名，找不到就扫 org.*.db（不同版本命名略有差异）
     pkg_dir = outdir / pkg
@@ -748,12 +783,18 @@ def _run_term2gene(spec: Dict[str, Any]) -> None:
     _update(target_dir=str(outdir))
 
     _set_stage("download_gene2go", message=f"下载 {url}", progress=0.0)
-    if gz.is_file() and gz.stat().st_size > 1024 * 1024:
+    # 复用前先跟远端核对大小。原先只判断「>1 MB」，这个门槛对 1.3 GB 的文件等于
+    # 没有：一次断流留下的半截文件会被当成完整文件，一直解析到 GO 富集结果为空
+    # 才暴露出来。
+    remote = _remote_size(url)
+    if gz.is_file() and gz.stat().st_size > 1024 * 1024 and _size_matches(gz, remote):
         # 同目录已有完整下载就复用；想强制刷新删掉 gene2go.gz 重跑
         _update(message=f"{gz.name} 已存在（{_human(gz.stat().st_size)}），跳过下载", progress=1.0)
     else:
         if gz.is_file():
             # 半截文件（上次断流）直接丢掉，否则会解析出空注释
+            _update(message=f"{gz.name} 只有 {_human(gz.stat().st_size)}，"
+                            f"与远端的 {_human(remote)} 对不上，重新下载")
             gz.unlink()
         _download(url, gz, None)
     _check_cancelled()

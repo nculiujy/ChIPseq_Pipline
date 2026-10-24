@@ -911,7 +911,7 @@ def _render_readiness(proj: dict, sp: str, ex: str) -> None:
             "检查项": "基因集来源",
             "状态": "✓" if (orgdb or t2g) else "✗",
             "当前": f"OrgDb `{orgdb}`" if orgdb else (f"TERM2GENE {len(t2g)} 套" if t2g else "还没有"),
-            "怎么补": "下面路线 A：选物种模板 → 自建包 / 装官方包",
+            "怎么补": "下面路线 A：填 taxid → 生成 gene2go 基因集（推荐）；有官方包的直接用官方包",
         },
         {
             "检查项": "id_strip（ID 对齐）",
@@ -951,7 +951,8 @@ def render_orgdb_tab() -> None:
     st.subheader("OrgDb 自建 / ID 映射")
     st.caption(
         "非模式物种没有官方 OrgDb 包时，用这里把「基因 ↔ 基因集」的映射补齐。"
-        "两条路二选一：自建 OrgDb 包（走 GO 官方注释），或直接生成 TERM2GENE 基因集（更快，不装包）。"
+        "两条路：路线 A 用 gene2go 生成 TERM2GENE（推荐，只下 1.3 GB）；"
+        "路线 B 才是完整 OrgDb 包（要下 7.5 GB，网络一般时下不完）。"
     )
 
     projects = _project_choices()
@@ -1024,10 +1025,10 @@ def render_orgdb_tab() -> None:
             st.markdown(f"{'✓' if stt['ok'] else '✗'} `{name}` {stt['version']}")
 
     if "AnnotationForge" in missing:
-        st.warning(
-            "分析环境缺 **AnnotationForge**，无法自建 OrgDb。"
-            "可以一键安装（需联网，几分钟）；已有官方包的物种（人 / 小鼠 / 拟南芥…）不装也能用；"
-            "实在装不上，展开最下面的「备选：gene2go 基因集」。"
+        st.info(
+            "分析环境没有 **AnnotationForge**。这不影响推荐路线：路线 A（gene2go 基因集）不需要它。"
+            "只有想走路线 B 建完整 OrgDb 包时才需要装（需联网，几分钟）；"
+            "已有官方包的物种（人 / 小鼠 / 拟南芥…）直接用官方包，也不用装。"
         )
         cc1, cc2 = st.columns([1, 2])
         mirror = cc2.selectbox("CRAN 镜像", oh.CRAN_MIRRORS, index=0, key="orgdb_mirror")
@@ -1060,9 +1061,64 @@ def render_orgdb_tab() -> None:
 
     st.divider()
 
-    # ---- 路线 A：自建 OrgDb ----
-    st.markdown("#### ② 路线 A：自建 OrgDb 包（AnnotationForge × NCBI）")
-    st.caption("首次构建会在 NCBI 下载 gene_info / gene2go，常 30–90 分钟；同物种重建有缓存，分钟级。")
+    # ---- 路线 A：gene2go 基因集（推荐） ----
+    # 放在前面是有原因的：完整 OrgDb 要让 AnnotationForge 把整个 NCBI Gene 库拉一遍
+    # （7.5 GB），而它用的是 R 的 download.file——单连接、不续传、受 timeout 限制。
+    # 实测 4.4 GB 的 gene2accession 每次都断在 7%，四次重试全失败，白等 83 分钟。
+    # gene2go 只要 1.3 GB，且走项目自己的 aria2c（16 连接 + 断点续传）。
+    st.markdown("#### ② 路线 A：gene2go 基因集（推荐）")
+    st.caption(
+        "从 NCBI `gene2go.gz`（约 1.3 GB）抽当前物种的 GO 注释，生成 clusterProfiler 的 "
+        "TERM2GENE / TERM2NAME 与背景基因集；GO 富集走 `enricher()`，"
+        "输出列名与 `enrichGO()` 一致，图表代码完全复用。"
+    )
+
+    auto_tpl = oh.find_species_template(sp, proj.get("display_name") or "")
+    g0, s0 = oh.guess_genus_species(sp, proj.get("display_name") or "")
+    tax_auto = (auto_tpl["taxid"] if auto_tpl else "") or \
+        oh.guess_taxid(sp, proj.get("display_name") or "")
+
+    ta1, ta2, ta3 = st.columns([1, 1, 2])
+    tax_a = ta1.text_input("NCBI taxid", value=tax_auto, key=f"t2g_tax_{wkey}",
+                           help="大豆 3847、玉米 4577、小麦 4565、番茄 4081")
+    prefix_a = ta2.text_input("文件前缀", value=(g0[:1].lower() + s0[:3].lower()) or "gene2go",
+                              key=f"t2g_prefix_{wkey}",
+                              help="例：gmax → gmax_go_bp_term2gene.tsv")
+    ta3.code(f"输出目录: {outdir}", language="text")
+    if st.button("生成 / 更新基因集", type="primary", key="t2g_build", disabled=not tax_a):
+        spec = am.term2gene_task(sp, f"gene2go / {sp}", str(ANNO_DIR), tax_id=tax_a,
+                                 prefix=prefix_a, outdir=str(outdir))
+        am.start_task(spec)
+        st.session_state["active_task"] = spec.task_id
+        st.toast("已开始生成 gene2go 基因集")
+        time.sleep(0.5)
+        st.rerun()
+
+    manifest = oh.scan_term2gene(outdir)
+    if manifest:
+        st.success(
+            f"已有基因集：{manifest.get('n_genes', 0)} 个基因 / "
+            f"{sum((manifest.get('n_go_terms') or {}).values())} 个 GO term / "
+            f"{manifest.get('n_annotations', 0)} 条注释（{manifest.get('built_at', '?')}）"
+        )
+        st.code("\n".join(str(x) for x in (manifest.get("files") or [])), language="text")
+    else:
+        st.info("该物种还没有生成过基因集")
+
+    st.divider()
+
+    # ---- 路线 B：完整 OrgDb 包 ----
+    st.markdown("#### ③ 路线 B：完整 OrgDb 包（AnnotationForge × NCBI）")
+    st.caption(
+        "产出标准 `org.*.db`，好处是能用 `select()` 做任意 ID 互转。代价是 AnnotationForge "
+        "会把整个 NCBI Gene 库拉一遍：gene_info 1.5 GB、gene2go 1.3 GB、gene2pubmed 277 MB、"
+        "gene2refseq，以及 **gene2accession 4.4 GB**，合计 7.5 GB 以上，首建常以小时计。"
+    )
+    st.warning(
+        "它内部用 R 的 `download.file` 下载：单连接、不支持断点续传，每次重试都从 0 字节开始。"
+        "实测国内网络下 gene2accession 每次只到 7% 就被掰断，四次重试结果一模一样。"
+        "**网络一般时请用上面的路线 A**；这条只在境外或机房高速网络下才划算。"
+    )
 
     tpl_key = f"orgdb_tpl_{wkey}"
     tax_key = f"orgdb_tax_{wkey}"
@@ -1084,7 +1140,7 @@ def render_orgdb_tab() -> None:
         st.session_state[f"orgdb_pkg_{_wk}"] = oh.template_orgdb(t)
 
     # 常见物种模板：taxid / 属名 / 种名 / 包名一次填好，不用去 NCBI 查
-    auto_tpl = oh.find_species_template(sp, proj.get("display_name") or "")
+    # （auto_tpl 前面已经算过，直接复用）
     tpl_labels = ["（不套模板，自己填）"] + [t["label"] for t in oh.SPECIES_TEMPLATES]
     tpl_sel = st.selectbox(
         "常见物种模板", tpl_labels,
@@ -1094,7 +1150,6 @@ def render_orgdb_tab() -> None:
     )
     tpl = oh.template_by_label(tpl_sel)
 
-    g0, s0 = oh.guess_genus_species(sp, proj.get("display_name") or "")
     ca, cb, cc = st.columns(3)
     tax_default = (tpl["taxid"] if tpl else "") or oh.guess_taxid(sp, proj.get("display_name") or "")
     tax_id = ca.text_input("NCBI taxid", value=tax_default, key=tax_key,
@@ -1128,7 +1183,7 @@ def render_orgdb_tab() -> None:
 
     ca, cb = st.columns([2, 3])
     ca.code(f"输出: {outdir}", language="text")
-    if cb.button("开始构建 OrgDb 包", type="primary", key="orgdb_build",
+    if cb.button("开始构建 OrgDb 包", type="secondary", key="orgdb_build",
                  disabled=("AnnotationForge" in missing) or not (tax_id and genus and species_latin)):
         spec = am.orgdb_task(sp, f"OrgDb / {sp}", str(ANNO_DIR), tax_id=tax_id,
                              genus=genus, species=species_latin,
@@ -1144,42 +1199,6 @@ def render_orgdb_tab() -> None:
     built = oh.scan_orgdb_outdir(outdir)
     if built:
         st.markdown("已构建：" + "、".join(f"`{d['pkg']}`（{d['size_mb']} MB）" for d in built))
-
-    st.divider()
-
-    # ---- 备选：gene2go 基因集 ----
-    # 主路径是路线 A；这条只在 AnnotationForge 装不上（离线 / 编译失败）时才需要，
-    # 默认收起，免得每次都要在两条路之间做选择。
-    with st.expander("备选：不装包，用 gene2go 基因集", expanded=False):
-        st.caption(
-            "从 NCBI gene2go.gz 抽当前物种的 GO 注释，生成 clusterProfiler 的 TERM2GENE / TERM2NAME；"
-            "GO 富集走 `enricher()`，输出列名与 `enrichGO()` 一致，图表代码完全复用。"
-        )
-        cb1, cb2, cb3 = st.columns([1, 1, 2])
-        tax_b = cb1.text_input("NCBI taxid", value=tax_default, key=f"t2g_tax_{wkey}")
-        prefix_b = cb2.text_input("文件前缀", value=(oh.guess_genus_species(sp)[0][:1].lower()
-                                                    + oh.guess_genus_species(sp)[1][:3].lower()) or "gene2go",
-                                  key=f"t2g_prefix_{wkey}", help="例：gmax → gmax_go_bp_term2gene.tsv")
-        cb3.code(f"输出目录: {outdir}", language="text")
-        if st.button("生成 / 更新基因集", key="t2g_build", disabled=not tax_b):
-            spec = am.term2gene_task(sp, f"gene2go / {sp}", str(ANNO_DIR), tax_id=tax_b,
-                                     prefix=prefix_b, outdir=str(outdir))
-            am.start_task(spec)
-            st.session_state["active_task"] = spec.task_id
-            st.toast("已开始生成 gene2go 基因集")
-            time.sleep(0.5)
-            st.rerun()
-
-        manifest = oh.scan_term2gene(outdir)
-        if manifest:
-            st.success(
-                f"已有基因集：{manifest.get('n_genes', 0)} 个基因 / "
-                f"{sum((manifest.get('n_go_terms') or {}).values())} 个 GO term / "
-                f"{manifest.get('n_annotations', 0)} 条注释（{manifest.get('built_at', '?')}）"
-            )
-            st.code("\n".join(str(x) for x in (manifest.get("files") or [])), language="text")
-        else:
-            st.info("该物种还没有生成过基因集")
 
     st.divider()
 
@@ -1311,7 +1330,7 @@ def render_orgdb_tab() -> None:
     will_write.append("`modules.5_gsea` = 开")
 
     if not (write_orgdb or (manifest and manifest.get("term2gene_go"))):
-        st.info("还没有可写入的基因集：先在上面走路线 A（选模板 → 建包 / 装官方包）")
+        st.info("还没有可写入的基因集：先在上面走路线 A（填 taxid → 生成 gene2go 基因集）")
         if pkg_name:
             st.caption(f"`{pkg_name}` 还没建出来或没装上，现在写进 config 也加载不到。")
     else:
