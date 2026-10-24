@@ -477,6 +477,33 @@ def _get_groups_macs2_union_bed(groups, group_map, peakdir, outdir, comp_name):
     return union_bed
 
 
+def _matrix_ready(matrix_gz):
+    """computeMatrix 产物是否完整可用——存在 ≠ 可用。
+
+    上一次跑到一半被打断时，留下的是半个 gz：文件在、大小也不是 0，但缺 gzip
+    尾部的 CRC 与长度标记。只判 os.path.exists 就会认定「已经算过了」而跳过
+    computeMatrix，接着 plotHeatmap 去读它必然抛
+        EOFError: Compressed file ended before the end-of-stream marker was reached
+    而且这个错会稳定复现——文件一直在，每次重跑都炸在同一行。只有完整读到
+    尾部才能确认；矩阵就几 MB，这点开销可以忽略。
+    """
+    if not os.path.exists(matrix_gz):
+        return False
+    import gzip
+    try:
+        with gzip.open(matrix_gz, "rb") as f:
+            while f.read(1 << 20):
+                pass
+        return True
+    except (OSError, EOFError) as e:
+        print(f"[WARNING] 矩阵文件不完整（{e}），重新生成：{matrix_gz}")
+        try:
+            os.remove(matrix_gz)
+        except OSError:
+            pass
+        return False
+
+
 def _plot_overlay_profile(matrix_gz, out_pdf, sample_labels, title="", color_map="RdYlBu_r"):
     """
     从 deeptools computeMatrix 的 .gz 输出中提取数据，
@@ -714,7 +741,7 @@ def run_comparisons(comparisons, group_map, bw_map, peakdir, outdir, dt_config, 
             bw_args_merged = " ".join(merged_bws)
             labels_merged = " ".join(merged_labels)
 
-            if not os.path.exists(matrix_gz):
+            if not _matrix_ready(matrix_gz):
                 if matrix_mode == "reference-point":
                     cmd = (
                         f"computeMatrix reference-point "
@@ -803,7 +830,7 @@ def run_comparisons(comparisons, group_map, bw_map, peakdir, outdir, dt_config, 
         bw_args = " ".join(all_bws)
         labels_arg = " ".join(all_labels)
 
-        if not os.path.exists(matrix_gz):
+        if not _matrix_ready(matrix_gz):
             if matrix_mode == "reference-point":
                 cmd = (
                     f"computeMatrix reference-point "
