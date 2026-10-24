@@ -117,9 +117,15 @@ def main():
         if len(peak_files) < 2:
             print(f"  [INFO] 组 {group_name} 只有 {len(peak_files)} 个有效 peak 文件，跳过 consensus 分析")
             if len(peak_files) == 1:
-                # 单个文件直接作为 consensus
+                # 单个文件直接作为 consensus。必须先切到 BED3 再写：多重复分支
+                # 走的是 bedtools merge，产物天然是 3 列；这里若原样 cp 原始
+                # peak 文件（*_peaks_tab.bed 是 BED5、narrowPeak 是 BED10），
+                # 两组的 consensus_*.bed 列数就不一致，下游 deeptools 把两个组
+                # 拼在一起喂给 bedtools merge 时会直接报
+                #   Error: line number N of file - has 3 fields, but 5 were expected.
+                # 整个 4_analyse 阶段卡死在那里。统一成 BED3。
                 consensus_bed = os.path.join(args.outdir, f"consensus_{group_name}.bed")
-                run_cmd(f"cp {peak_files[0]} {consensus_bed}")
+                run_cmd(f"cut -f1-3 {peak_files[0]} | sort -k1,1 -k2,2n > {consensus_bed}")
                 consensus_results[group_name] = consensus_bed
             continue
 

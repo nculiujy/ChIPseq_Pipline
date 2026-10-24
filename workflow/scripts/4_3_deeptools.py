@@ -335,10 +335,19 @@ def get_bed_for_comparison(comparison, peakdir, outdir, group_map, dt_config, pe
             merged_bed = os.path.join(outdir, "comparisons", comp_name, "merged_consensus.bed")
             os.makedirs(os.path.dirname(merged_bed), exist_ok=True)
 
-            if not os.path.exists(merged_bed) or os.path.getsize(merged_bed) == 0:
-                cat_cmd = (f"cat {' '.join(consensus_beds)} | "
-                           f"sort -k1,1 -k2,2n | bedtools merge -i - > {merged_bed}")
+            if not _bed3_ok(merged_bed):
+                # 先归一化成 BED3 再合并。consensus_*.bed 的列数不恒定：单重复的
+                # 组是从原始 *_peaks_tab.bed 直接拷过来的（BED5），多重复的组是
+                # bedtools merge 的产物（BED3）。直接把两种拼起来，bedtools 当场
+                #   Error: line number N of file - has 3 fields, but 5 were expected.
+                # 退出 1，整个 deeptools job 就挂了。
+                tmp_bed = merged_bed + ".tmp"
+                cat_cmd = (f"cut -f1-3 {' '.join(consensus_beds)} | "
+                           f"sort -k1,1 -k2,2n | awk -F'\\t' 'NF==3' | "
+                           f"bedtools merge -i - > {tmp_bed}")
                 run_cmd(cat_cmd)
+                # 写临时文件再改名：中间失败也不会留下一个看着像成功的半成品
+                os.replace(tmp_bed, merged_bed)
 
             # 验证生成的文件非空
             if os.path.getsize(merged_bed) == 0:
@@ -475,6 +484,27 @@ def _get_groups_macs2_union_bed(groups, group_map, peakdir, outdir, comp_name):
         return None
 
     return union_bed
+
+
+def _bed3_ok(path):
+    """校验一个 BED 是不是干净的 BED3——存在且非空 ≠ 可用。
+
+    上一版这里是「存在且 size>0 就当缓存复用」。可 bedtools 报错前重定向已经把
+    文件建出来了（列数组合不同还可能写进去半截），下次就会跳过重算、拿着它
+    往下走。现在逐行核对列数，不合格就重算，别让坏缓存把错误固定下来。
+    """
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith(("#", "track", "browser")):
+                    return False
+                if len(line.rstrip("\n").split("\t")) != 3:
+                    return False
+        return True
+    except OSError:
+        return False
 
 
 def _matrix_ready(matrix_gz):
