@@ -2191,6 +2191,11 @@ with tab6:
                 log_console(_meme_log, title="meme install")
 
     st.caption(f"手动安装（等价命令）：`{meme_setup.install_command()}`")
+    # 自动安装会把残留目录挪走再交给 mamba；手动执行没这道工序，得提醒一句
+    st.caption(
+        "手动执行前先确认该路径不存在（上次失败可能留下空壳目录）：libmamba 遇到"
+        "已存在但非 conda 环境的目录会直接 abort，空目录也算。"
+    )
 
     st.markdown("---")
 

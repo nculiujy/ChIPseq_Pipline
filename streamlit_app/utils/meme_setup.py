@@ -10,8 +10,12 @@ numpy 1.x 编译的，两者同环境共存必然 `numpy.dtype size changed`。�
 的好处是装坏、重装、卸载都只影响这一个目录，主分析环境纹丝不动。
 
 安装走后台子进程（``start_new_session`` 脱离 Streamlit 进程组），页面关掉、
-UI 重启都不会中断。进度用 ``<meme_prefix>/.install_status.json`` 记录，页面
+UI 重启都不会中断。进度用 ``<runtime>/meme.install_status.json`` 记录，页面
 每次 rerun 读一次即可，不阻塞渲染。
+
+状态与日志**不能**放在 meme prefix 里：libmamba 见到「已存在但不是 conda 环境」
+的目录会直接 abort（空目录也算），而在 prefix 里开日志文件本身就等于先把目录
+造出来。之前每次点安装都必然失败，根因就在这里。
 """
 
 from __future__ import annotations
@@ -36,12 +40,17 @@ MEME_TOOLS = ("meme", "streme", "meme-chip")
 _VERSION_ARGS = {"meme": ["-version"], "streme": ["--version"], "meme-chip": ["--version"]}
 
 
+def _state_dir() -> str:
+    """状态与日志的落盘目录。**不能**用 meme_prefix：见模块 docstring。"""
+    return str(env_paths.runtime_dir())
+
+
 def _status_path() -> str:
-    return os.path.join(env_paths.meme_prefix(), ".install_status.json")
+    return os.path.join(_state_dir(), "meme.install_status.json")
 
 
 def _log_path() -> str:
-    return os.path.join(env_paths.meme_prefix(), ".install.log")
+    return os.path.join(_state_dir(), "meme.install.log")
 
 
 def find_tool(name: str) -> Optional[str]:
@@ -200,19 +209,26 @@ def start_install() -> tuple[bool, str]:
         return False, "未检测到 conda/mamba，无法自动安装。请先安装 Miniforge，或用页面下方的命令行手动装"
 
     prefix = env_paths.meme_prefix()
-    # conda create -p 碰到非空目录会直接报 “prefix already exists”。上次装一半失败
-    # 或手工放过东西的情况都会卡在这里。改名备份而不是 rm -rf：万一里面是用户
-    # 自己放的东西，删了就找不回来了，而备份只占点磁盘。
-    if os.path.isdir(prefix) and os.listdir(prefix):
-        bak = f"{prefix}.bak.{int(time.time())}"
+    # 关键：绝不能 makedirs(prefix)。libmamba 对「已存在但不是 conda 环境」的目录
+    # 一律 abort（Non-conda folder exists at prefix），空目录也算。原实现在这里
+    # 建了目录、又把安装日志写进 prefix，等于每次都亲手造出它让 mamba 拒收，
+    # 安装 100% 失败。现在只建父目录，prefix 完全交给 mamba 自己创建。
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+    except OSError as e:
+        return False, f"无法创建目录 {_state_dir()}：{e}"
+
+    # 上一次失败可能留下空壳或半装的目录，同样会让 mamba abort，先清掉。
+    # 非空目录改名备份而不是 rm -rf：万一是用户自己放的东西，删了找不回来。
+    if os.path.isdir(prefix) and not os.path.islink(prefix):
         try:
-            os.rename(prefix, bak)
+            if not os.listdir(prefix):
+                os.rmdir(prefix)
+            else:
+                bak = f"{prefix}.bak.{int(time.time())}"
+                os.rename(prefix, bak)
         except OSError as e:
             return False, f"旧目录 {prefix} 无法移开（{e}），请手动处理后重试"
-    try:
-        os.makedirs(prefix, exist_ok=True)
-    except OSError as e:
-        return False, f"无法创建目录 {prefix}：{e}"
 
     log = _log_path()
     cmd = [
