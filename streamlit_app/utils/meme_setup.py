@@ -53,6 +53,31 @@ def _log_path() -> str:
     return os.path.join(_state_dir(), "meme.install.log")
 
 
+def _pkgs_dir() -> str:
+    """conda 包缓存目录（必须当前用户可写）。
+
+    系统那份 miniconda（如 /common_data/miniconda3）通常由管理员安装，它的
+    ``pkgs/cache`` 对普通用户只读。libmamba 取 repodata 时要在里面落缓存并
+    校正目录权限，写不进去就 ``filesystem error: cannot set permissions ...
+    Operation not permitted`` 直接退出。把缓存指到项目目录：既绕开权限，
+    又和 prefix 在同一文件系统，硬链接仍然可用（不额外占空间）。
+    """
+    return str(env_paths.runtime_dir() / "conda-pkgs")
+
+
+def install_env() -> Dict[str, str]:
+    """启动 mamba 用的环境变量。
+
+    除了注入工具搜索路径，还得把 ``CONDA_PKGS_DIRS`` 掉头：这是“公共 conda
+    不能写”这类机器上唯一能让安装跑通的关键。
+    """
+    env = env_paths.routed_env()
+    env["CONDA_PKGS_DIRS"] = _pkgs_dir()
+    # 把自己装的 prefix 登记到 ~/.conda/environments.txt；家目录不可写时会多报一个错
+    env["CONDA_REGISTER_ENVS"] = "false"
+    return env
+
+
 def find_tool(name: str) -> Optional[str]:
     """在 tool_search_path() 中查找命令，返回绝对路径或 None。"""
     return shutil.which(name, path=env_paths.tool_search_path())
@@ -188,9 +213,12 @@ def _conda_exe() -> Optional[str]:
 
 
 def install_command() -> str:
-    """给用户看的等价命令行（自动安装不可用时手动执行）。"""
+    """给用户看的等价命令行（自动安装不可用时手动执行）。
+
+    带上 CONDA_PKGS_DIRS：公共 conda 的 pkgs/cache 只读时，不带它手敲一样挂。
+    """
     return (
-        f"conda create -p {env_paths.meme_prefix()} -y "
+        f"CONDA_PKGS_DIRS={_pkgs_dir()} conda create -p {env_paths.meme_prefix()} -y "
         "--override-channels -c conda-forge -c bioconda meme"
     )
 
@@ -230,6 +258,16 @@ def start_install() -> tuple[bool, str]:
         except OSError as e:
             return False, f"旧目录 {prefix} 无法移开（{e}），请手动处理后重试"
 
+    # 包缓存也必须落在可写的地方：libmamba 要在 pkgs/cache 里落 repodata 缓存
+    # 并校正目录权限，公共 conda 下这一步会 Operation not permitted。
+    pkgs = _pkgs_dir()
+    try:
+        os.makedirs(pkgs, exist_ok=True)
+    except OSError as e:
+        return False, f"无法创建包缓存目录 {pkgs}：{e}"
+    if not os.access(pkgs, os.W_OK):
+        return False, f"包缓存目录 {pkgs} 不可写，请检查属主与权限"
+
     log = _log_path()
     cmd = [
         exe, "create", "-p", prefix, "-y",
@@ -237,11 +275,11 @@ def start_install() -> tuple[bool, str]:
     ]
     try:
         with open(log, "w", encoding="utf-8") as lf:
-            lf.write("$ " + " ".join(cmd) + "\n\n")
+            lf.write("$ CONDA_PKGS_DIRS=" + pkgs + " " + " ".join(cmd) + "\n\n")
             lf.flush()
             proc = subprocess.Popen(
                 cmd, stdout=lf, stderr=subprocess.STDOUT,
-                env=env_paths.routed_env(),
+                env=install_env(),
                 start_new_session=True,  # 脱离 Streamlit 进程组，UI 重启不中断安装
             )
     except OSError as e:
