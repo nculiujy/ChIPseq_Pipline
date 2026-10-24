@@ -850,6 +850,21 @@ def _scan_ids_cached(paths: tuple, promoter_only: bool) -> tuple:
     return ids, col, n_rows
 
 
+def _autofill_strip(wkey: str, ids: list) -> None:
+    """扫完 geneId 就把推荐正则预填进输入框（只在它还是空的时候）。
+
+    原本推荐值只打在 caption 里、输入框留空，于是最自然的操作顺序（扫描 → 直接点
+    预览映射命中率）拿到的是一张 0% 的表，看起来像 strip 规则写错了，其实是根本
+    没做 strip。宁可替用户预填，也不要让他凭一句 caption 去手打正则。
+    此时 text_input 尚未创建，赋值就是设默认值。
+    """
+    key = f"orgdb_strip_{wkey}"
+    cur = st.session_state.get(key) or ""
+    new = oh.pick_id_strip(cur, ids)
+    if new != cur:
+        st.session_state[key] = new
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def _preview_cached(ids: tuple, t2g_items: tuple, id_strip: str) -> dict:
     return oh.preview_mapping(ids, dict(t2g_items), id_strip)
@@ -1221,6 +1236,7 @@ def render_orgdb_tab() -> None:
             st.session_state[ids_key] = ids
             st.session_state[meta_key] = {"col": col, "rows": n_rows}
             st.session_state.pop(pv_key, None)
+            _autofill_strip(wkey, ids)
     else:
         st.warning("还没找到 4_analyse/annoChIPPeaks 下的 *_peak_anno.csv（模块 4 还没跑完？）")
         st.caption("也可以先把任意来源的 geneId 粘进来，提前确认 strip 规则对不对：")
@@ -1233,6 +1249,7 @@ def render_orgdb_tab() -> None:
                 st.session_state[ids_key] = got
                 st.session_state[meta_key] = {"col": "手动粘贴", "rows": len(got)}
                 st.session_state.pop(pv_key, None)
+                _autofill_strip(wkey, got)
             else:
                 st.toast("没解析出任何 ID")
     ids = st.session_state.get(ids_key) or []
@@ -1269,23 +1286,49 @@ def render_orgdb_tab() -> None:
             st.session_state[pv_key] = pv
         pv = st.session_state.get(pv_key)
         if pv and pv.get("id_strip") == id_strip:
-            rows = []
+            # ceiling / rel_hit 用 .get 读：_preview_cached 是 st.cache_data，改了
+            # preview_mapping 的返回字段但函数体没变，runOnSave 不会失效旧缓存，
+            # 直接下标会 KeyError。缺字段时就退化成旧行为（当作上限 100%）。
+            rows, rels = [], []
             for ont, d in pv["per_ont"].items():
+                ceil = d.get("ceiling", 1.0)
+                rel = d.get("rel_hit", (d["hit_rate"] / ceil) if ceil else 0.0)
+                rels.append(rel)
                 rows.append({
                     "GO 类别": ont,
                     "term 数": d["n_terms"],
                     "库内基因": d["n_genes_in_db"],
                     "命中": d["n_hit"],
                     "命中率": f"{d['hit_rate']*100:.1f}%",
+                    "可映射上限": f"{ceil*100:.1f}%",
+                    "相对命中": f"{rel*100:.0f}%",
                 })
             st.dataframe(rows, use_container_width=True, hide_index=True)
-            worst = min((d["hit_rate"] for d in pv["per_ont"].values()), default=0.0)
-            if worst < 0.2:
-                st.error("命中率过低：strip 规则大概写错了。先看下面的未命中示例对齐一下 ID 形状。")
-            elif worst < 0.6:
-                st.warning("命中率偏低：确认 GFF 与 GTF 是否混用、LOC 前缀是否漏掉")
+            st.caption(
+                "「可映射上限」= 库里带 GO 注释的基因数 ÷ 你的基因数，命中率不可能超过它；"
+                "「相对命中」= 命中率 ÷ 上限，**这个才是 strip 规则对不对的判据**。"
+                "规则写错时它接近 0（没填 strip 时你看到的就是）；对齐对了通常落在 50–70%，"
+                "再往上就被「库里这部分基因本来就没这条注释」卡住了。"
+            )
+            worst = min(rels, default=0.0)
+            # 命中基因数够不够跑富集是绝对的（几千个就很足），所以单独拎出来报。
+            # 阈值不能再按理想情况卡 70%：库里只有一部分基因带 BP/CC 注释，
+            # 实测大豆峰基因落在 57–59%，那不是错，是天花板本身就这么高。
+            n_hit_max = max((d["n_hit"] for d in pv["per_ont"].values()), default=0)
+            if not id_strip and suggest:
+                st.error(
+                    "`id_strip` 是空的，等于没做 ID 对齐：`LOC100808170` 查不到库里的 "
+                    f"`100808170`。把它填成 `{suggest}` 再点一次上面的预览。"
+                )
+            elif worst < 0.15:
+                st.error("相对命中≈0：strip 规则大概是错的。先看下面的未命中示例对齐一下 ID 形状。")
+            elif worst < 0.40:
+                st.warning("相对命中偏低：确认 GFF 与 GTF 是否混用、前缀是否漏掉")
             else:
-                st.success("命中率正常，可以写入 config 并跑模块 5")
+                st.success(
+                    f"ID 对齐正常：最多 {n_hit_max} 个基因能进 GO 库，跑富集绰绰有余。"
+                    "没命中的那些是库里本来就没这条注释的基因，不是对齐问题。"
+                )
             miss = next(iter(pv["per_ont"].values()), {}).get("samples_miss") or []
             if miss:
                 st.caption("未命中示例：" + "、".join(f"`{x}`" for x in miss))
@@ -1328,6 +1371,15 @@ def render_orgdb_tab() -> None:
     if id_strip:
         will_write.append(f"`id_strip` = `{id_strip}`")
     will_write.append("`modules.5_gsea` = 开")
+
+    if manifest and manifest.get("term2gene_go") and not id_strip:
+        # 基因集写了、id_strip 没写：R 那边直接拿 LOC100808170 去查 100808170，
+        # enricher() 不报错，只会返回空表，比直接失败更难发现。
+        sug = oh.suggest_id_strip(ids) if ids else ""
+        st.warning(
+            "`id_strip` 还没填：富集会「成功但结果为空」而不是报错。"
+            + (f"按 ④ 的推荐填 `{sug}` 再写入。" if sug else "先回 ④ 扫一遍 geneId。")
+        )
 
     if not (write_orgdb or (manifest and manifest.get("term2gene_go"))):
         st.info("还没有可写入的基因集：先在上面走路线 A（填 taxid → 生成 gene2go 基因集）")

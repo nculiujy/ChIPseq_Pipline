@@ -435,6 +435,18 @@ def suggest_id_strip(ids: Sequence[str]) -> str:
     return ""
 
 
+def pick_id_strip(current: str, ids: Sequence[str]) -> str:
+    """决定 id_strip 输入框该显示什么：用户填过的值优先，空着才用推荐值。
+
+    扫描完 geneId 自动预填靠的就是它。只补空、不覆盖——手改过的正则不能被
+    下一次扫描改回去。
+    """
+    cur = (current or "").strip()
+    if cur:
+        return current
+    return suggest_id_strip(ids)
+
+
 def apply_id_strip(ids: Iterable[str], pattern: str) -> List[str]:
     if not pattern:
         return list(ids)
@@ -467,24 +479,38 @@ def read_term2gene_genes(path: str | Path, limit_terms: int = 100000) -> Dict[st
 
 def preview_mapping(ids: Sequence[str], term2gene_paths: Dict[str, str],
                     id_strip: str = "") -> Dict[str, Any]:
-    """算这套 geneId 在某套 TERM2GENE 下的命中率（GO 富集能不能跑起来的硬指标）。"""
+    """算这套 geneId 在某套 TERM2GENE 下的命中率（GO 富集能不能跑起来的硬指标）。
+
+    绝对命中率有个天花板：库里只有一部分基因带 GO 注释，输入里没被注释的那些永远
+    命中不了。所以每个 ont 另给两个数——``ceiling``（可映射上限 = min(1, 库内基因数
+    / 输入基因数)）与 ``rel_hit``（命中率 / 上限）。判断 strip 规则对不对要看 rel_hit：
+    大豆 CC 库只有 19018 个基因而输入 35400 个，把库里基因全命中也只有 53.7%，
+    拿绝对命中率去卡 60% 会把正确的规则判成错的。
+    """
     stripped = apply_id_strip(ids, id_strip)
     input_set = set(stripped)
+    n_in = len(input_set)
     per_ont: Dict[str, Any] = {}
     for ont, path in (term2gene_paths or {}).items():
         t2g = read_term2gene_genes(path)
         universe = {g for genes in t2g.values() for g in genes}
         hit = input_set & universe
+        n_hit, n_db = len(hit), len(universe)
+        hit_rate = (n_hit / n_in) if n_in else 0.0
+        ceiling = min(1.0, n_db / n_in) if n_in else 0.0
         per_ont[ont.upper()] = {
             "path": path,
             "n_terms": len(t2g),
-            "n_genes_in_db": len(universe),
-            "n_hit": len(hit),
-            "hit_rate": (len(hit) / len(input_set)) if input_set else 0.0,
+            "n_genes_in_db": n_db,
+            "n_hit": n_hit,
+            "hit_rate": hit_rate,
+            "ceiling": ceiling,
+            # 1.0 = 库里有注释的基因全都拿到了，说明 ID 对齐这一步是通的
+            "rel_hit": (hit_rate / ceiling) if ceiling > 0 else 0.0,
             "samples_hit": sorted(hit)[:5],
             "samples_miss": sorted(input_set - hit)[:5],
         }
-    return {"n_input": len(ids), "n_input_unique": len(input_set),
+    return {"n_input": len(ids), "n_input_unique": n_in,
             "id_strip": id_strip, "per_ont": per_ont}
 
 
