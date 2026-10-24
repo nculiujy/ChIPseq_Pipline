@@ -322,6 +322,56 @@ div[data-testid="stAlert"].stInfo, [data-testid="stAlert"]:has([data-testid="stA
 [data-testid="stProgress"] .stProgress > div > div > div, .stProgress > div > div { border-radius: 6px !important; }
 [data-testid="stProgress"] div[role="progressbar"] > div, .stProgress > div > div > div { background: var(--ux-accent) !important; }
 
+/* ---------- 加载指示器：横向扫动进度条（替掉原生旋转图标） ---------- */
+/* 原生 spinner 是一个原地转圈的图标：画面确实在动，但看不出任何进展，长任务
+   （下注释、建索引、解析 DAG）盯着它等很容易怀疑是不是卡死了。换成一条从左
+   扫到右、到头再收回的进度条，持续位移比圆周运动更能说明「还在跑」。
+   动画与配色取自 Uiverse (satyamchaudharydev) 的 loader。 */
+[data-testid="stSpinner"] {
+  position: relative !important;
+  display: flex !important;
+  flex-direction: row !important;   /* 原生是竖排（图标在上、文字在下），改回一行 */
+  align-items: center !important;
+  gap: 0 !important;
+  padding-left: 146px !important;    /* 左侧让出 130px 轨道 + 16px 间距 */
+  min-height: 22px !important;
+}
+/* 只藏图标本体，文字（role="status"）照常可见 */
+[data-testid="stSpinner"] [data-testid="stSpinnerIcon"] { display: none !important; }
+
+/* 轨道 */
+[data-testid="stSpinner"]::before {
+  content: "";
+  position: absolute; left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 130px; height: 4px;
+  border-radius: 30px;
+  background: rgba(0, 0, 0, .2);
+}
+/* 扫动的进度条：left 与 width 一起插值 → 0‒50% 从左长满，50‒100% 收回到右端。
+   不用 right 定位是因为伪元素的包含块是整个 spinner 容器，right:0 会跑到行尾去。 */
+[data-testid="stSpinner"]::after {
+  content: "";
+  position: absolute; left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 0; height: 4px;
+  border-radius: 30px;
+  background: var(--ux-accent);     /* 示例里是 #0071E2，改跟主题的青绿走，免得弹出个蓝条 */
+  animation: ux-loader-move 1s ease-in-out infinite;
+}
+@keyframes ux-loader-move {
+  0%   { left: 0;     width: 0; }
+  50%  { left: 0;     width: 130px; }
+  100% { left: 130px; width: 0; }
+}
+/* 关掉动效的系统设置下，扫动会变成静止的一条空轨道，反而像卡住；改为整条淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="stSpinner"]::after {
+    left: 0 !important; width: 130px !important;
+    opacity: .55; animation: ux-pulse 2s ease-in-out infinite !important;
+  }
+}
+
 /* 分隔线 */
 hr { border: none !important; height: 1px !important; background: var(--ux-border) !important; margin: 1.1rem 0 !important; }
 
