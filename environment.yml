@@ -14,6 +14,11 @@ dependencies:
   # 装完看着成功、跑到 peak calling 才炸。deeptools 新版声明 numpy>=2，
   # 加了这条后求解器会自动把它降到兼容 numpy 1.x 的构建。
   - numpy<2
+  # workflow/scripts 里的 python 脚本直接 import 这两个包。目前只是跟着 snakemake /
+  # deeptools 的依赖链间接受装，一旦上游改声明就会漏装，而 6_1_motif.py 第 16 行
+  # 就是 import yaml，缺了直接 ModuleNotFoundError 把整条管线带挂。显式写上。
+  - pyyaml
+  - pandas
   - snakemake
   - samtools
   - fastqc

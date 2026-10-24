@@ -26,7 +26,10 @@ rule motif_analysis:
         threads = config["threads"]
     shell:
         """
-        CONDA_ENV_BIN="${{CONDA_PREFIX:-$(dirname $(which python))}}"
+        CONDA_ENV_BIN="${{CONDA_PREFIX:+$CONDA_PREFIX/bin}}"
+        if [ -z "$CONDA_ENV_BIN" ]; then
+            CONDA_ENV_BIN="$(dirname "$(command -v python)")"
+        fi
         # MEME 可能装在 /usr/local/meme（系统级），也可能装在项目内的独立 prefix
         # （UI 的「安装 MEME suite」按钮装到 .chipseq-runtime/meme，并以 PATH 注入）。
         # 硬编码某一个路径，换成另一种装法就全盘失效，所以先按 PATH 上的
@@ -60,7 +63,12 @@ rule motif_analysis:
         export PERL5LIB="$PERL_PATHS${{PERL5LIB:+:$PERL5LIB}}"
         export CONDA_PREFIX="${{CONDA_PREFIX:-$CONDA_ENV_BIN/..}}"
 
-        python "{input.script}" \
+        # 用绝对路径锁死「分析环境」的解释器。bioconda 的 meme 自己带一份 python
+        # （run 依赖里声明了 python>=3.7），上面为了让 meme 工具链自洽又把
+        # $MEME_BIN 插到了 PATH 最前面，裸 python 就此落到 meme 那份上——它只有
+        # 标准库，跑 6_1_motif.py 第 16 行的 import yaml 直接 ModuleNotFoundError，
+        # 整个 job 在解析参数阶段就挂掉，连 outdir 都不会建。
+        "$CONDA_ENV_BIN/python" "{input.script}" \
             --metadata "{input.metadata}" \
             --peakdir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/peakcalling" \
             --consensus_dir "result/{wildcards.species}/{wildcards.experiment}/4_analyse/consensus" \
